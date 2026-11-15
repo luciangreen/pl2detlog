@@ -122,5 +122,24 @@
   ],
   "sweep": "queens(N, Qs)",
   "values": "3..7"
+ },
+ {
+  "id": "scan",
+  "title": "First-match scans: committed member/2 conditions",
+  "src": "% First-match scans (rules ite_scan and neg_scan).\n% A committed condition (member(X, Xs), Filters) becomes one recursive scan\n% that stops at the first element passing the filters, as Prolog does:\n% later elements are never tested, so they cannot raise errors.\n\n% A cut local to findall's goal.\nfirsts(L, F) :- findall(X, (member(X, L), X > 1, !), F).\n\n% once/1, and an if-then-else with a real then-branch.\nfirst_big(L, X) :- once((member(X, L), X > 10)).\nlabel(L, R) :- ( member(X, L), X mod 2 =:= 0 -> R = even(X) ; R = none ).\n\n% \\+ is the same scan with T = fail and F = true.\nall_small(L) :- \\+ (member(X, L), X >= 10).\n\n% The element can be a pattern; a deterministic prefix runs once.\nkey_of(K, Pairs, V) :- once(member(K-V, Pairs)).\nabove(N, L, Y) :- ( M is N * 2, member(Y, L), Y > M -> true ; Y = none ).\n",
+  "queries": [
+   "firsts([0,3,5], F)",
+   "firsts([2,a], F)",
+   "first_big([3,20,x], X)",
+   "label([1,4,6], R)",
+   "label([1,3], R)",
+   "all_small([1,2])",
+   "all_small([1,12,a])",
+   "key_of(b, [a-1,b-2,b-3], V)",
+   "above(2, [1,5,9], Y)",
+   "above(5, [1,5], Y)"
+  ],
+  "sweep": "",
+  "values": ""
  }
 ];})(typeof module !== 'undefined' && module.exports ? (globalThis.PL2D = globalThis.PL2D || {}) : (window.PL2D = window.PL2D || {}));

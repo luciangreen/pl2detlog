@@ -41,6 +41,7 @@
     opts = Object.assign({ mnn: false, s2aMax: 1000 }, opts || {});
     const mnn = !!opts.mnn;
     const feat = { fuse: opts.fuse !== false, // det_prefix, effect_prefix, ite_det, neg_det are detlog2's standard goal rules (plain and MNN)
+      scan: opts.scan !== false, // ite_scan/neg_scan: a committed member/2 condition is a first-match scan (plain and MNN)
       splice: mnn && opts.splice !== false, s2a: mnn && opts.s2a !== false, memo: mnn && opts.memo !== false };
     const prog = typeof src === 'string' ? P.loadProgram(src) : src;
     const out = { mode: mnn ? 'mnn' : 'plain', preds: [], clauses: [], steps: [], warnings: [], errors: [], report: [], feat, specs: [], queries: [] };
@@ -452,7 +453,10 @@
       // rename the call apart and unify it with the head (resolution), then project the env rows on the head
       let proj = [Cmp('project_rows', [R0, ctx.L, list(hargs), Rows])];
       if (ctx.marks && single) { const R9 = fresh(ctx, 'R'); proj = [Cmp('project_rows', [R0, ctx.L, list(hargs), R9]), Cmp('strip_cut', [R9, Rows])]; }
-      const clauseBody = Cmp('if_commit', [Cmp('copy_term', [list(A), list(hargs)]), conj(code.concat(proj)), eq(Rows, NIL)]);
+      // when the head arguments are distinct variables the renaming always succeeds: no decision is needed
+      const distinctVars = hargs.every((h, i) => { const hv = D(h); return hv.t === 'v' && hargs.findIndex(x => D(x) === hv) === i; });
+      const rename = Cmp('copy_term', [list(A), list(hargs)]);
+      const clauseBody = distinctVars ? conj([rename].concat(code, proj)) : Cmp('if_commit', [rename, conj(code.concat(proj)), eq(Rows, NIL)]);
       emit(st, Cmp(':-', [Cmp(P.name(target), A.concat([Rows])), clauseBody]), k);
       for (const ax of ctx.auxList || []) emit(ax.st, ax.term, k);
     }
@@ -590,6 +594,8 @@
         step(kind === 'neg' ? 'neg_det' : 'ite_det', ctx.k, show(g));
         return [Cmp('if_commit', [C, conj(genGoal(T, L, O, ctx)), conj(genGoal(F, L, O, ctx))])];
       }
+      const sc = feat.scan && scanShape(C);
+      if (sc) return genScan(sc, T, F, L, O, ctx, g, kind);
       const st = step(kind === 'neg' ? 'neg' : 'ite', ctx.k, show(g));
       const nmC = auxName(ctx, 'k'), nm = auxName(ctx, 'i');
       const EC = fresh(ctx, 'E'), RC = fresh(ctx, 'R'), Pre = fresh(ctx, 'R'), First = fresh(ctx, 'P'), RB = fresh(ctx, 'R');
@@ -599,6 +605,35 @@
       { const m = new Map(); const L2 = copy(L, m); const Ob = Var('O__0'); mine.push(Cmp(':-', [Cmp(nm, [cons(E(L2), Var('_')), Var('_'), Ob]), conj(genGoal(copy(T, m), L2, Ob, ctx))])); }
       insertAux(ctx, st, mine);
       return [Cmp('copy_term', [E(L), EC]), Cmp(nmC, [EC, RC]), Cmp('packet_first', [RC, Pre, First]), Cmp(nm, [First, E(L), RB]), Cmp('rows_concat', [list([Pre, RB]), O])];
+    }
+    // (Pre, member(X, Xs), Post) with Pre and Post deterministic builtins: the condition's first answer is
+    // the first element of Xs that passes Post.  Nothing after that element is tried, as in Prolog.
+    function scanShape(C) {
+      const gs = flatConj(C).filter(x => !(D(x).t === 'a' && D(x).n === 'true'));
+      const i = gs.findIndex(x => !isDetBi(x));
+      if (i < 0) return null;
+      const gen = D(gs[i]);
+      if (kk(gen) !== 'member/2' || userPreds.has('member/2') || srcPreds.has('member/2')) return null;
+      const post = gs.slice(i + 1);
+      if (!post.every(isDetBi)) return null;
+      return { pre: gs.slice(0, i), gen, post };
+    }
+    // nm(Xs, e(L), O) :- if_commit(Xs = [Y|Ys], if_commit((X = Y, Post), T(L, O), nm(Ys, e(L), O)), F(L, O)).
+    // The condition binds the environment in place: if_commit/3 undoes a failed attempt, and the first success
+    // is the row T runs on.  An open list is extended one cell at a time, as member/2 does.
+    function genScan(sc, T, F, L, O, ctx, g, kind) {
+      const st = step(kind === 'neg' ? 'neg_scan' : 'ite_scan', ctx.k, show(g), { gen: show(sc.gen), filters: sc.pre.concat(sc.post).map(x => show(x)) });
+      const nm = auxName(ctx, 'q');
+      const m = new Map(); const L2 = copy(L, m); const Ob = Var('O__0');
+      const Xs = Var('Y__1'), Y = Var('Y__2'), Ys = Var('Y__3');
+      const gen2 = copy(sc.gen, m);
+      const cond = conj([eq(gen2.a[0], Y)].concat(sc.post.map(x => copy(x, m))));
+      const tC = conj(genGoal(copy(T, m), L2, Ob, ctx)), fC = conj(genGoal(copy(F, m), L2, Ob, ctx));
+      const body = Cmp('if_commit', [eq(Xs, cons(Y, Ys)), Cmp('if_commit', [cond, tC, Cmp(nm, [Ys, E(L2), Ob])]), fC]);
+      insertAux(ctx, st, [Cmp(':-', [Cmp(nm, [Xs, E(L2), Ob]), body])]);
+      const call = Cmp(nm, [sc.gen.a[1], E(L), O]);
+      if (!sc.pre.length) return [call];
+      return [Cmp('if_commit', [conj(sc.pre), call, conj(genGoal(F, L, O, ctx))])];
     }
     function genFindall(g, L, O, ctx, agg) {
       const st = step(agg ? 'aggregate' : 'findall', ctx.k, show(agg || g), {});

@@ -74,11 +74,12 @@ In the C export, `fib(20, F)` takes 425 ms as plain Detlog code and 1.4 ms as MN
 | Prolog | Detlog |
 | --- | --- |
 | facts | `cp_filter(Facts, Args, Rows)` |
-| clause `H :- B` | `if_commit(copy_term(Args, H), (code for B, project_rows(...)), Rows = [])` |
+| clause `H :- B` | `if_commit(copy_term(Args, H), (code for B, project_rows(...)), Rows = [])`; when the head arguments are distinct variables the renaming cannot fail, so it is just `copy_term(Args, H), code for B, project_rows(...)` |
 | several clauses | clause packets concatenated: `rows_concat/2` |
 | `A, B` | `B` mapped over the rows of `A` by a `[]` / `[_|_]` loop predicate |
 | `A ; B` | `rows_concat([RowsA, RowsB], Out)` |
 | `(C -> T ; E)`, `\+`, `once/1` | the first row of `C`'s packet (`packet_first/3`) selects the branch |
+| the same with `C = (Pre, member(X, Xs), Post)`, `Pre` and `Post` deterministic builtins (also a cut local to `findall/3`) | one scan predicate `q(Xs, e(Env), O) :- if_commit(Xs = [Y\|Ys], if_commit((X = Y, Post), T, q(Ys, e(Env), O)), E)` that stops at the first element passing `Post` (rules `ite_scan`, `neg_scan`) |
 | `findall/3`, `aggregate_all/3`, `setof/3` | the packet itself (`packet_split/3`, `project_list/4`) |
 | `H :- G, !, B.` followed by other clauses | one clause `( [A..] = [h..], G -> B ; ... )` (rule CUT) |
 | a cut inside a branch | a `cut` marker: row loops stop after it and later clauses are dropped |
@@ -93,7 +94,7 @@ Detlog2 rejects a cut inside an if-then-else branch. pl2detlog converts it with 
 - **Infinite generators.** A generator with infinitely many answers, such as `between(1, inf, X)`, has no finite packet. Converted code reports this instead of answering.
 - **`call/N` with an unbound closure** cannot be converted.
 - **`bagof/setof` that group by free variables** cannot be converted (add `^`, or use `findall`). `catch/3` is converted without catching.
-- **Errors.** A goal that would raise an error after the first answer of a committed condition still raises it in Detlog, because packets are complete.
+- **Errors.** A goal that would raise an error after the first answer of a committed condition still raises it in Detlog, because packets are complete. The exception is a condition of the form `(Pre, member(X, Xs), Post)` with deterministic builtins around `member/2`: it is scanned, and elements after the first match are never tested, as in Prolog. For example, `firsts([2, a], F)` in `examples/scan.pl` gives `F = [2]` rather than a type error.
 
 ## Files
 

@@ -51,3 +51,30 @@ test('native tier on and off give the same answers and errors', () => {
   } finally { restore(); }
   assert.ok(used >= 10, 'the native tier ran on ' + used + ' queries');
 });
+
+// The C export: every example built with the native tier (modes from a profile run) and without it prints the
+// same answers.  Error queries are left out (the C runtime stops at an error); edge queries where native code
+// must bail out to the generic code (a float in arithmetic) are in.
+test('C export: native tier on and off print the same answers', (t) => {
+  const cp = require('child_process'), fs = require('fs'), os = require('os');
+  try { cp.execSync('cc --version', { stdio: 'ignore' }); } catch (e) { t.skip('no C compiler'); return; }
+  P.C_RUNTIME = fs.readFileSync(path.join(__dirname, '..', 'src', 'runtime.c'), 'utf8');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pl2d-cnat-'));
+  const CEXTRA = { lists: ['doubles([1,2.5], D)', 'app([1,2], Y, [1,2,3])', 'numlist(1, 120, L), nrev(L, R)', 'nrev([A,B], R)'], fib: ['fib(24, F)', 'fib(N, 5)'], queens: ['queens(5, Qs)'] };
+  let natives = 0;
+  for (const ex of P.EXAMPLES) {
+    const qs = ex.queries.concat(CEXTRA[ex.id] || []).filter(q => !P.runQuery(P.loadProgram(ex.src), P.readTerm(q), { stepLimit: 3e6, maxAnswers: 1000 }).error);
+    const conv = P.convert(ex.src, { mnn: true, queries: qs });
+    const outs = [];
+    for (const native of [false, true]) {
+      const { code } = P.toC(conv.text, { queries: conv.queries, native });
+      if (native) natives += (code.match(/^static int nat\d+\(/gm) || []).length;
+      const f = path.join(dir, ex.id + (native ? '_n' : '_g'));
+      fs.writeFileSync(f + '.c', code);
+      cp.execSync('cc -O2 -w -o ' + f + ' ' + f + '.c -lm');
+      outs.push(cp.execFileSync(f).toString().split('\n').filter(l => !l.startsWith('% steps')).join('\n'));
+    }
+    assert.strictEqual(outs[1], outs[0], ex.id);
+  }
+  assert.ok(natives >= 10, natives + ' native C functions');
+});

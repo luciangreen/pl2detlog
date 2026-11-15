@@ -78,7 +78,7 @@ Plain converted code is slower than Prolog because it materialises every row as 
 - S2A and splice turn data and independent generators into loops.
 - DET runs deterministic predicates without packets: `nrev`, `safe/1` in `queens`, and the `maplist`, `foldl`, `include` and `partition` specialisations.
 
-On the nine examples (63 queries) in steady state, MNN Detlog takes 0.86× Prolog's time (geometric mean). It is faster on every query that takes Prolog more than 25 µs, and level with it on `parse('123', N)` (24 µs). The queries where it is still slower are small nondeterministic ones (1–24 µs), where building packets costs more than Prolog's backtracking. On heavier workloads it is also faster than the compiled C export of the same MNN Detlog (`cc -O2`): `numlist(1, 300, L), nrev(L, R)` takes 21 ms against 32 ms, and `queens(7, Qs)` 46 ms against 81 ms.
+On the nine examples (63 queries) in steady state, MNN Detlog takes 0.86× Prolog's time (geometric mean). It is faster on every query that takes Prolog more than 25 µs, and level with it on `parse('123', N)` (24 µs). The queries where it is still slower are small nondeterministic ones (1–24 µs), where building packets costs more than Prolog's backtracking. On heavier workloads it is also faster than the compiled C export of the same MNN Detlog (`cc -O2`): `numlist(1, 300, L), nrev(L, R)` takes 26 ms against 42 ms, and `queens(7, Qs)` 52 ms against 73 ms.
 
 The sweep `fib(N, F)` for N = 2..18 fits O(1.64ⁿ) for Prolog, the interpreter and Detlog code, which is the golden ratio. MNN Detlog fits O(n).
 

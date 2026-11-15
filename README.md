@@ -116,6 +116,8 @@ Detlog2 rejects a cut inside an if-then-else branch. pl2detlog converts it with 
 | `cli.js` | command line |
 | `examples/` | the example programs |
 | `test/run.js` | tests: every example converts, proves, back-converts, compiles to C and runs on the Prolog runtime |
+| `io/` | 200 inputs and outputs from real runs (`io/ios.txt`, `io/ios.jsonl`), made from `io/cases.mjs` |
+| `test/ios.test.js` | runs the 200 inputs again and checks the outputs are the same |
 
 ## Build, test, command line
 
@@ -125,5 +127,9 @@ node test/run.js     # or: npm test
 node cli.js examples/fib.pl -q "fib(15, F)" --stats --sweep "fib(N, F)" --values 2..18 \
     --detlog fib_detlog.pl --c fib.c --back fib_back.pl --proof proof.txt
 ```
+
+## Inputs and outputs
+
+`io/ios.txt` has 200 inputs and outputs from real runs of pl2detlog's functions: Prolog queries on the reference engine, Prolog to Detlog conversion (plain and MNN), conversion and back-conversion, the full analysis (Prolog, Detlog, MNN and back-converted answers, and the proof checks), Newton difference fits, S2A formulas, reading and printing terms, purity, ranges and growth fits. The inputs come from a fixed seed, so the same 200 come out each time. `npm test` runs them again and fails if an output changes; if a change is meant, `npm run ios` writes the new outputs.
 
 BSD-3-Clause.

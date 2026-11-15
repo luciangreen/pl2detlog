@@ -71,7 +71,7 @@ textarea.code:focus-visible { outline-offset: -2px; }
 .badge.ok { background: var(--ok-soft); color: var(--ok); }
 .badge.warn { background: var(--warn-soft); color: var(--warn); }
 .badge.bad { background: var(--bad-soft); color: var(--bad); }
-.verdict { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; border: 1px solid var(--rule); border-radius: 8px; margin-bottom: 18px; overflow: hidden; }
+.verdict { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0; border: 1px solid var(--rule); border-radius: 8px; margin-bottom: 18px; overflow: hidden; }
 @media (max-width: 700px) { .verdict { grid-template-columns: repeat(2, 1fr); } }
 .verdict > div { padding: 10px 14px; border-right: 1px solid var(--rule-2); }
 .verdict > div:last-child { border-right: 0; }

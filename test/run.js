@@ -1,5 +1,5 @@
 // npm test: every example must convert, prove, back-convert, compile to C and run on the Prolog runtime.
-for (const f of ['core','engine','builtins','convert','detlog_engine','detlog_fast','detlog_interp','backconv','cgen','proof','stats','examples']) require('../src/'+f+'.js');
+for (const f of ['core','engine','builtins','convert','detlog_engine','detlog_fast','detlog_interp','backconv','cgen','proof','stats','cref','examples']) require('../src/'+f+'.js');
 const P = globalThis.PL2D; const fs = require('fs'); const cp = require('child_process'); const os = require('os'); const path = require('path');
 P.C_RUNTIME = fs.readFileSync(path.join(__dirname, '../src/runtime.c'), 'utf8');
 const RT = fs.readFileSync(path.join(__dirname, '../src/detlog_runtime.pl'), 'utf8');

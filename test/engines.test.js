@@ -5,7 +5,7 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert');
 const path = require('path');
-for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'cgen', 'proof', 'stats', 'examples']) require(path.join(__dirname, '..', 'src', f + '.js'));
+for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'cgen', 'proof', 'stats', 'cref', 'examples']) require(path.join(__dirname, '..', 'src', f + '.js'));
 const P = globalThis.PL2D;
 const EXTRA = {
   lists: ['app([1,2], [3], R)', 'app([1,2], Y, [1,2,3])', 'total([1,a], S)', 'doubles([1,2.5], D)', 'nrev([A,B], R)', 'numlist(1, 120, L), nrev(L, R)'],

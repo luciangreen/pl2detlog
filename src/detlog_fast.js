@@ -607,6 +607,8 @@
       error = e.message;
     }
     const t1 = P.now();
+    // noDecode: the answers are not formatted as text (to time the computation alone)
+    if (opts.noDecode) return { ok, error, steps: E.steps, timeMs: t1 - t0 };
     const res = P.decodePacket(ok, error, Rv, varNames);
     return { ok: res.ok, answers: res.answers, events: res.events, output: res.output, error: res.error,
       engine: F.jit ? 'fast (JIT)' : 'fast', steps: E.steps, decisions: E.decisions, violations: E.violations.length,

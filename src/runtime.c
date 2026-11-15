@@ -22,10 +22,22 @@ static void dl_die(const char *m, const char *x) { fprintf(stderr, "Detlog runti
 
 /* ---------- memory ---------- */
 static char *arena = NULL; static size_t arena_left = 0;
+/* chunks, so that a run can be undone: arena_mark() before it, arena_release() after (repeated timing runs) */
+static char **chunks = NULL; static size_t *chunk_size = NULL; static size_t nchunks = 0, chunk_cap = 0;
 static void *alloc(size_t n) {
   n = (n + 15) & ~(size_t)15;
-  if (n > arena_left) { size_t sz = n > (1u << 22) ? n : (1u << 22); arena = (char *)malloc(sz); if (!arena) dl_die("out of memory", NULL); arena_left = sz; }
+  if (n > arena_left) {
+    size_t sz = n > (1u << 22) ? n : (1u << 22); arena = (char *)malloc(sz); if (!arena) dl_die("out of memory", NULL); arena_left = sz;
+    if (nchunks == chunk_cap) { chunk_cap = chunk_cap ? chunk_cap * 2 : 16; chunks = (char **)realloc(chunks, chunk_cap * sizeof(char *)); chunk_size = (size_t *)realloc(chunk_size, chunk_cap * sizeof(size_t)); }
+    chunks[nchunks] = arena; chunk_size[nchunks] = sz; nchunks++;
+  }
   void *p = arena; arena += n; arena_left -= n; return p;
+}
+typedef struct { size_t nchunks; char *arena; size_t left; } ArenaMark;
+static ArenaMark arena_mark(void) { ArenaMark m = { nchunks, arena, arena_left }; return m; }
+static void arena_release(ArenaMark m) {
+  while (nchunks > m.nchunks) free(chunks[--nchunks]);
+  arena = m.arena; arena_left = m.left;
 }
 static Term *new_term(int tag) { Term *t = (Term *)alloc(sizeof(Term)); memset(t, 0, sizeof(Term)); t->tag = tag; return t; }
 
@@ -36,7 +48,9 @@ static unsigned long hstr(const char *s) { unsigned long h = 5381; while (*s) h 
 static Term *mk_atom(const char *s) {
   unsigned long h = hstr(s) % AH;
   for (;;) { Term *t = atab[h]; if (!t) break; if (strcmp(t->name, s) == 0) return t; h = (h + 1) % AH; }
-  Term *t = new_term(T_ATOM); char *c = (char *)alloc(strlen(s) + 1); strcpy(c, s); t->name = c; atab[h] = t; return t;
+  /* atoms are interned for the whole program: outside the arena, which a timing run may release */
+  Term *t = (Term *)calloc(1, sizeof(Term)); char *c = (char *)malloc(strlen(s) + 1); if (!t || !c) dl_die("out of memory", NULL);
+  t->tag = T_ATOM; strcpy(c, s); t->name = c; atab[h] = t; return t;
 }
 static const char *intern(const char *s) { return mk_atom(s)->name; }
 static Term *NIL, *A_TRUE, *A_E, *A_OUT, *A_FOUND, *A_NONE, *A_MINUS, *A_DOT;
@@ -44,12 +58,17 @@ static Term *mk_int(long long v) { Term *t = new_term(T_INT); t->iv = v; return 
 static Term *mk_flt(double v) { Term *t = new_term(T_FLT); t->fv = v; return t; }
 static Term *mk_str(const char *s) { Term *t = new_term(T_STR); char *c = (char *)alloc(strlen(s) + 1); strcpy(c, s); t->name = c; return t; }
 static Term *mk_var(void) { Term *t = new_term(T_VAR); t->id = ++dl_var_id; return t; }
+/* a compound and its arguments are one allocation */
 static Term *mk_cmp(const char *f, int n, Term **a) {
   if (n == 0) return mk_atom(f);
-  Term *t = new_term(T_CMP); t->name = f; t->arity = n; t->args = (Term **)alloc(sizeof(Term *) * n);
+  Term *t = (Term *)alloc(sizeof(Term) + sizeof(Term *) * n); memset(t, 0, sizeof(Term));
+  t->tag = T_CMP; t->name = f; t->arity = n; t->args = (Term **)(t + 1);
   memcpy(t->args, a, sizeof(Term *) * n); return t;
 }
-static Term *mk_cons(Term *h, Term *tl) { Term *a[2] = { h, tl }; return mk_cmp(A_DOT->name, 2, a); }
+static Term *mk_cons(Term *h, Term *tl) {
+  Term *t = (Term *)alloc(sizeof(Term) + 2 * sizeof(Term *)); memset(t, 0, sizeof(Term));
+  t->tag = T_CMP; t->name = A_DOT->name; t->arity = 2; t->args = (Term **)(t + 1); t->args[0] = h; t->args[1] = tl; return t;
+}
 static Term *deref(Term *t) { while (t->tag == T_VAR && t->ref) t = t->ref; return t; }
 static int is_cons(Term *t) { return t->tag == T_CMP && t->arity == 2 && t->name == A_DOT->name; }
 static int is_nil(Term *t) { return t == NIL; }
@@ -102,33 +121,47 @@ static int compare(Term *a, Term *b) {
   }
 }
 static long copy_epoch = 0;
+/* A compound whose arguments a copy found identical (no variable cell anywhere, bound or not) is marked ground
+   in its cpe field, which compounds do not otherwise use: no undo can change it, so copies share it. */
+#define GR_MARK (-1L)
 static Term *copy_rec(Term *t) {
   t = deref(t);
   if (t->tag == T_VAR) { if (t->cpe != copy_epoch) { t->cpe = copy_epoch; t->cp = mk_var(); } return t->cp; }
-  if (t->tag != T_CMP) return t;
+  if (t->tag != T_CMP || t->cpe == GR_MARK) return t;
   if (is_cons(t)) {
-    TV hs = { 0 }; Term *x = t;
-    while (is_cons(x)) { tv_push(&hs, copy_rec(x->args[0])); x = deref(x->args[1]); }
-    Term *r = copy_rec(x); for (size_t i = hs.n; i-- > 0;) r = mk_cons(hs.v[i], r); free(hs.v); return r;
+    TV hs = { 0 }, cs = { 0 }; Term *x = t;
+    while (is_cons(x) && x->cpe != GR_MARK) { tv_push(&cs, x); tv_push(&hs, copy_rec(x->args[0])); x = deref(x->args[1]); }
+    Term *r = copy_rec(x);
+    for (size_t i = hs.n; i-- > 0;) { Term *c = cs.v[i]; if (hs.v[i] == c->args[0] && r == c->args[1]) { c->cpe = GR_MARK; r = c; } else r = mk_cons(hs.v[i], r); }
+    free(hs.v); free(cs.v); return r;
   }
-  Term **a = (Term **)alloc(sizeof(Term *) * t->arity);
-  for (int i = 0; i < t->arity; i++) a[i] = copy_rec(t->args[i]);
+  Term **a = (Term **)alloc(sizeof(Term *) * t->arity); int same = 1;
+  for (int i = 0; i < t->arity; i++) { a[i] = copy_rec(t->args[i]); if (a[i] != t->args[i]) same = 0; }
+  if (same) { t->cpe = GR_MARK; return t; }
   Term *r = new_term(T_CMP); r->name = t->name; r->arity = t->arity; r->args = a; return r;
 }
 static Term *copy_term(Term *t) { copy_epoch++; return copy_rec(t); }
 static Term *resolve(Term *t) {
   t = deref(t);
-  if (t->tag != T_CMP) return t;
+  if (t->tag != T_CMP || t->cpe == GR_MARK) return t;
   if (is_cons(t)) {
-    TV hs = { 0 }; Term *x = t;
-    while (is_cons(x)) { tv_push(&hs, resolve(x->args[0])); x = deref(x->args[1]); }
-    Term *r = resolve(x); for (size_t i = hs.n; i-- > 0;) r = mk_cons(hs.v[i], r); free(hs.v); return r;
+    TV hs = { 0 }, cs = { 0 }; Term *x = t;
+    while (is_cons(x) && x->cpe != GR_MARK) { tv_push(&cs, x); tv_push(&hs, resolve(x->args[0])); x = deref(x->args[1]); }
+    Term *r = resolve(x);
+    /* resolve keeps unbound variables, so a cell is shared (and marked ground) only with no variable below */
+    for (size_t i = hs.n; i-- > 0;) {
+      Term *c = cs.v[i], *h = hs.v[i];
+      int g = h->tag != T_VAR && (h->tag != T_CMP || h->cpe == GR_MARK) && r->tag != T_VAR && (r->tag != T_CMP || r->cpe == GR_MARK);
+      if (h == c->args[0] && r == c->args[1] && g) { c->cpe = GR_MARK; r = c; } else r = mk_cons(h, r);
+    }
+    free(hs.v); free(cs.v); return r;
   }
-  Term **a = (Term **)alloc(sizeof(Term *) * t->arity);
-  for (int i = 0; i < t->arity; i++) a[i] = resolve(t->args[i]);
+  Term **a = (Term **)alloc(sizeof(Term *) * t->arity); int same = 1, g = 1;
+  for (int i = 0; i < t->arity; i++) { a[i] = resolve(t->args[i]); if (a[i] != t->args[i]) same = 0; if (a[i]->tag == T_VAR || (a[i]->tag == T_CMP && a[i]->cpe != GR_MARK)) g = 0; }
+  if (same && g) { t->cpe = GR_MARK; return t; }
   Term *r = new_term(T_CMP); r->name = t->name; r->arity = t->arity; r->args = a; return r;
 }
-static int is_ground(Term *t) { t = deref(t); if (t->tag == T_VAR) return 0; if (t->tag == T_CMP) for (int i = 0; i < t->arity; i++) if (!is_ground(t->args[i])) return 0; return 1; }
+static int is_ground(Term *t) { t = deref(t); if (t->tag == T_VAR) return 0; if (t->tag == T_CMP) { if (t->cpe == GR_MARK) return 1; for (int i = 0; i < t->arity; i++) if (!is_ground(t->args[i])) return 0; } return 1; }
 static void term_vars(Term *t, TV *out) {
   t = deref(t);
   if (t->tag == T_VAR) { for (size_t i = 0; i < out->n; i++) if (out->v[i] == t) return; tv_push(out, t); return; }
@@ -404,7 +437,7 @@ static int bi_call(const char *k, Term **a) {
   if (K("sum_list/2") || K("sumlist/2")) { Term *s; sum_list(a[0], &s); return unify(a[1], s); }
   if (K("max_list/2") || K("min_list/2")) { TV v = { 0 }; list_to_tv(a[0], &v); if (!v.n) return 0; Num m = eval(v.v[0]); int mx = K("max_list/2");
     for (size_t i = 1; i < v.n; i++) { Num x = eval(v.v[i]); if (mx ? nd(x) > nd(m) : nd(x) < nd(m)) m = x; } free(v.v); return unify(a[1], num_term(m)); }
-  if (K("nth0/3") || K("nth1/3")) { Term *i = deref(a[0]); if (i->tag != T_INT) dl_die("nth: unbound index needs builtin_rows", NULL); TV v = { 0 }; list_to_tv(a[1], &v); long long k = i->iv - (K("nth1/3") ? 1 : 0); int r = k >= 0 && k < (long long)v.n && unify(a[2], v.v[k]); free(v.v); return r; }
+  if (K("nth0/3") || K("nth1/3")) { Term *i = deref(a[0]); if (i->tag != T_INT) dl_die("nth: unbound index needs builtin_rows", NULL); TV v = { 0 }; list_to_tv(a[1], &v); long long base = K("nth1/3") ? 1 : 0; long long k = i->iv - base; /* base first: K() reads the predicate key, which this k would shadow */ int r = k >= 0 && k < (long long)v.n && unify(a[2], v.v[k]); free(v.v); return r; }
   if (K("last/2")) { TV v = { 0 }; list_to_tv(a[0], &v); int r = v.n && unify(a[1], v.v[v.n - 1]); free(v.v); return r; }
   if (K("memberchk/2")) { Term *l = deref(a[1]); while (is_cons(l)) { size_t m = TR_TOP; if (unify(a[0], l->args[0])) return 1; undo(m); l = deref(l->args[1]); } return 0; }
   if (K("numlist/3")) { long long lo = eval(a[0]).i, hi = eval(a[1]).i; TV v = { 0 }; for (long long i = lo; i <= hi; i++) tv_push(&v, mk_int(i)); int r = unify(a[2], tv_list(&v)); free(v.v); return r; }
@@ -583,6 +616,12 @@ static int rt_splice2(Term *PA, Term *PB, Term *pa, Term *pb, Term *env, Term *O
 typedef struct ME { char *key; Term *val; struct ME *next; } ME;
 #define MH 65536
 static ME *memo[MH];
+/* buckets in use, so that clearing the table between runs costs what was stored, not the table size */
+static unsigned *memo_used = NULL; static size_t memo_nused = 0, memo_cap = 0;
+static void memo_clear(void) {
+  for (size_t i = 0; i < memo_nused; i++) { ME *e = memo[memo_used[i]]; while (e) { ME *n = e->next; free(e->key); free(e); e = n; } memo[memo_used[i]] = NULL; }
+  memo_nused = 0;
+}
 static void vkey(SB *b, Term *t, TV *vs) {
   t = deref(t); char buf[64];
   switch (t->tag) {
@@ -609,6 +648,7 @@ static int rt_memo_lookup(Term *K, Term *Args, Term *Found) {
 static int rt_memo_store(Term *K, Term *Args, Term *Rows) {
   char *key = variant_key(K, Args); unsigned long h = hstr(key) % MH;
   for (ME *e = memo[h]; e; e = e->next) if (!strcmp(e->key, key)) { free(key); return 1; }
+  if (!memo[h]) { if (memo_nused == memo_cap) { memo_cap = memo_cap ? memo_cap * 2 : 64; memo_used = (unsigned *)realloc(memo_used, memo_cap * sizeof(unsigned)); } memo_used[memo_nused++] = (unsigned)h; }
   ME *e = (ME *)malloc(sizeof(ME)); e->key = key; e->val = copy_term(pair(Args, Rows)); e->next = memo[h]; memo[h] = e; return 1;
 }
 static long long binom(long long n, int k) { double r = 1; for (int i = 0; i < k; i++) r = r * (double)(n - i) / (double)(i + 1); return llround(r); }

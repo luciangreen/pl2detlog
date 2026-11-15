@@ -36,6 +36,59 @@
   // strings in C source must stay byte strings: emit non-ASCII bytes as octal escapes
   function cstrBytes(s) { let o = '"'; for (const b of Buffer_from(s)) { if (b === 34) o += '\\"'; else if (b === 92) o += '\\\\'; else if (b === 10) o += '\\n'; else if (b === 9) o += '\\t'; else if (b < 32 || b >= 127 || b === 63) o += '\\' + b.toString(8).padStart(3, '0'); else o += String.fromCharCode(b); } return o + '"'; }
 
+  // run-time support for native functions: bail-out by longjmp to the entry, integer helpers that bail where
+  // the generic code would raise an error, ground equality, and tables for memoised calls on an integer
+  const NATIVE_C = `
+/* ---------- native tier ---------- */
+#include <setjmp.h>
+/* GCC and Clang have a light setjmp (frame, stack and resume address only); otherwise the standard one */
+#if defined(__GNUC__)
+typedef void *nat_jmp[5];
+#define NAT_SETJMP(b) __builtin_setjmp(b)
+#define NAT_LONGJMP(b) __builtin_longjmp(b, 1)
+#else
+typedef jmp_buf nat_jmp;
+#define NAT_SETJMP(b) setjmp(b)
+#define NAT_LONGJMP(b) longjmp(b, 1)
+#endif
+static nat_jmp *nat_jb; static long nat_epoch = 0;
+static void nat_bail(void) __attribute__((noinline));
+static void nat_bail(void) { NAT_LONGJMP(*nat_jb); }
+static long long n_iv(Term *x) { x = deref(x); if (x->tag != T_INT) nat_bail(); return x->iv; }
+static int n_isv(Term *x, long long v) { x = deref(x); return x->tag == T_INT && x->iv == v; }
+static int n_eq(Term *a, Term *b) {
+  a = deref(a); b = deref(b); if (a == b) return 1; if (a->tag != b->tag) return 0;
+  switch (a->tag) {
+    case T_INT: return a->iv == b->iv; case T_FLT: return a->fv == b->fv; case T_STR: return !strcmp(a->name, b->name);
+    case T_ATOM: return a->name == b->name;
+    case T_CMP: if (a->name != b->name || a->arity != b->arity) return 0; for (int i = 0; i < a->arity; i++) if (!n_eq(a->args[i], b->args[i])) return 0; return 1;
+  }
+  return 0;
+}
+static long long n_idiv(long long a, long long b) { if (b == 0) nat_bail(); return a / b; }
+static long long n_imod(long long a, long long b) { if (b == 0) nat_bail(); long long m = a % b; if (m != 0 && ((m < 0) != (b < 0))) m += b; return m; }
+static long long n_irem(long long a, long long b) { if (b == 0) nat_bail(); return a % b; }
+static long long n_min(long long a, long long b) { return a <= b ? a : b; }
+static long long n_max(long long a, long long b) { return a >= b ? a : b; }
+typedef struct { long long key; long ep; int st; long long iv; Term *tv; } NMS;
+typedef struct { NMS *s; size_t cap, n; long ep; } NMT;
+static size_t nmt_h(long long k, size_t cap) { return (size_t)(((unsigned long long)k * 0x9E3779B97F4A7C15ULL) >> 17) & (cap - 1); }
+static NMS *nmt_get(NMT *t, long long k) {
+  if (!t->s || t->ep != nat_epoch) return NULL;
+  for (size_t i = nmt_h(k, t->cap);; i = (i + 1) & (t->cap - 1)) { NMS *s = &t->s[i]; if (s->ep != nat_epoch) return NULL; if (s->key == k) return s; }
+}
+static void nmt_put(NMT *t, long long k, int st, long long iv, Term *tv) {
+  if (t->ep != nat_epoch) { t->ep = nat_epoch; t->n = 0; if (t->s) memset(t->s, 0, sizeof(NMS) * t->cap); }
+  if (!t->s || (t->n + 1) * 2 > t->cap) {
+    size_t oc = t->cap; NMS *os = t->s; t->cap = oc ? oc * 2 : 64; t->s = (NMS *)calloc(t->cap, sizeof(NMS)); t->n = 0;
+    for (size_t i = 0; i < oc; i++) if (os[i].ep == nat_epoch) nmt_put(t, os[i].key, os[i].st, os[i].iv, os[i].tv);
+    free(os);
+  }
+  size_t i = nmt_h(k, t->cap); while (t->s[i].ep == nat_epoch && t->s[i].key != k) i = (i + 1) & (t->cap - 1);
+  if (t->s[i].ep != nat_epoch) t->n++;
+  t->s[i].key = k; t->s[i].ep = nat_epoch; t->s[i].st = st; t->s[i].iv = iv; t->s[i].tv = tv;
+}
+`;
   function toC(detlogText, opts) {
     opts = opts || {};
     const prog = P.loadProgram(detlogText);
@@ -67,11 +120,75 @@
       throw new Error('bad term');
     }
     function argsC(as, vm) { return as.length ? '(Term*[]){' + as.map(x => termC(x, vm)).join(', ') + '}' : 'NULL'; }
+    // generate-and-test fusion, as in the JIT (detlog_fast.js fuseGenLoop):
+    //   builtin_rows(G, P), splice_extend(P, [G], e(Env), R2), loop(R2, R1)
+    // with G member/2 or permutation/2 over a proper list and loop a packet loop (no cut) whose row predicate
+    // starts by copying its row.  Each solution is bound in place; a DET filter row predicate runs through the
+    // native entry and only kept rows are copied; otherwise the row predicate runs and its rows are copied.
+    const isCT = (t, f, n) => { t = D(t); return t.t === 'c' && t.f === f && t.a.length === n; };
+    function fusionPlan(g1, g2, g3, rest) {
+      if (P.key(g1) !== 'builtin_rows/2' || P.key(g2) !== 'splice_extend/4' || !P.loopShape) return null;
+      const G = D(g1.a[0]), Pv = D(g1.a[1]), gk = P.key(G);
+      if ((gk !== 'member/2' && gk !== 'permutation/2') || Pv.t !== 'v' || D(g2.a[0]) !== Pv) return null;
+      const pat = P.listToArray(g2.a[1]); if (!pat || pat.length !== 1 || P.show(pat[0]) !== P.show(G)) return null;
+      const R2 = D(g2.a[3]); if (R2.t !== 'v' || !g3.a || g3.a.length !== 2 || D(g3.a[0]) !== R2) return null;
+      const k3 = P.key(g3); const lcls = prog.preds.get(k3); if (!lcls) return null;
+      const sh = P.loopShape(k3, lcls); if (!sh || sh.cutVariant || !prog.preds.has(sh.callKey)) return null;
+      const rcl = prog.preds.get(sh.callKey).find(c => isCT(D(c.head).a[0], 'e', 1));
+      if (!rcl) return null;
+      const rb = P.flatConj(rcl.body).map(D);
+      if (P.key(rb[0]) !== 'copy_term/2' || D(rb[0].a[0]) !== D(D(D(rcl.head).a[0]).a[0])) return null;
+      if (rest.concat([g3.a[1]]).some(x => P.termVars(x).some(v => v === Pv || v === R2)) || P.termVars(g2.a[2]).includes(R2)) return null;
+      const env = g2.a[2]; if (!isCT(env, 'e', 1)) return null;
+      let filt = null;
+      const Lr = P.listToArray(rb[0].a[1]), Ev = P.listToArray(D(env).a[0]), ic = rb[1];
+      if (rb.length === 2 && Lr && Ev && Lr.length === Ev.length && Lr.every(v => D(v).t === 'v') && P.key(ic) === 'if_commit/3') {
+        const c = P.flatConj(ic.a[0]).map(D), th = D(ic.a[1]);
+        if (c.length === 2 && c[0].t === 'c' && /__d$/.test(c[0].f) && P.key(c[1]) === '\\==/2' && D(c[1].a[0]) === D(c[0].a[c[0].a.length - 1]) && P.key(th) === 'if_commit/3') {
+          const Sv = D(c[0].a[c[0].a.length - 1]), yes = D(th.a[0]), keep = D(th.a[1]), drop = D(th.a[2]), Orow = D(D(rcl.head).a[1]);
+          const okYes = P.key(yes) === '=/2' && D(yes.a[0]) === Sv && D(yes.a[1]).t === 'a' && D(yes.a[1]).n === 'yes';
+          const okKeep = P.key(keep) === '=/2' && D(keep.a[0]) === Orow && P.show(keep.a[1]) === P.show(P.list([P.Cmp('e', [P.list(Lr)])]));
+          const okDrop = P.key(drop) === '=/2' && D(drop.a[0]) === Orow && D(drop.a[1]).t === 'a' && D(drop.a[1]).n === '[]';
+          const sub = new Map(Lr.map((v, i) => [D(v), Ev[i]]));
+          const subst = t => { t = D(t); if (t.t === 'v') return sub.has(t) ? sub.get(t) : null; if (t.t === 'c') { const a = t.a.map(subst); return a.includes(null) ? null : P.Cmp(t.f, a); } return t; };
+          const args = c[0].a.slice(0, -1).map(subst);
+          if (okYes && okKeep && okDrop && !args.includes(null) && natModes.has(P.key(c[0]))) filt = { k: P.key(c[0]), args };
+        }
+      }
+      return { gk, G, env, out: g3.a[1], rowKey: sh.callKey, filt };
+    }
+    function fusedC(pl, generic, vm, fail, ind) {
+      const n = ++uid, list = pl.gk === 'member/2' ? pl.G.a[1] : pl.G.a[0], x = pl.gk === 'member/2' ? pl.G.a[0] : pl.G.a[1];
+      const body = y => 'size_t m = TR_TOP; if (unify(x' + n + ', ' + y + ')) { STEP(); STEP(); STEP(); STEP(); if (++nrow' + n + ' > 1000000) dl_die("builtin_rows: infinite generator", NULL);\n' +
+        (pl.filt ? '  Term *Sv = mk_var(); Term **fa = (Term*[]){' + pl.filt.args.map(a => termC(a, vm)).concat(['Sv']).join(', ') + '};\n  if (' + natEntryFn(pl.filt.k) + '(fa)) { if (deref(Sv) == ' + atomIx('yes') + ') tv_push(&res' + n + ', copy_term(ev' + n + ')); }\n  else ' : '  ') +
+        '{ Term *Ov = mk_var(); if (!' + pfn(pl.rowKey) + '((Term*[]){ ev' + n + ', Ov })) ok' + n + ' = 0; else { TV o1 = { 0 }; list_to_tv(Ov, &o1); for (size_t j = 0; j < o1.n; j++) tv_push(&res' + n + ', copy_term(o1.v[j])); free(o1.v); } }\n' +
+        '} undo(m);';
+      let loop;
+      if (pl.gk === 'member/2') loop = 'for (size_t i = 0; i < xs' + n + '.n && ok' + n + '; i++) { ' + body('xs' + n + '.v[i]') + ' }\n';
+      else loop = '{ size_t k = xs' + n + '.n; size_t *idx = (size_t *)calloc(k + 1, sizeof(size_t)); int *used = (int *)calloc(k + 1, sizeof(int)); long d = 0; TV cur = { 0 };\n' +
+        '  for (; ok' + n + ';) {\n' +
+        '    if ((size_t)d == k) { Term *y = tv_list(&cur); { ' + body('y') + ' } d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
+        '    while (idx[d] < k && used[idx[d]]) idx[d]++;\n' +
+        '    if (idx[d] >= k) { d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
+        '    used[idx[d]] = 1; tv_push(&cur, xs' + n + '.v[idx[d]]); d++; idx[d] = 0;\n  }\n  free(idx); free(used); free(cur.v); }\n';
+      return ind + '{ TV xs' + n + ' = { 0 };\n' + ind + 'if (!list_to_tv(' + termC(list, vm) + ', &xs' + n + ')) {\n' + ind + 'free(xs' + n + '.v);\n' + generic + ind + '} else {\n' +
+        ind + 'Term *x' + n + ' = ' + termC(x, vm) + ', *ev' + n + ' = ' + termC(pl.env, vm) + '; TV res' + n + ' = { 0 }; size_t nrow' + n + ' = 0; int ok' + n + ' = 1; STEP(); STEP(); STEP();\n' +
+        loop + ind + 'free(xs' + n + '.v);\n' + ind + 'if (!ok' + n + ') { free(res' + n + '.v); ' + fail + ' }\n' +
+        ind + '{ Term *rl = tv_list(&res' + n + '); free(res' + n + '.v); if (!unify(' + termC(pl.out, vm) + ', rl)) ' + fail + ' } } }\n';
+    }
     function stmt(g, vm, fail, ind) {
       g = D(g); const k = P.key(g); const as = g.t === 'c' ? g.a : [];
       if (g.t === 'v') throw new Error('variable goal');
+      if (k === ',/2') {
+        const gs = P.flatConj(g).map(D); let code = '';
+        for (let i = 0; i < gs.length; i++) {
+          const pl = i + 2 < gs.length && fusionPlan(gs[i], gs[i + 1], gs[i + 2], gs.slice(i + 3));
+          if (pl) { code += fusedC(pl, stmt(gs[i], vm, fail, ind) + stmt(gs[i + 1], vm, fail, ind) + stmt(gs[i + 2], vm, fail, ind), vm, fail, ind); i += 2; continue; }
+          code += stmt(gs[i], vm, fail, ind);
+        }
+        return code;
+      }
       switch (k) {
-        case ',/2': return stmt(g.a[0], vm, fail, ind) + stmt(g.a[1], vm, fail, ind);
         case 'true/0': return '';
         case 'fail/0': case 'false/0': return ind + fail + '\n';
         case 'if_commit/3': {
@@ -88,7 +205,10 @@
         if (k === 'effect_text/2') { const bk = P.key(g.a[0]); if (!C_EFFECTS.has(bk)) warn('output builtin ' + bk + ' is not in the C runtime'); }
         return ind + 'if (!' + RT[k] + '(' + as.map(x => termC(x, vm)).join(', ') + ')) ' + fail + '\n';
       }
-      if (prog.preds.has(k)) return ind + 'if (!' + pfn(k) + '(' + argsC(as, vm) + ')) ' + fail + '\n';
+      if (prog.preds.has(k)) {
+        if (natModes.has(k) && /__d$/.test(g.f) && !/__d$/.test(curPred)) return ind + '{ Term **na = ' + (as.length ? argsC(as, vm) : 'NULL') + '; if (!' + natEntryFn(k) + '(na) && !' + pfn(k) + '(na)) ' + fail + ' }\n';
+        return ind + 'if (!' + pfn(k) + '(' + argsC(as, vm) + ')) ' + fail + '\n';
+      }
       if (!C_BUILTINS.has(k)) warn('builtin ' + k + ' is not in the C runtime');
       return ind + 'if (!bi_call(' + cstrBytes(k) + ', ' + argsC(as, vm) + ')) ' + fail + '\n';
     }
@@ -100,7 +220,106 @@
       if (t.t === 's') return 'T_STR, NULL, 0, 0';
       return 'T_CMP, ' + fnIx(t.f) + ', ' + t.a.length + ', 0';
     }
+    // ---------- native tier (src/native.js) for the modes the program's queries use ----------
+    // The JS engine runs the queries once (a profile); every (predicate, mode) its native tier compiled is
+    // compiled here too, to C: long long for integers, outputs through pointers, longjmp to bail out.
+    let nativeModes = opts.nativeModes;
+    if (!nativeModes && opts.native !== false && P.runDetlogFast && P.nativeModesOf && P.DETLOG_NATIVE !== false) {
+      const np = P.loadProgram(detlogText);
+      for (const q of opts.queries || []) { try { P.runDetlogFast(np, q.pred, q.vars, { stepLimit: opts.profileSteps || 2e7 }); } catch (e) { /* the profile only gathers modes */ } }
+      nativeModes = P.nativeModesOf(np);
+    }
+    const kcs = [], kcIx = new Map();
+    const KC = t => { const key = P.show(t, { quoted: true }) + '|' + (t.t === 'n' ? (t.f ? 'f' : 'i') : t.t); if (!kcIx.has(key)) { kcIx.set(key, kcs.length); kcs.push(t); } return 'KC[' + kcIx.get(key) + ']'; };
+    const nTables = new Map();
+    const sigs = new Map();
+    const cname = (name, int) => name + (int ? '_i' : '_t');
+    const EMC = {
+      YES: '1', NO: '0', MAYBE: '2', EQOP: '==', NEOP: '!=', BAIL: 'nat_bail();',
+      v: (name, int) => cname(name, int),
+      num: v => v + 'LL',
+      k: t => t.t === 'a' ? atomIx(t.n) : KC(t),
+      box: e => 'mk_int(' + e + ')',
+      unbox: e => 'n_iv(' + e + ')',
+      cmp: (f, args) => f === '.' && args.length === 2 ? 'mk_cons(' + args[0] + ', ' + args[1] + ')' : 'mk_cmp(' + fnIx(f) + ', ' + args.length + ', (Term*[]){' + args.join(', ') + '})',
+      eq: (a, b) => 'n_eq(' + a + ', ' + b + ')',
+      isIntVal: (e, v) => 'n_isv(' + e + ', ' + v + ')',
+      tmp: (t, e) => 'Term *' + t + ' = deref(' + e + ');',
+      isCmp: (t, f, n) => t + '->tag == T_CMP && ' + t + '->name == ' + (f === '.' ? 'A_DOT->name' : fnIx(f)) + ' && ' + t + '->arity == ' + n,
+      arg: (t, i) => t + '->args[' + i + ']',
+      keyTest: (pat, t) => {
+        if (pat.t === 'a') return t + ' == ' + atomIx(pat.n);
+        if (pat.t === 'n') return pat.f ? t + '->tag == T_FLT && ' + t + '->fv == ' + (Number.isFinite(pat.v) ? String(pat.v) + (/[.e]/i.test(String(pat.v)) ? '' : '.0') : (pat.v > 0 ? 'INFINITY' : pat.v < 0 ? '-INFINITY' : 'NAN')) : t + '->tag == T_INT && ' + t + '->iv == ' + pat.v + 'LL';
+        if (pat.t === 's') return t + '->tag == T_STR && !strcmp(' + t + '->name, ' + cstrBytes(pat.v) + ')';
+        return '0';
+      },
+      fn: (name, args) => ({ IDIV: 'n_idiv', IMOD: 'n_imod', IREM: 'n_irem', MIN: 'n_min', MAX: 'n_max', ABS: 'llabs' })[name] + '(' + args.join(', ') + ')',
+      assign: (lhs, rhs) => lhs + ' = ' + rhs + ';\n',
+      fail: L => 'goto ' + L + ';',
+      blockNoThen: (L, rc, re) => '{\n' + rc + '}\n' + L + ': ;\n' + re,
+      block: (L, ok, rc, rt, re) => '{ int ' + ok + ' = 0;\n{\n' + rc + ok + ' = 1;\n}\n' + L + ': ;\nif (' + ok + ') {\n' + rt + '} else {\n' + re + '}\n}\n',
+      retOuts: vals => vals.map((v, i) => '*o' + i + ' = ' + v + ';').join(' ') + ' return 1;',
+      retStatus: v => 'return ' + v + ';',
+      call: (callee, ins, outs, retInt, rs, memo) => {
+        const args = ins.concat(outs.map(o => '&' + o)).join(', ');
+        // memoised in a table keyed by the one integer input
+        if (memo && /^n?o?$/.test(memo.mode) && memo.mode.startsWith('n') && ins.length === 1 && outs.length <= 1) {
+          if (!nTables.has(memo.table)) nTables.set(memo.table, 'NT' + nTables.size);
+          const T = nTables.get(memo.table), fld = retInt ? 'iv' : 'tv';
+          const fill = outs.length ? 'if (' + rs + ' == 1) ' + outs[0] + ' = ms->' + fld + ';' : '';
+          return '{ NMS *ms = nmt_get(&' + T + ', ' + ins[0] + '); if (ms) { ' + rs + ' = ms->st; ' + fill + ' } else { ' + rs + ' = ' + callee + '(' + args + '); nmt_put(&' + T + ', ' + ins[0] + ', ' + rs + ', ' + (outs.length && retInt ? '(' + rs + ' == 1 ? ' + outs[0] + ' : 0)' : '0') + ', ' + (outs.length && !retInt ? '(' + rs + ' == 1 ? ' + outs[0] + ' : NULL)' : 'NULL') + '); } }\n';
+        }
+        return rs + ' = ' + callee + '(' + args + ');\n';
+      },
+      func: (name, params, nOuts, selfInt, used, statusLocals, body) => {
+        const ps = params.map(p => (p.int ? 'long long ' : 'Term *') + cname(p.name, p.int));
+        for (let i = 0; i < nOuts; i++) ps.push((nOuts === 1 && selfInt ? 'long long *' : 'Term **') + 'o' + i);
+        const sig = 'static int ' + name + '(' + (ps.length ? ps.join(', ') : 'void') + ')';
+        sigs.set(name, sig);
+        const decl = used.map(u => (u.int ? 'long long ' : 'Term *') + cname(u.name, u.int) + (u.int ? ' = 0;' : ' = NULL;')).join(' ') + (statusLocals.length ? ' int ' + statusLocals.map(x => x + ' = 0').join(', ') + ';' : '');
+        return sig + ' {\n  STEP();\n  ' + decl + '\n' + body + '  nat_bail(); return 0;\n}\n';
+      },
+    };
+    const nDone = new Map(); const nDefs = []; let nSeq = 0;
+    const natModes = new Map(); // predicate key -> [{ mode, name, retInt }]
+    for (const km of nativeModes || []) {
+      const i = km.lastIndexOf('|'); const k = km.slice(0, i), mode = km.slice(i + 1);
+      if (nDone.has(km) || !prog.preds.has(k)) continue;
+      const batch = P.nativeBatch(prog, k, mode, EMC, { has: x => nDone.has(x), get: x => nDone.get(x) }, () => 'nat' + (nSeq++));
+      if (!batch) { nDone.set(km, null); warn('native function for ' + km + ' not compiled to C'); continue; }
+      for (const [key2, e] of batch) { nDone.set(key2, { ref: e.name, retInt: e.retInt }); nDefs.push(e.src); }
+    }
+    for (const km of nativeModes || []) {
+      const f = nDone.get(km); if (!f) continue;
+      const i = km.lastIndexOf('|'); const k = km.slice(0, i);
+      if (!natModes.has(k)) natModes.set(k, []);
+      natModes.get(k).push({ mode: km.slice(i + 1), name: f.ref, retInt: f.retInt });
+    }
+    // entry from packet code: the argument modes decide; a compiled mode runs natively, otherwise p__d runs
+    const natEntryFn = k => 'nat_' + pfn(k);
+    const natEntries = [];
+    for (const [k, ms] of natModes) {
+      const n = +k.slice(k.lastIndexOf('/') + 1) - 1;
+      let c = 'static int ' + natEntryFn(k) + '(Term **a) {\n  Term *x[' + Math.max(1, n) + ']; char m[' + (n + 1) + '];\n';
+      c += '  for (int i = 0; i < ' + n + '; i++) { x[i] = deref(a[i]); if (x[i]->tag == T_VAR) { for (int j = 0; j < i; j++) if (x[j] == x[i]) return 0; m[i] = \'o\'; } else if (x[i]->tag == T_INT) m[i] = \'n\'; else if (is_ground(x[i])) m[i] = \'i\'; else return 0; }\n';
+      c += '  m[' + n + '] = 0; Term *S = deref(a[' + n + ']); if (S->tag != T_VAR) return 0; for (int i = 0; i < ' + n + '; i++) if (x[i] == S) return 0;\n';
+      for (const md of ms) {
+        const outs = [...md.mode].map((ch, i) => ch === 'o' ? i : -1).filter(i => i >= 0);
+        const ins = [...md.mode].map((ch, i) => ch === 'n' ? 'x[' + i + ']->iv' : ch === 'i' ? 'x[' + i + ']' : null).filter(Boolean);
+        const intOut = outs.length === 1 && md.retInt;
+        c += '  if (!strcmp(m, "' + md.mode + '")) {\n    ' + outs.map((o, j) => (intOut ? 'long long' : 'Term *') + ' o' + j + ' = 0;').join(' ') + '\n';
+        c += '    nat_jmp jb; nat_jmp *sv = nat_jb; nat_jb = &jb; nat_epoch++;\n    if (NAT_SETJMP(jb)) { nat_jb = sv; return 0; }\n';
+        c += '    int r = ' + md.name + '(' + ins.concat(outs.map((o, j) => '&o' + j)).join(', ') + ');\n    nat_jb = sv;\n';
+        c += '    if (r == 2) return 0;\n    if (r == 0) { bind(S, ' + atomIx('no') + '); return 1; }\n';
+        c += '    ' + outs.map((o, j) => 'bind(x[' + o + '], ' + (intOut ? 'mk_int(o' + j + ')' : 'o' + j) + ');').join(' ') + ' bind(S, ' + atomIx('yes') + '); return 1;\n  }\n';
+      }
+      c += '  return 0;\n}\n';
+      natEntries.push(c);
+    }
+    let curPred = '';
+
     for (const k of prog.order) {
+      curPred = k.slice(0, k.lastIndexOf('/'));
       const cls = prog.preds.get(k); const f = pfn(k);
       protos.push('static int ' + f + '(Term **a);');
       const parts = [];
@@ -133,7 +352,9 @@
       const k = q.pred + '__cp/' + (q.vars.length + 1);
       main += '  {\n    const char *nm[] = {' + (q.vars.length ? q.vars.map(cstrBytes).join(', ') : '""') + '};\n';
       main += '    Term *qv[' + (q.vars.length + 1) + ']; int ok = 0; long s0 = dl_steps, d0 = dl_decisions; double t0 = now_ms();\n';
-      main += '    for (int rep = 0; rep < reps; rep++) { for (int i = 0; i < ' + (q.vars.length + 1) + '; i++) qv[i] = mk_var(); memset(memo, 0, sizeof memo); ok = ' + pfn(k) + '(qv); }\n';
+      // every repetition but the last runs on memory that is released afterwards (the last one is printed)
+      main += '    ArenaMark am = arena_mark(); size_t tm = TR_TOP;\n';
+      main += '    for (int rep = 0; rep < reps; rep++) { if (rep) { undo(tm); arena_release(am); } for (int i = 0; i < ' + (q.vars.length + 1) + '; i++) qv[i] = mk_var(); memo_clear(); ok = ' + pfn(k) + '(qv); }\n';
       main += '    double t1 = now_ms();\n';
       main += '    printf("?- %s.\\n", ' + cstrBytes(q.text) + ');\n';
       main += '    if (!ok) puts("% query failed (a packet predicate must succeed)"); else print_packet(qv[' + q.vars.length + '], nm, ' + q.vars.length + ');\n';
@@ -145,10 +366,15 @@
     const header = '/* C generated by pl2detlog from Detlog (' + (opts.mode || 'Detlog') + ').\n   Build: cc -O2 -o prog prog.c -lm    Run: ./prog    Time: ./prog -r 1000\n' +
       (warnings.length ? '   Warnings:\n' + warnings.map(w => '   - ' + w).join('\n') + '\n' : '') + '*/\n';
     const lib = P.C_RUNTIME || '#include "runtime.c"\n';
-    const tables = 'static Term *AT[' + Math.max(1, atoms.size) + '];\nstatic const char *FN[' + Math.max(1, fns.size) + '];\n' +
+    const kcInit = kcs.map((t, i) => '  KC[' + i + '] = ' + termC(t, new Map()) + ';').join('\n');
+    const natLib = nDefs.length ? NATIVE_C + [...nTables.values()].map(t => 'static NMT ' + t + ';').join('\n') + '\n' : '';
+    const tables = 'static Term *AT[' + Math.max(1, atoms.size) + '];\nstatic const char *FN[' + Math.max(1, fns.size) + '];\nstatic Term *KC[' + Math.max(1, kcs.length) + '];\n' +
       'static Term *mk_list(int n, Term **xs, Term *tail) { Term *r = tail; for (int i = n; i-- > 0;) r = mk_cons(xs[i], r); return r; }\n' +
-      'static void init_tables(void) {\n' + atomInit + '\n' + fnInit + '\n}\n';
-    const code = header + lib + '\n/* ---------- program ---------- */\n' + tables + protos.join('\n') + '\n\n' + defs.join('\n') + '\n' + main;
+      'static void init_tables(void) {\n' + atomInit + '\n' + fnInit + '\n' + kcInit + '\n}\n';
+    const natProtos = [...sigs.values()].map(x => x + ';').join('\n');
+    const code = header + lib + '\n/* ---------- program ---------- */\n' + tables + natLib + protos.join('\n') + '\n' + natProtos + '\n\n' +
+      (nDefs.length ? '/* native tier: DET predicates in the modes the queries use */\n' + nDefs.join('\n') + '\n' + natEntries.join('\n') + '\n' : '') +
+      defs.join('\n') + '\n' + main;
     return { code, warnings };
   }
   P.toC = toC;

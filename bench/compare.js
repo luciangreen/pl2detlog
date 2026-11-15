@@ -4,8 +4,7 @@
 // Detlog's own run time without formatting answers, which is what the references measure.
 //   node bench/compare.js [--json out.json] [--no-export]
 // Times are microseconds per run: the JS engines are warmed up and timed for about 300 ms each (median of
-// 3 batches); reference.c times itself in-process; the C export runs its query once per process, so its
-// time is the median process time minus that of an empty C program.
+// 3 batches); reference.c and the C export (./p -r N) time themselves in-process.
 'use strict';
 const fs = require('fs'), cp = require('child_process'), path = require('path'), os = require('os');
 const root = path.resolve(__dirname, '..');
@@ -31,12 +30,14 @@ const refJs = new Map(cp.execSync(process.execPath + ' ' + path.join(__dirname, 
 
 const time = fn => { let n = 0; const w = performance.now(); while (performance.now() - w < 100) { fn(); n++; } const ts = []; for (let b = 0; b < 3; b++) { const t = performance.now(); for (let i = 0; i < n; i++) fn(); ts.push((performance.now() - t) / n * 1000); } ts.sort((a, b) => a - b); return ts[1]; };
 const median = xs => xs.slice().sort((a, b) => a - b)[xs.length >> 1];
-let emptyC = null;
+// the C export times itself in-process: ./p -r N repeats each query N times and prints ms per run
 function cExport(conv) {
   const { code } = P.toC(conv.text, { queries: conv.queries });
   fs.writeFileSync(tmp + '/p.c', code); cp.execSync('cc -O2 -w -o ' + tmp + '/p ' + tmp + '/p.c -lm');
-  if (emptyC === null) { fs.writeFileSync(tmp + '/e.c', 'int main(void){return 0;}'); cp.execSync('cc -O2 -o ' + tmp + '/e ' + tmp + '/e.c'); emptyC = median([...Array(15)].map(() => { const t = performance.now(); cp.execFileSync(tmp + '/e'); return (performance.now() - t) * 1000; })); }
-  return Math.max(0, median([...Array(7)].map(() => { const t = performance.now(); cp.execFileSync(tmp + '/p', { stdio: 'pipe' }); return (performance.now() - t) * 1000; })) - emptyC);
+  const per = reps => { const out = cp.execFileSync(tmp + '/p', ['-r', String(reps)], { stdio: 'pipe' }).toString(); const m = out.match(/([0-9.]+) ms per run/); return m ? +m[1] * 1000 : NaN; };
+  const est = per(1);
+  const reps = Math.max(1, Math.min(1e6, Math.round(300000 / Math.max(est, 0.05))));
+  return median([per(reps), per(reps), per(reps)]);
 }
 
 const rows = [];

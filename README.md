@@ -14,6 +14,9 @@ Open `index.html` (or `dist/index.html`) in a browser. No server or install is n
    - *splice*: independent generators are computed once and combined as a Cartesian product.
    - *S2A*: pure predicates with a finite table become loops over Newton formulas, constants or data.
    - *MEMO*: pure tree-recursive predicates are tabled by call variant.
+   - *DET*: an output-free predicate whose clauses are told apart by one argument, and whose goals are deterministic, also gets a packet-free version `p__d(Args, Status)`. It runs Prolog's own clause selection and body in place and answers `yes`, `no` or `maybe`. `maybe` means the index argument was unbound where several clauses match; the packet code then runs. Calls between DET predicates never build packets. A call of a DET predicate from packet code (*call_det*) binds the environment in place, and undoes that on `maybe`.
+   - *Scans over facts*: a committed condition over a predicate of facts reads only up to the first fact that matches, as `member/2` scans do.
+   - *Identity projection and call-through*: a clause whose environment is exactly its head arguments returns its rows without projecting them. `h(X..) :- q(X..)` returns `q`'s packet.
 3. **Converts Detlog back to Prolog, with change warnings.** It works from the Detlog text alone, so you can edit the Detlog and convert it back.
    - Cuts are restored from the `if_commit/3` chains.
    - `maplist/foldl/include/exclude/partition` closures, including yall lambdas, are folded back.
@@ -45,25 +48,37 @@ The app runs every query on four engines and checks that they all give the same 
   - Runs of deterministic goals execute in place.
   - `(C -> T ; E)`, `\+` and `once/1` take the first row of `C` and never demand the rest.
   - A cut inside a branch is a status that stops the remaining rows and clauses.
-- **Detlog code** is the converted `p__cp` program, run on the deterministic engine (`src/detlog_fast.js`). That engine compiles clauses to closures, selects each clause by its first argument and runs packet loops natively. The C export compiles the same code.
+- **Detlog code** is the converted `p__cp` program, run on the deterministic engine (`src/detlog_fast.js`). That engine compiles the program to JavaScript source, one function per predicate:
+  - arguments are positional and clause variables are JS locals;
+  - heads are matched inline, and each clause is selected by its first argument;
+  - `if_commit/3` is a labelled block;
+  - integer arithmetic and comparisons run natively, and anything else falls back to the builtin;
+  - `copy_term/2` into fresh variables is an assignment;
+  - a `member/2` generator spliced into an environment is one loop;
+  - packet loops are native loops.
+
+  Step counts and clause selection are those of the closure compiler, which remains the fallback. The C export compiles the same code.
 - **MNN Detlog** is the MNN-optimised code on the same engine.
 
 Times are the median of 5 batches after a warm-up, in Node 22. All four engines are written in JavaScript in this app.
 
-| query | Prolog ms | Detlog interpreter ms | interpreter vs Prolog | Detlog code ms | MNN Detlog ms |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `fib(18, F)` | 50.7 | 12.6 | 4.0× faster | 161 | 0.45 |
-| `numlist(1, 60, L), nrev(L, R)` | 5.89 | 2.31 | 2.5× faster | 27.0 | 24.8 |
-| `queens(6, Qs)` | 12.5 | 4.89 | 2.6× faster | 57.0 | 38.3 |
-| `pin(A, B, C)` (three spliced generators) | 1.12 | 0.99 | 1.1× faster | 9.55 | 0.073 |
-| `anc(X, dee)` | 0.046 | 0.033 | 1.4× faster | 0.18 | 0.035 |
-| `classify(0, C)` (cuts) | 0.011 | 0.006 | 1.8× faster | 0.031 | 0.019 |
+| query | Prolog ms | Detlog interpreter ms | interpreter vs Prolog | Detlog code ms | MNN Detlog ms | MNN Detlog vs Prolog |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `fib(18, F)` | 28.3 | 9.41 | 3.0× faster | 53.6 | 0.222 | 128× faster |
+| `numlist(1, 60, L), nrev(L, R)` | 2 | 1.18 | 1.7× faster | 13 | 0.68 | 2.9× faster |
+| `queens(6, Qs)` | 11.4 | 3.92 | 2.9× faster | 24.1 | 4.84 | 2.3× faster |
+| `pin(A, B, C)` (three spliced generators) | 0.467 | 0.404 | 1.2× faster | 3.13 | 0.007 | 67× faster |
+| `anc(X, dee)` | 0.0181 | 0.00705 | 2.6× faster | 0.0555 | 0.00448 | 4.0× faster |
+| `classify(0, C)` (cuts) | 0.00183 | 0.0016 | 1.1× faster | 0.00444 | 0.00153 | 1.2× faster |
 
 On the eight examples (52 queries), the interpreter is faster than Prolog on every query in steady state. In the app's own per-run timing, 50 of the 52 come out faster: the other two take microseconds and fall within timer noise.
 
-The converted code is slower than Prolog because it materialises every row as a Prolog list and copies environments. MNN rewrites remove most of that cost where they apply:
+Plain converted code is slower than Prolog because it materialises every row as a Prolog list and copies environments. MNN rewrites remove most of that cost:
 - MEMO makes `fib` O(n) instead of O(1.64ⁿ).
 - S2A and splice turn data and independent generators into loops.
+- DET runs deterministic predicates without packets: `nrev`, `safe/1` in `queens`, and the `maplist`, `foldl`, `include` and `partition` specialisations.
+
+On the nine examples (63 queries) in steady state, MNN Detlog takes 0.86× Prolog's time (geometric mean). It is faster on every query that takes Prolog more than 25 µs, and level with it on `parse('123', N)` (24 µs). The queries where it is still slower are small nondeterministic ones (1–24 µs), where building packets costs more than Prolog's backtracking. On heavier workloads it is also faster than the compiled C export of the same MNN Detlog (`cc -O2`): `numlist(1, 300, L), nrev(L, R)` takes 21 ms against 32 ms, and `queens(7, Qs)` 46 ms against 81 ms.
 
 The sweep `fib(N, F)` for N = 2..18 fits O(1.64ⁿ) for Prolog, the interpreter and Detlog code, which is the golden ratio. MNN Detlog fits O(n).
 
@@ -84,6 +99,7 @@ In the C export, `fib(20, F)` takes 425 ms as plain Detlog code and 1.4 ms as MN
 | `H :- G, !, B.` followed by other clauses | one clause `( [A..] = [h..], G -> B ; ... )` (rule CUT) |
 | a cut inside a branch | a `cut` marker: row loops stop after it and later clauses are dropped |
 | `member/2`, `between/3`, `append/3`, ... | `builtin_rows(Goal, Rows)` |
+| MNN: an output-free predicate with argument-exclusive clauses and deterministic goals | `p__cp` runs `p__d(Args, Status)` in place; status `maybe` runs the packet code `p__cpx` (rule DET) |
 | `write/1`, `format/2`, ... | `out(Text)` items, in Prolog order |
 | `maplist(F, ...)`, `foldl`, `include`, lambdas | a specialised recursive predicate (rule SPEC) |
 
@@ -106,7 +122,7 @@ Detlog2 rejects a cut inside an if-then-else branch. pl2detlog converts it with 
 | `src/engine.js`, `src/builtins.js` | reference Prolog engine (the oracle, with step and choicepoint counts) |
 | `src/convert.js` | Prolog → Detlog, plain and MNN, with proof steps |
 | `src/detlog_interp.js` | the Detlog interpreter: the cut-free program run as answer packets, without choicepoints |
-| `src/detlog_fast.js` | the deterministic engine for converted Detlog code (closure-compiled, native packet loops) |
+| `src/detlog_fast.js` | the deterministic engine for converted Detlog code: compiled to JavaScript source (JIT), with the closure compiler as fallback |
 | `src/detlog_engine.js` | the reference Detlog engine and the Detlog runtime |
 | `src/backconv.js` | Detlog → Prolog and change warnings |
 | `src/proof.js` | the independent proof checker |

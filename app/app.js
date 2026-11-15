@@ -50,7 +50,7 @@
         const sweep = $('sweep').value.trim() ? { template: $('sweep').value.trim(), values: $('sweepvals').value.trim() || '1..10' } : null;
         const t0 = P.now();
         R = P.analyse($('src').value, queries, {
-          mnn: { fuse: $('o-fuse').checked, splice: $('o-splice').checked, s2a: $('o-s2a').checked, memo: $('o-memo').checked },
+          mnn: { fuse: $('o-fuse').checked, splice: $('o-splice').checked, s2a: $('o-s2a').checked, memo: $('o-memo').checked, det: $('o-det').checked },
           sweep, timing: $('o-time').checked
         });
         R.queries = queries; editedBack = null;

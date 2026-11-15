@@ -16,6 +16,7 @@
   "src": "% Cuts of several kinds.  detlog2 turns each into an explicit decision.\n\n% a :- b, !, c.  a :- d.   becomes   a :- if_commit(b, c, d).\na(X) :- b(X), !, c(X).\na(X) :- d(X).\nb(1). b(2).\nc(1).\nd(3).\n\n% A red cut (meaning-changing) and a green one.\nmax(X, Y, X) :- X >= Y, !.\nmax(_, Y, Y).\n\nclassify(N, neg) :- N < 0, !.\nclassify(0, zero) :- !.\nclassify(_, pos).\n\n% First solution only, with a cut local to findall's goal.\nfirsts(L, F) :- findall(X, (member(X, L), X > 1, !), F).\n\n% Two cuts in one clause.\ntwo(X, Y) :- member(X, [1, 2, 3]), X > 1, !, member(Y, [a, b]), !.\ntwo(none, none).\n\n% A cut inside \\+ is local to it.\nno_big(L) :- \\+ (member(X, L), X > 5, !).\n\n% \"!\" here is data (a character list), not a cut.\nbang(Out) :- append(\"Hi\", \"!\", Out).\n",
   "queries": [
    "a(X)",
+   "a(3)",
    "max(5, 3, Z)",
    "max(1, 3, Z)",
    "classify(0, C)",

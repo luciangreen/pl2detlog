@@ -12,7 +12,7 @@
   const { deref, Cmp, Var, list, listToArray, show, termVars } = P;
   const D = deref;
   const FORBIDDEN = new Set(['!/0', ';/2', '->/2', '*->/2', '\\+/1', 'not/1', 'findall/3', 'findall/4', 'bagof/3', 'setof/3', 'aggregate_all/3', 'aggregate_all/4', 'forall/2', 'once/1', 'ignore/1', 'call/1', 'catch/3']);
-  const RULES = new Set(['CUT', 'SPEC', 'PRED', 'FACTS', 'CLAUSE', 'S2A', 'MEMO', 'UNSUPPORTED', 'true', 'fail', 'det', 'effect', 'call', 'member_cp', 'between_cp', 'builtin_rows', 'seq', 'det_prefix', 'effect_prefix', 'disj', 'ite', 'ite_det', 'ite_scan', 'neg', 'neg_det', 'neg_scan', 'findall', 'aggregate', 'splice', 'cut_mark']);
+  const RULES = new Set(['CUT', 'SPEC', 'PRED', 'FACTS', 'CLAUSE', 'S2A', 'MEMO', 'DET', 'call_det', 'UNSUPPORTED', 'true', 'fail', 'det', 'effect', 'call', 'member_cp', 'between_cp', 'builtin_rows', 'seq', 'det_prefix', 'effect_prefix', 'disj', 'ite', 'ite_det', 'ite_scan', 'neg', 'neg_det', 'neg_scan', 'findall', 'aggregate', 'splice', 'cut_mark']);
   const RUNTIME_PREDS = () => new Set(Object.keys(P.DETLOG_RUNTIME).concat(['if_commit/3']));
 
   function checkShape(detlogText) {
@@ -109,6 +109,19 @@
           const same = !err && got.length === exp.length && got.every((r, i) => r.every((x, j) => P.compare(x, exp[i][j]) === 0));
           add('Side conditions', 'S2A ' + k + ': pure, and the loop gives exactly the source answers in order', isPure && same, (isPure ? 'pure' : 'NOT pure') + '; ' + got.length + ' source rows vs ' + exp.length + ' loop rows' + (err ? '; ' + err : '') + '; ' + st.info.formula);
         }
+        if (st.rule === 'DET') {
+          // re-derived from the Detlog itself: nothing reachable from p__d writes output or updates the database,
+          // so running it and then the packet code (status maybe) cannot repeat an effect
+          const [f, n] = splitKey(st.pred); const dprog = P.loadProgram(conv.text);
+          const seen = new Set(); const todo = [f + '__d/' + (+n + 1)]; let bad = null;
+          const EFF = new Set(['effect_text/2', 'assert/1', 'asserta/1', 'assertz/1', 'retract/1', 'retractall/1', 'nb_setval/2', 'b_setval/2', 'setarg/3', 'nb_setarg/3']);
+          while (todo.length && !bad) {
+            const k = todo.pop(); if (seen.has(k)) continue; seen.add(k);
+            const cls = dprog.preds.get(k); if (!cls) { bad = 'missing ' + k; break; }
+            for (const cl of cls) (function walk(g) { g = D(g); const gk = P.key(g); if (gk === ',/2') { walk(g.a[0]); walk(g.a[1]); return; } if (gk === 'if_commit/3') { g.a.forEach(walk); return; } if (EFF.has(gk) || P.EFFECT.has(gk)) bad = gk; else if (dprog.preds.has(gk)) todo.push(gk); })(cl.body);
+          }
+          add('Side conditions', 'DET ' + st.pred + ': deterministic mode writes no output (re-derived from the Detlog); status maybe runs the packet code', !bad, bad ? 'reaches ' + bad : seen.size + ' predicate(s) reachable from ' + f + '__d, none writes');
+        }
         if (st.rule === 'MEMO') add('Side conditions', 'MEMO ' + st.pred + ': pure (variant calls give equal packets)', !!pur.pure.get(st.pred), pur.pure.get(st.pred) ? 'purity re-derived from the source' : 'not pure');
         if (st.rule === 'splice') {
           let ok = false, why = '';
@@ -122,7 +135,9 @@
         }
         if (st.rule === 'FACTS' && st.info.n) {
           const k = st.pred; const cl = conv.clauses[st.clauses[0]];
-          const rows = listToArray(D(D(cl.term).a[1]).a[0]).map(r => P.canonClauses ? show(D(r).a[0], { varName: P.namer() }) : '');
+          const rows = st.info.table
+            ? listToArray(D(cl.term).a[0]).map(r => P.canonClauses ? show(r, { varName: P.namer() }) : '')
+            : listToArray(D(D(cl.term).a[1]).a[0]).map(r => P.canonClauses ? show(D(r).a[0], { varName: P.namer() }) : '');
           const srcRows = pur.prog.preds.get(k).map(c => show(list(D(c.head).t === 'c' ? D(c.head).a : []), { varName: P.namer() }));
           const same = rows.length === srcRows.length && rows.every((r, i) => r === srcRows[i]);
           add('Side conditions', 'FACTS ' + k + ': rows are the source facts in order', same, rows.length + ' facts');
@@ -134,11 +149,13 @@
         const badScan = [];
         for (const s of scanSteps) {
           try {
-            const gk = P.key(P.readTerm(s.info.gen).term); if (gk !== 'member/2') badScan.push(s.info.gen);
+            const gk = P.key(P.readTerm(s.info.gen).term);
+            if (s.info.facts) { const cls = pur.prog.preds.get(gk); if (!cls || !cls.length || pur.prog.dynamic.has(gk) || cls.some(c => !(D(c.body).t === 'a' && D(c.body).n === 'true'))) badScan.push(s.info.gen + ' (not a predicate of facts)'); }
+            else if (gk !== 'member/2') badScan.push(s.info.gen);
             for (const f of s.info.filters) { const fk = P.key(P.readTerm(f).term); const b = P.builtins[fk]; if (fk !== 'true/0' && (!b || b.nondet || b.call || P.EFFECT.has(fk))) badScan.push(f); }
           } catch (e) { badScan.push(s.src); }
         }
-        add('Side conditions', label + ': first-match scans run member/2 with deterministic builtin filters', badScan.length === 0, scanSteps.length + ' scan(s)' + (badScan.length ? '; not allowed: ' + badScan.join(', ') : ''));
+        add('Side conditions', label + ': first-match scans run member/2 or a predicate of facts, with deterministic builtin filters', badScan.length === 0, scanSteps.length + ' scan(s)' + (badScan.length ? '; not allowed: ' + badScan.join(', ') : ''));
       }
       const detSteps = conv.steps.filter(s => s.rule === 'det' || s.rule === 'det_prefix' || s.rule === 'ite_det' || s.rule === 'neg_det');
       let badDet = [];
@@ -215,7 +232,9 @@
     ['splice', 'MNN: independent generators computed once and combined by a Cartesian product in Prolog order'],
     ['S2A', 'MNN: a pure predicate with a finite ground table becomes a loop over I = 0..K-1 (Newton formulas, constants or data)'],
     ['cut_mark', 'a cut inside a branch emits [cut, e(Row)]: row loops stop after it and later alternatives and clauses are dropped'],
-    ['MEMO', 'MNN: a pure tree-recursive predicate is tabled by call variant']
+    ['MEMO', 'MNN: a pure tree-recursive predicate is tabled by call variant'],
+    ['call_det', 'MNN: a call of a DET predicate in packet code runs its deterministic mode in place: yes gives [Env], no gives []; maybe undoes it and makes the packet call'],
+    ['DET', 'MNN: an output-free predicate whose clauses are told apart by their first argument, and whose goals are deterministic, runs as p__d(Args, Status) without packets; status maybe (a first argument unbound where several clauses match) falls back to the packet code']
   ];
   P.checkShape = checkShape; P.prove = prove; P.purity = purity; P.RULE_DOC = RULE_DOC;
 })(typeof module !== 'undefined' && module.exports ? (globalThis.PL2D = globalThis.PL2D || {}) : (window.PL2D = window.PL2D || {}));

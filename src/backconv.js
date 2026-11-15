@@ -57,6 +57,14 @@
       }
       // S2A
       if (gs.length === 1 && isC(b0, 's2a_rows', 3)) { note(pk, 'S2A loop back-converted'); return s2aClauses(b0.a[0], pname, A.length, pk); }
+      // DET wrapper:  copy_term(A, B), p__d(B.., S), p__dr(S, B.., A.., Rows)  -- the packet code is p__cpx
+      if (gs.length === 3 && isC(b0, 'copy_term', 2) && D(gs[1]).t === 'c' && /__d$/.test(D(gs[1]).f) && D(gs[2]).t === 'c' && /__dr$/.test(D(gs[2]).f)) {
+        note(pk, 'deterministic mode dropped (DET is an optimisation only)');
+        const inner = getCls(pname + '__cpx/' + (A.length + 1));
+        if (inner.length !== 1) throw BackError('DET packet predicate has several clauses');
+        const ih = D(inner[0].head);
+        return decompPacketClause({ head: Cmp(pname + '__cp', ih.a), body: inner[0].body }, pk, pname);
+      }
       // MEMO wrapper
       if (gs.length === 2 && isC(b0, 'memo_lookup', 3)) {
         note(pk, 'memo table dropped (memoisation is an optimisation only)');
@@ -70,7 +78,7 @@
       }
       // PRED: clause packets then rows_concat
       const last = D(gs[gs.length - 1]);
-      if ((isC(last, 'rows_concat', 2) || isC(last, 'rows_cut_concat', 2)) && D(last.a[1]) === D(Rows) && gs.length >= 2) {
+      if ((isC(last, 'rows_concat', 2) || isC(last, 'rows_cut_concat', 2)) && D(last.a[1]) === D(Rows) && gs.length >= 2 && !isC(b0, 'copy_term', 2) && !isC(b0, 'if_commit', 3)) {
         const out = [];
         for (const g of gs.slice(0, -1)) {
           const cc = getCls(P.key(g)); if (cc.length !== 1) throw BackError('clause packet ' + P.key(g) + ' has several clauses');
@@ -124,17 +132,28 @@
     function decompClausePacket(cl, pname, pk) {
       const gs = flat(cl.body);
       let ren0, tg;
+      // call-through:  h__cp(A.., Rows) :- q__cp(A.., Rows)
+      { const h = D(cl.head); const g0 = D(gs[0]);
+        if (gs.length === 1 && g0.t === 'c' && /__cp$/.test(g0.f) && g0.a.length === h.a.length && g0.a.every((x, i) => D(x) === D(h.a[i]))) {
+          const vs = h.a.slice(0, -1).map((_, i) => Var('X' + (i + 1)));
+          return [{ head: Cmp(pname, vs), body: Cmp(g0.f.replace(/__cp$/, ''), vs) }];
+        } }
       if (gs.length === 1 && isC(gs[0], 'if_commit', 3) && isC(D(gs[0]).a[0], 'copy_term', 2)) { ren0 = D(D(gs[0]).a[0]); tg = flat(D(gs[0]).a[1]); }
       else if (gs.length >= 2 && isC(gs[0], 'copy_term', 2)) { ren0 = D(gs[0]); tg = gs.slice(1); }
       else throw BackError('unexpected clause packet ' + P.key(cl.head));
       const H = listToArray(ren0.a[1]);
       if (isC(tg[tg.length - 1], 'strip_cut', 2)) tg = tg.slice(0, -1);
       const pr = D(tg[tg.length - 1]);
-      if (!isC(pr, 'project_rows', 4)) throw BackError('clause packet without project_rows');
-      const R0 = D(pr.a[0]); const L = pr.a[1];
+      let R0, L, code;
+      if (isC(pr, 'project_rows', 4)) { R0 = D(pr.a[0]); L = pr.a[1]; code = tg.slice(0, -1); }
+      else { // identity projection: the environment is the head arguments and the code computes the packet itself
+        const Rows = D(cl.head).a[D(cl.head).a.length - 1];
+        if (!H.every(x => D(x).t === 'v')) throw BackError('clause packet without project_rows');
+        R0 = D(Rows); L = list(H); code = tg;
+      }
       const names = new Map();
       const ctx = { names, L, pk };
-      const body = decompCode(tg.slice(0, -1), R0, ctx);
+      const body = decompCode(code, R0, ctx);
       let clause = { head: Cmp(pname, H.map(x => ren(x, names))), body };
       const restored = restoreCuts(clause, pname, pk);
       return restored.map(c => cleanup(c, pk));
@@ -208,6 +227,11 @@
         // det:  if_commit(B, O = [e(L)], O = [])
         const OT = outOfSimple(T), OF = outOfSimple(F);
         if (OT && OF && OT.v === OF.v && OT.kind === 'row' && OF.kind === 'none') return { goal: r(C), out: OT.v, next: i + 1 };
+        // DET-call:  if_commit((q__d(As.., S), S \== maybe), if_commit(S = yes, ..), (q__cp(As.., P), splice_extend(..)))
+        if (isC(C, ',', 2) && D(D(C).a[0]).t === 'c' && /__d$/.test(D(D(C).a[0]).f) && isC(D(C).a[1], '\\==', 2)) {
+          const Os = findOut(F);
+          return { goal: decompCode(F, Os, ctx), out: Os, next: i + 1 };
+        }
         // splice:  if_commit(splice_safe(..), Chain, Seq)
         if (isC(C, 'splice_safe', 2)) {
           ctx.splice = true; note(ctx.pk, 'splice written back as the sequential conjunction');
@@ -227,7 +251,8 @@
           const tg = decompCode(T, Ot, ctx), fg = decompCode(F, Of, ctx);
           // a scan with a deterministic prefix:  if_commit(Pre, q(Xs, e(L), O), CodeF(O))
           const tc = D(tg);
-          if (T.length === 1 && tc.t === 'c' && tc.f === ';' && isC(tc.a[0], '->', 2) && scanOf(P.key(T[0]), ctx) && show(tc.a[1]) === show(fg))
+          const isScan = (T.length === 1 && scanOf(P.key(T[0]), ctx)) || (T.length === 2 && D(T[0]).t === 'c' && /__rows$/.test(D(T[0]).f) && scanOf(P.key(T[1]), ctx, D(T[0]).f.replace(/__rows$/, '')));
+          if (isScan && tc.t === 'c' && tc.f === ';' && isC(tc.a[0], '->', 2) && show(tc.a[1]) === show(fg))
             return { goal: mkIte(conj([r(C), D(tc.a[0]).a[0]]), D(tc.a[0]).a[1], fg), out: Ot, next: i + 1 };
           return { goal: mkIte(r(C), tg, fg), out: Ot, next: i + 1 };
         }
@@ -294,6 +319,11 @@
         let dg = alts[alts.length - 1]; for (let q = alts.length - 2; q >= 0; q--) dg = Cmp(';', [alts[q], dg]);
         return { goal: dg, out: D(D(rc).a[1]), next: j + 1 };
       }
+      // facts scan:  p__rows(T), q(T, e(L), O)
+      if (g.t === 'c' && g.a.length === 1 && /__rows$/.test(g.f) && gs[i + 1] && D(gs[i + 1]).t === 'c' && D(D(gs[i + 1]).a[0]) === D(g.a[0])) {
+        const q = D(gs[i + 1]); const sc = scanOf(P.key(q), ctx, g.f.replace(/__rows$/, ''));
+        if (sc) return { goal: mkIte(conj([sc.gen, sc.post]), sc.T, sc.F), out: D(q.a[2]), next: i + 2 };
+      }
       // first-match scan:  q(Xs, e(L), O)
       if (g.t === 'c' && g.a.length === 3 && isC(g.a[1], 'e', 1)) {
         const sc = scanOf(P.key(g), ctx);
@@ -309,7 +339,7 @@
       throw BackError('unrecognised goal ' + show(g, { varName: v => v.name || '_' }));
     }
     // nm(Xs, e(L), O) :- if_commit(Xs = [Y|Ys], if_commit((X = Y, Post), T, nm(Ys, e(L), O)), F)
-    function scanOf(k, ctx) {
+    function scanOf(k, ctx, factsName) {
       const cls = prog.preds.get(k); if (!cls || cls.length !== 1) return null;
       const h = D(cls[0].head); const b = D(cls[0].body);
       if (!isC(b, 'if_commit', 3)) return null;
@@ -317,9 +347,13 @@
       if (!isC(c1, '=', 2) || D(c1.a[0]) !== D(h.a[0]) || !isC(c1.a[1], '.', 2) || !isC(inner, 'if_commit', 3)) return null;
       const Y = D(D(c1.a[1]).a[0]), Ys = D(D(c1.a[1]).a[1]);
       const cg = flat(inner.a[0]); const first = D(cg[0]);
-      if (!isC(first, '=', 2) || D(first.a[1]) !== Y) return null;
       const rec = flat(inner.a[2]); if (rec.length !== 1 || P.key(rec[0]) !== k || D(D(rec[0]).a[0]) !== Ys) return null;
       const r = x => ren(x, ctx.names); const O = h.a[2];
+      if (factsName) {
+        if (!isC(first, 'copy_term', 2) || D(first.a[0]) !== Y) return null;
+        return { gen: Cmp(factsName, listToArray(first.a[1]).map(r)), post: conj(cg.slice(1).map(r)), T: decompCode(flat(inner.a[1]), O, ctx), F: decompCode(flat(b.a[2]), O, ctx) };
+      }
+      if (!isC(first, '=', 2) || D(first.a[1]) !== Y) return null;
       return { X: r(first.a[0]), post: conj(cg.slice(1).map(r)), T: decompCode(flat(inner.a[1]), O, ctx), F: decompCode(flat(b.a[2]), O, ctx) };
     }
     function outOfSimple(gs) {

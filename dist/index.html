@@ -4251,7 +4251,7 @@ dl_print_more([N|Ns], [V|Vs]) :- format(", ~w = ~q", [N, V]), dl_print_more(Ns, 
     let h = '<div class="row-actions">';
     if (!editedBack) h += '<label>From <select id="backsrc"><option value="plain">Detlog</option><option value="mnn">MNN Detlog</option></select></label>';
     else h += '<span>From your edited ' + esc(label) + '.</span> <button class="btn" id="backgen">Show the generated Detlog\'s back-conversion</button>';
-    h += '<button class="btn" id="dlback">Download .pl</button></div>';
+    h += '<button class="btn" id="dlback">Save .pl</button><button class="btn" id="cpback">Copy</button></div>';
     h += '<h3>Change warnings</h3>';
     if (!changed.length) h += '<p>Every predicate came back exactly as written in your source.</p>';
     else h += '<ul class="warnlist">' + changed.map(w => '<li class="' + w.kind + '"><code>' + esc(w.pred) + '</code> — ' + esc(w.msg) + (w.notes && w.notes.length ? '<div class="hint">' + esc(w.notes.join('; ')) + '</div>' : '') + (w.diff ? '<div class="diff">' + w.diff.slice(0, 8).map(d => (d.was ? '<div class="was">' + esc(d.was) + '</div>' : '') + (d.now ? '<div class="now">' + esc(d.now) + '</div>' : '')).join('') + (w.diff.length > 8 ? '<div class="hint">… ' + (w.diff.length - 8) + ' more</div>' : '') + '</div>' : '') + '</li>').join('') + '</ul>';
@@ -4261,6 +4261,7 @@ dl_print_more([N|Ns], [V|Vs]) :- format(", ~w = ~q", [N, V]), dl_print_more(Ns, 
     pane.innerHTML = h;
     $('backtext').textContent = backText(b, cw);
     $('dlback').onclick = () => download('program_back.pl', backText(b, cw));
+    $('cpback').onclick = () => copyText('the Prolog', backText(b, cw));
     if ($('backsrc')) { $('backsrc').value = renderBack.src || 'plain'; $('backsrc').onchange = e => { renderBack.src = e.target.value; const isM = e.target.value === 'mnn'; editedBack = { b: isM ? R.backMnn : R.backPlain, cw: isM ? R.changesMnn : R.changes, evals: R.runs.map(r => ({ q: r.query, same: (isM ? r.backMnn : r.back) && JSON.stringify((isM ? r.backMnn : r.back).events) === JSON.stringify(r.prolog.events), back: isM ? r.backMnn : r.back })), label: isM ? 'MNN Detlog' : 'Detlog', generated: true }; renderBack(); }; }
     if (editedBack && editedBack.generated) { const bs = pane.querySelector('#backgen'); if (bs) bs.remove(); pane.querySelector('.row-actions span').textContent = 'From the generated ' + label + '.'; }
     if ($('backgen')) $('backgen').onclick = () => { editedBack = null; renderBack(); };
@@ -4277,7 +4278,7 @@ dl_print_more([N|Ns], [V|Vs]) :- format(", ~w = ~q", [N, V]), dl_print_more(Ns, 
   function renderProof() {
     const pf = R.proof; const b = $('b-proof');
     b.textContent = pf.ok ? (pf.warns ? pf.warns + ' warn' : 'ok') : pf.fails + ' failed'; b.className = 'badge ' + (pf.ok ? (pf.warns ? 'warn' : 'ok') : 'bad');
-    let h = '<div class="row-actions"><button class="btn" id="dlproof">Download proof report</button><span class="hint">The checker is independent of the converter: it re-derives each side condition and re-runs every query.</span></div>';
+    let h = '<div class="row-actions"><button class="btn" id="dlproof">Save proof report</button><button class="btn" id="cpproof">Copy</button><span class="hint">The checker is independent of the converter: it re-derives each side condition and re-runs every query.</span></div>';
     let g = null;
     for (const c of pf.checks) {
       if (c.group !== g) { if (g) h += '</ul>'; h += '<h3>' + esc(c.group) + '</h3><ul class="checks">'; g = c.group; }
@@ -4289,6 +4290,7 @@ dl_print_more([N|Ns], [V|Vs]) :- format(", ~w = ~q", [N, V]), dl_print_more(Ns, 
     h += '<details><summary>Rules</summary><table><tbody>' + P.RULE_DOC.map(([r, d]) => '<tr><td><code>' + r + '</code></td><td>' + esc(d) + '</td></tr>').join('') + '</tbody></table></details>';
     $('p-proof').innerHTML = h;
     $('dlproof').onclick = () => download('proof.txt', pf.text);
+    $('cpproof').onclick = () => copyText('the proof report', pf.text);
   }
   function stepsTable(conv) {
     const steps = conv.steps.filter(s => !/^\$query/.test(s.pred) || conv.queries.slice(0, R.queries.length).some(q => q.key === s.pred));
@@ -4302,13 +4304,14 @@ dl_print_more([N|Ns], [V|Vs]) :- format(", ~w = ~q", [N, V]), dl_print_more(Ns, 
     const which = renderC.which || 'mnn';
     const conv = which === 'mnn' ? R.mnn : R.plain;
     let c; try { c = cFor(conv); } catch (e) { $('p-c').innerHTML = '<div class="errbox">' + esc(e.message) + '</div>'; return; }
-    let h = '<div class="row-actions"><label>From <select id="csrc"><option value="mnn">MNN Detlog</option><option value="plain">Detlog</option></select></label><button class="btn" id="dlc">Download .c</button><span class="hint">Build with <code>cc -O2 -o prog prog.c -lm</code>, run <code>./prog</code>, time with <code>./prog -r 1000</code>.</span></div>';
+    let h = '<div class="row-actions"><label>From <select id="csrc"><option value="mnn">MNN Detlog</option><option value="plain">Detlog</option></select></label><button class="btn" id="dlc">Save .c</button><button class="btn" id="cpc">Copy</button><span class="hint">Build with <code>cc -O2 -o prog prog.c -lm</code>, run <code>./prog</code>, time with <code>./prog -r 1000</code>.</span></div>';
     if (c.warnings.length) h += '<div class="errbox">' + esc(c.warnings.join('\n')) + '</div>';
     h += '<p class="hint">One C function per Detlog predicate selects its clause by the first argument and commits to it; if_commit/3 is a trail mark, the condition, and an undo before the else branch. There is no choicepoint stack.</p><pre class="out" id="ctext"></pre>';
     $('p-c').innerHTML = h;
     $('ctext').textContent = c.code.length > 400000 ? c.code.slice(0, 400000) + '\n/* … truncated in view; download for the full file */' : c.code;
     $('csrc').value = which; $('csrc').onchange = e => { renderC.which = e.target.value; renderC(); };
     $('dlc').onclick = () => download(which === 'mnn' ? 'program_mnn.c' : 'program.c', c.code);
+    $('cpc').onclick = () => copyText('the C program', c.code);
   }
 
   // ---------- export ----------
@@ -4318,25 +4321,26 @@ dl_print_more([N|Ns], [V|Vs]) :- format(", ~w = ~q", [N, V]), dl_print_more(Ns, 
       ['detlog', 'Detlog (.pl)', 'The MNN-optimised Detlog with the Detlog runtime included: consult it in SWI-Prolog and run ?- detlog_run_all.'],
       ['detlog-plain', 'Plain Detlog (.pl)', 'The unoptimised Detlog, also with the runtime.'],
       ['c', 'C (.c)', 'The MNN Detlog compiled to C with its runtime.'],
-      ['prolog', 'Prolog, back-converted (.pl)', 'Detlog turned back into Prolog, with change warnings as comments.'],
+      ['prolog', 'Prolog (.pl)', 'The Detlog turned back into Prolog, with the change warnings as comments.'],
       ['proof', 'Proof report (.txt)', 'Every check, every rewrite step and the rules.'],
       ['runtime', 'Detlog runtime (.pl)', 'detlog_runtime.pl on its own.']
     ];
-    $('p-export').innerHTML = '<table><tbody>' + items.map(([k, t, d]) => '<tr><td style="width:220px"><button class="btn" data-ex="' + k + '">' + esc(t) + '</button></td><td class="hint">' + esc(d) + '</td></tr>').join('') + '</tbody></table>';
+    $('p-export').innerHTML = '<table><tbody>' + items.map(([k, t, d]) => '<tr><td style="width:260px"><div class="export"><button class="btn" data-ex="' + k + '">Save ' + esc(t) + '</button><button class="btn" data-copy="' + k + '" aria-label="Copy ' + esc(t) + '">Copy</button></div></td><td class="hint">' + esc(d) + '</td></tr>').join('') + '</tbody></table>';
     $('p-export').querySelectorAll('[data-ex]').forEach(b => b.onclick = () => doExport(b.dataset.ex));
+    $('p-export').querySelectorAll('[data-copy]').forEach(b => b.onclick = () => doExport(b.dataset.copy, true));
   }
-  function doExport(k) {
-    if (!R) return;
+  function exportFile(k) {
     switch (k) {
-      case 'html': return download('program_detlog.html', htmlExport());
-      case 'detlog': return download('program_mnn_detlog.pl', exportDetlogText(R.mnn, true));
-      case 'detlog-plain': return download('program_detlog.pl', exportDetlogText(R.plain, true));
-      case 'c': return download('program_mnn.c', cFor(R.mnn).code);
-      case 'prolog': return download('program_back.pl', backText(R.backPlain, R.changes));
-      case 'proof': return download('proof.txt', R.proof.text);
-      case 'runtime': return download('detlog_runtime.pl', document.getElementById('pl2d-rt-pl').textContent);
+      case 'html': return ['program_detlog.html', htmlExport()];
+      case 'detlog': return ['program_mnn_detlog.pl', exportDetlogText(R.mnn, true)];
+      case 'detlog-plain': return ['program_detlog.pl', exportDetlogText(R.plain, true)];
+      case 'c': return ['program_mnn.c', cFor(R.mnn).code];
+      case 'prolog': return ['program_back.pl', backText(R.backPlain, R.changes)];
+      case 'proof': return ['proof.txt', R.proof.text];
+      case 'runtime': return ['detlog_runtime.pl', document.getElementById('pl2d-rt-pl').textContent];
     }
   }
+  function doExport(k, copy) { if (!R) return; const [name, text] = exportFile(k); return copy ? copyText(name, text) : download(name, text); }
   function htmlExport() {
     const lib = document.getElementById('pl2d-lib').textContent;
     const det = exportDetlogText(R.mnn, false);
@@ -4354,12 +4358,23 @@ dl_print_more([N|Ns], [V|Vs]) :- format(", ~w = ~q", [N, V]), dl_print_more(Ns, 
       'function run(){var h="";D.queries.forEach(function(q){var r=P.runDetlog(prog,q.pred,q.vars,{});var a=r.events.map(function(e){return e.k==="out"?"<code style=\\"color:#7a3b06\\">"+esc(e.text)+"</code>":"<code>"+esc(e.text)+"</code>"}).join("<br>")||(r.error?"<b>"+esc(r.error)+"</b>":"no answers");h+="<tr><td><code>?- "+esc(q.text)+"</code></td><td>"+a+"</td><td class=n>"+r.steps+"</td><td class=n>"+r.timeMs.toFixed(3)+"</td></tr>"});document.getElementById("res").innerHTML=h}' +
       'document.getElementById("run").onclick=run;run();})();</' + S + '></body></html>\n';
   }
-  function download(name, text) {
+  // downloads: the claude.ai artifact frame offers a downloads capability; a local file uses <a download>
+  let dlCap = null;
+  try { if (window.claude && window.claude.use) dlCap = window.claude.use('downloads').catch(() => null); } catch (e) { dlCap = null; }
+  async function download(name, text) {
+    const cap = dlCap ? await Promise.race([dlCap, new Promise(r => setTimeout(() => r(null), 1500))]) : null;
+    if (cap) {
+      try { await cap.save({ filename: name, data: text }); setStatus('Saved ' + name + '.'); return; }
+      catch (e) { try { await cap.save({ filename: name, data: new Blob([text], { type: 'text/plain' }) }); setStatus('Saved ' + name + '.'); return; } catch (e2) { setStatus('Save of ' + name + ' was not completed. Use Copy instead.', true); return; } }
+    }
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' })); a.download = name; document.body.appendChild(a); a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
-    setStatus('Downloaded ' + name + '.');
+    setStatus('Downloaded ' + name + '. If nothing was saved, use Copy.');
   }
-
+  async function copyText(name, text) {
+    try { await navigator.clipboard.writeText(text); setStatus('Copied ' + name + ' (' + Math.round(text.length / 1024) + ' KB) to the clipboard.'); }
+    catch (e) { setStatus('The browser refused clipboard access for ' + name + '.', true); }
+  }
   window.PL2D_APP = { htmlExport, exportDetlogText, cFor, backText, get result() { return R; }, run };
   run();
 })();

@@ -377,9 +377,10 @@
       // --- FACTS ---
       const hasCut = cls.some(c => flatConj(c.body).some(g => D(g).t === 'a' && D(g).n === '!'));
       let memoWrap = feat.memo && inf.pure && inf.tree && n > 0 && !queryPreds.has(k);
-      const detForms = !memoWrap && detPlan.get(k);
-      const target = memoWrap ? Cmp(f + '__cpc', A.concat([Rows])) : detForms ? Cmp(f + '__cpx', A.concat([Rows])) : headCp;
-      if (detForms) { genDet(k, f, n, detForms, cls); predOut.kind = 'det-mode'; predOut.notes.push('deterministic mode (DET): runs without packets when its first argument selects one clause'); }
+      const detForms = detPlan.get(k);
+      // MEMO and DET together: p__cp tables, p__cpc is the DET wrapper, p__cpx the packet code
+      const target = detForms ? Cmp(f + '__cpx', A.concat([Rows])) : memoWrap ? Cmp(f + '__cpc', A.concat([Rows])) : headCp;
+      if (detForms) { genDet(k, f, n, detForms, cls, memoWrap ? f + '__cpc' : cpName(f)); predOut.kind = 'det-mode'; predOut.notes.push('deterministic mode (DET): runs without packets when its index argument selects one clause'); }
       if (memoWrap) {
         predOut.kind = 'memo';
         const Fd = Var('F__1'), R0 = Var('R__9');
@@ -429,8 +430,8 @@
         const inf = info.get(k); const cls = srcPreds.get(k).filter(Boolean);
         if (!inf || queryPreds.has(k) || inf.err || inf.dyn || inf.writes || !cls.length || cls.some(c => c.error)) continue;
         const [f, nS] = splitKey(k); const n = +nS;
-        if (feat.memo && inf.pure && inf.tree && n > 0) continue;
-        if (feat.s2a && inf.pure && n > 0 && s2aOf(k, f, n).ok) continue;
+        const memo = feat.memo && inf.pure && inf.tree && n > 0;
+        if (!memo && feat.s2a && inf.pure && n > 0 && s2aOf(k, f, n).ok) continue;
         const topCut = cls.some(c => flatConj(c.body).some(g => D(g).t === 'a' && D(g).n === '!'));
         let forms = cls;
         if (topCut) { const IA = []; for (let i = 0; i < n; i++) IA.push(Var('A__' + (i + 1))); forms = [cutElim(f, n, cls, IA)]; }
@@ -443,9 +444,24 @@
             const keys = forms.map(c => firstKey(D(c.head).a[j]));
             if (!keys.some(x => x === null) && new Set(keys).size === keys.length) ix = j;
           }
+          // guarded: one clause with a variable there, whose body starts with integer comparisons on that
+          // variable that fail for every other clause's (integer) key, as fib(N, F) :- N > 1, ... does
+          let guarded = -1;
+          for (let j = 0; j < n && ix < 0; j++) {
+            const keys = forms.map(c => firstKey(D(c.head).a[j]));
+            const vi = keys.map((x, i) => x === null ? i : -1).filter(i => i >= 0);
+            const ks = keys.filter(x => x !== null);
+            if (vi.length !== 1 || new Set(ks).size !== ks.length || !ks.every(x => /^n-?\d+$/.test(x))) continue;
+            const vc = forms[vi[0]], hv = D(D(vc.head).a[j]);
+            const guards = [];
+            for (const g of flatConj(vc.body)) { const gd = D(g); if (GUARDS()[kk(gd)] && termVars(gd).every(v => v === hv) && termVars(gd).length) guards.push(gd); else break; }
+            const fails = v => guards.some(gd => { const a = evalGuard(gd.a[0], hv, v), b = evalGuard(gd.a[1], hv, v); return a !== null && b !== null && !GUARDS()[kk(gd)](a, b); });
+            if (guards.length && ks.every(x => fails(+x.slice(1)))) { ix = j; guarded = vi[0]; }
+          }
           if (ix < 0) continue;
-        }
-        forms = forms.slice(); forms.ix = ix;
+          forms = forms.slice(); forms.guarded = guarded;
+        } else forms = forms.slice();
+        forms.ix = ix; forms.memo = memo;
         cand.set(k, forms);
       }
       let changed = true;
@@ -455,6 +471,8 @@
       }
       return cand;
     }
+    function GUARDS() { return GUARDS.m || (GUARDS.m = { '>/2': (a, b) => a > b, '</2': (a, b) => a < b, '>=/2': (a, b) => a >= b, '=</2': (a, b) => a <= b, '=:=/2': (a, b) => a === b, '=\\=/2': (a, b) => a !== b }); }
+    function evalGuard(t, hv, v) { t = D(t); if (t === hv) return v; if (t.t === 'n' && !t.f) return t.v; if (t.t === 'c' && t.a.length === 2 && '+-*'.includes(t.f) && t.f.length === 1) { const a = evalGuard(t.a[0], hv, v), b = evalGuard(t.a[1], hv, v); if (a === null || b === null) return null; return t.f === '+' ? a + b : t.f === '-' ? a - b : a * b; } return null; }
     function firstKey(t) { t = D(t); if (t.t === 'v') return null; if (t.t === 'c') return 'c' + t.f + '/' + t.a.length; if (t.t === 'a') return 'a' + t.n; if (t.t === 'n') return 'n' + t.v + (t.f ? 'f' : ''); if (t.t === 's') return 's' + t.v; return null; }
     function detGoalOK(g, cand) {
       g = D(g); const k = kk(g);
@@ -469,14 +487,26 @@
     // p__dr(yes, B.., _, [e(B)]).  p__dr(no, _, _, []).  p__dr(maybe, _, A.., Rows) :- p__cpx(A.., Rows).
     // p__d(X.., S): Prolog's own clause selection and body, with status yes (one answer), no (none) or
     // maybe (a first argument was unbound where several clauses could match: the packet code decides).
-    function genDet(k, f, n, forms, cls) {
+    function genDet(k, f, n, forms, cls, wrapName) {
       const ix = forms.ix || 0;
-      const st = step('DET', k, cls.map(c => c.origText).join('\n'), { clauses: forms.length, index: ix + 1 });
+      const st = step('DET', k, cls.map(c => c.origText).join('\n'), { clauses: forms.length, index: ix + 1, guarded: forms.guarded >= 0, memo: !!forms.memo });
       const mk = (p) => { const a = []; for (let i = 0; i < n; i++) a.push(Var(p + '__' + (i + 1))); return a; };
       const A = mk('A'), B = mk('B'), X = mk('X'), U = () => mk('_').map(() => Var('_'));
       const S = Var('S__0'), Rows = Var('R__0');
       const dn = f + '__d', dr = f + '__dr';
-      emit(st, Cmp(':-', [Cmp(cpName(f), A.concat([Rows])), conj([Cmp('copy_term', [list(A), list(B)]), Cmp(dn, B.concat([S])), Cmp(dr, [S].concat(B, A, [Rows]))])]), k);
+      emit(st, Cmp(':-', [Cmp(wrapName, A.concat([Rows])), conj([Cmp('copy_term', [list(A), list(B)]), Cmp(dn, B.concat([S])), Cmp(dr, [S].concat(B, A, [Rows]))])]), k);
+      if (forms.memo) {
+        // q__dm(X.., S): a tabled call, as a status: its packet (from the table) has no row, one row or more
+        //   q__dm(X.., S) :- q__cp(X.., P), q__dms(P, X.., S).
+        //   q__dms([], _.., no).   q__dms([R|Rs], X.., S) :- q__dms1(Rs, R, X.., S).
+        //   q__dms1([], e(Vs), X.., S) :- if_commit([X..] = Vs, S = yes, S = no).   q__dms1([_|_], _, _.., maybe).
+        const Pm = Var('P__1'), Rr = Var('R__1'), Rs = Var('R__2'), Vs = Var('V__1');
+        emit(st, Cmp(':-', [Cmp(f + '__dm', X.concat([S])), conj([Cmp(cpName(f), X.concat([Pm])), Cmp(f + '__dms', [Pm].concat(X, [S]))])]), k);
+        emit(st, Cmp(f + '__dms', [NIL].concat(U(), [Atom('no')])), k);
+        emit(st, Cmp(':-', [Cmp(f + '__dms', [cons(Rr, Rs)].concat(X, [S])), Cmp(f + '__dms1', [Rs, Rr].concat(X, [S]))]), k);
+        emit(st, Cmp(':-', [Cmp(f + '__dms1', [NIL, E(Vs)].concat(X, [S])), Cmp('if_commit', [eq(list(X), Vs), eq(S, Atom('yes')), eq(S, Atom('no'))])]), k);
+        emit(st, Cmp(f + '__dms1', [cons(Var('_'), Var('_')), Var('_')].concat(U(), [Atom('maybe')])), k);
+      }
       emit(st, Cmp(dr, [Atom('yes')].concat(B, U(), [list([E(list(B))])])), k);
       emit(st, Cmp(dr, [Atom('no')].concat(U(), U(), [NIL])), k);
       emit(st, Cmp(':-', [Cmp(dr, [Atom('maybe')].concat(U(), A, [Rows])), Cmp(f + '__cpx', A.concat([Rows]))]), k);
@@ -505,7 +535,10 @@
       if (forms.length === 1) body = codes[0].code;
       else {
         let chain = eq(S, Atom('no'));
-        for (let i = codes.length - 1; i >= 0; i--) chain = Cmp('if_commit', [eq(X[ix], codes[i].first), codes[i].code, chain]);
+        const g = forms.guarded >= 0 ? forms.guarded : -1;
+        // the guarded clause matches any value its guard admits, which excludes every key: it comes last
+        if (g >= 0) chain = Cmp('if_commit', [eq(X[ix], codes[g].first), codes[g].code, chain]);
+        for (let i = codes.length - 1; i >= 0; i--) if (i !== g) chain = Cmp('if_commit', [eq(X[ix], codes[i].first), codes[i].code, chain]);
         body = Cmp('if_commit', [Cmp('var', [X[ix]]), eq(S, Atom('maybe')), chain]);
       }
       emit(st, Cmp(':-', [Cmp(dn, X.concat([S])), body]), k);
@@ -533,9 +566,10 @@
       if (k === '\\+/1') return condOf(g.a[0], eq(S, Atom('no')), detSeq(rest, S, ctx), S);
       if (userPreds.has(k) || srcPreds.has(k)) {
         const as = g.t === 'c' ? g.a : [];
-        if (!rest.length) return Cmp(P.name(g) + '__d', as.concat([S]));
+        const dname = P.name(g) + (detPlan.has(k) && detPlan.get(k).memo ? '__dm' : '__d');
+        if (!rest.length) return Cmp(dname, as.concat([S]));
         const S1 = Var('S__' + (++ctx.n));
-        return conj([Cmp(P.name(g) + '__d', as.concat([S1])), Cmp('if_commit', [eq(S1, Atom('yes')), detSeq(rest, S, ctx), eq(S, S1)])]);
+        return conj([Cmp(dname, as.concat([S1])), Cmp('if_commit', [eq(S1, Atom('yes')), detSeq(rest, S, ctx), eq(S, S1)])]);
       }
       return Cmp('if_commit', [g, detSeq(rest, S, ctx), eq(S, Atom('no'))]);
     }

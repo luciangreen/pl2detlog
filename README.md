@@ -54,31 +54,49 @@ The app runs every query on four engines and checks that they all give the same 
   - `if_commit/3` is a labelled block;
   - integer arithmetic and comparisons run natively, and anything else falls back to the builtin;
   - `copy_term/2` into fresh variables is an assignment;
-  - a `member/2` generator spliced into an environment is one loop;
-  - packet loops are native loops.
+  - packet loops are native loops;
+  - a `member/2` or `permutation/2` generator spliced into an environment is one loop, fused with the row loop that consumes it. When that loop's rows are filtered by a DET predicate, the filter runs on each solution in place, and only kept rows are copied.
 
   Step counts and clause selection are those of the closure compiler, which remains the fallback. The C export compiles the same code.
-- **MNN Detlog** is the MNN-optimised code on the same engine.
+- **MNN Detlog** is the MNN-optimised code on the same engine, plus its **native tier**. A DET predicate `p__d` entered with ground inputs and fresh output variables is compiled, for that mode, from its own Detlog to a JavaScript function, roughly the C program for it:
+  - ground terms in, outputs returned;
+  - no logic variables, no trail, no unification of unbound terms;
+  - integers as raw numbers (unboxed arguments, and unboxed results where every return is an integer);
+  - direct calls between native functions;
+  - memoisation of tabled calls in a plain map.
 
-Times are the median of 5 batches after a warm-up, in Node 22. All four engines are written in JavaScript in this app.
+  Anything the analysis can't follow means no native function for that mode. Anything unexpected at run time (a non-integer in arithmetic, a zero divisor, a deep stack) bails out to the generic code, which then gives the answer or the error. The code is pure, so nothing can run twice observably. A native call counts as one step, so MNN step counts are lower than the generic code's.
 
-| query | Prolog ms | Detlog interpreter ms | interpreter vs Prolog | Detlog code ms | MNN Detlog ms | MNN Detlog vs Prolog |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `fib(18, F)` | 28.3 | 9.41 | 3.0× faster | 53.6 | 0.222 | 128× faster |
-| `numlist(1, 60, L), nrev(L, R)` | 2 | 1.18 | 1.7× faster | 13 | 0.68 | 2.9× faster |
-| `queens(6, Qs)` | 11.4 | 3.92 | 2.9× faster | 24.1 | 4.84 | 2.3× faster |
-| `pin(A, B, C)` (three spliced generators) | 0.467 | 0.404 | 1.2× faster | 3.13 | 0.007 | 67× faster |
-| `anc(X, dee)` | 0.0181 | 0.00705 | 2.6× faster | 0.0555 | 0.00448 | 4.0× faster |
-| `classify(0, C)` (cuts) | 0.00183 | 0.0016 | 1.1× faster | 0.00444 | 0.00153 | 1.2× faster |
+All times are microseconds per run, in Node 22 and `cc -O2`, recorded by `node bench/compare.js` (`bench/results.json`):
+- The JavaScript engines are warmed up and run in batches for about 300 ms each.
+- **C** (`bench/reference.c`) and **JavaScript** (`bench/reference.js`) are the same algorithms written directly by hand. They use the same order of solutions, linked lists for lists, and no memoisation.
+- **MNN compute** is MNN Detlog's run without formatting its answers as text, which is what the references measure. The other engine columns include formatting.
 
-On the eight examples (52 queries), the interpreter is faster than Prolog on every query in steady state. In the app's own per-run timing, 50 of the 52 come out faster: the other two take microseconds and fall within timer noise.
+| query | C µs | JavaScript µs | Prolog µs | Detlog interpreter µs | Detlog code µs | MNN Detlog µs | MNN compute µs | MNN compute ÷ C | MNN compute ÷ JS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `fib(18, F)` | 2.91 | 22.9 | 27,011 | 5,063 | 99,459 | 7.26 | 7.33 | 2.5× | 0.3× |
+| `fib(21, F)` | 16.8 | 98.1 | 164,235 | 24,524 | 321,823 | 6.88 | 6.00 | 0.4× | 0.1× |
+| `numlist(1, 60, L), nrev(L, R)` | 5.28 | 14.3 | 2,261 | 1,360 | 14,911 | 53.2 | 36.5 | 6.9× | 2.5× |
+| `numlist(1, 300, L), nrev(L, R)` | 162 | 289 | 84,806 | 36,963 | 360,979 | 932 | 774 | 4.8× | 2.7× |
+| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 11.1 | 28.5 | 7,452 | 217,279 | 224,215 | 426 | 197 | 18× | 6.9× |
+| `queens(6, Qs)` | 8.26 | 30.8 | 10,691 | 3,831 | 16,152 | 404 | 342 | 41× | 11× |
+| `queens(7, Qs)` | 62.5 | 371 | 83,102 | 29,715 | 141,884 | 2,502 | 2,414 | 39× | 6.5× |
+| `pin(A, B, C)` | 0.52 | 1.37 | 544 | 521 | 3,894 | 6.33 | 3.13 | 6.1× | 2.3× |
+| `anc(X, dee)` | <0.01 | 0.24 | 20.8 | 7.23 | 47.9 | 4.14 | 3.21 | — | 13× |
 
-Plain converted code is slower than Prolog because it materialises every row as a Prolog list and copies environments. MNN rewrites remove most of that cost:
-- MEMO makes `fib` O(n) instead of O(1.64ⁿ).
+**Why plain converted code is slower than Prolog.** It is Detlog's representation, not its semantics. The interpreter runs the same choicepoint-free, cut-free semantics and is faster than Prolog on these queries (except `doubles`/`total`, where its `maplist` path is slow). Converted code is slower because it materialises every answer set as a list of rows, copies environments at every call, and keeps every variable as a heap logic variable with trail entries, even in deterministic integer code.
+
+**What MNN removes.**
+- MEMO makes `fib` linear, so MNN `fib(21)` is faster than the exponential C.
 - S2A and splice turn data and independent generators into loops.
-- DET runs deterministic predicates without packets: `nrev`, `safe/1` in `queens`, and the `maplist`, `foldl`, `include` and `partition` specialisations.
+- DET and the native tier run deterministic predicates as typed functions. This covers `nrev`, `queens`'s `safe/1`, `classify` and the `maplist`, `foldl`, `include` and `partition` specialisations.
+- Fusion runs generate-and-test without building the generated packet.
 
-On the nine examples (63 queries) in steady state, MNN Detlog takes 0.86× Prolog's time (geometric mean). It is faster on every query that takes Prolog more than 25 µs, and level with it on `parse('123', N)` (24 µs). The queries where it is still slower are small nondeterministic ones (1–24 µs), where building packets costs more than Prolog's backtracking. On heavier workloads it is also faster than the compiled C export of the same MNN Detlog (`cc -O2`): `numlist(1, 300, L), nrev(L, R)` takes 26 ms against 42 ms, and `queens(7, Qs)` 52 ms against 73 ms.
+**Against hand-written code.** Apart from `fib`, which MEMO makes faster than both references, MNN Detlog's compute time is within 2.3–11× of the hand-written JavaScript and 2.5–41× of the C. The exception is `anc(X, dee)`. The C takes nanoseconds there, so MNN's cost is the fixed per-query cost of about 3 µs. The remaining gap is term allocation: each list cell is two objects, and each solution's list is built so that it can be an answer. The C export of MNN Detlog has no native tier, so it is slower than the JavaScript engine.
+
+**On all nine examples (63 queries) in steady state,** MNN Detlog takes 0.70× Prolog's time (geometric mean). The queries where it is still slower are small nondeterministic ones (1–24 µs), where building packets costs more than Prolog's backtracking.
+
+**Minimising the generated code** (`node bench/minimise.js`) would merge only 11 of 735 generated predicates (Moore-style: equal up to renaming of variables and called predicates), and 24 are forwarders. The generated predicates are not redundant as states. The redundancy is in the data flow, which fusion and the native tier remove.
 
 The sweep `fib(N, F)` for N = 2..18 fits O(1.64ⁿ) for Prolog, the interpreter and Detlog code, which is the golden ratio. MNN Detlog fits O(n).
 
@@ -122,7 +140,8 @@ Detlog2 rejects a cut inside an if-then-else branch. pl2detlog converts it with 
 | `src/engine.js`, `src/builtins.js` | reference Prolog engine (the oracle, with step and choicepoint counts) |
 | `src/convert.js` | Prolog → Detlog, plain and MNN, with proof steps |
 | `src/detlog_interp.js` | the Detlog interpreter: the cut-free program run as answer packets, without choicepoints |
-| `src/detlog_fast.js` | the deterministic engine for converted Detlog code: compiled to JavaScript source (JIT), with the closure compiler as fallback |
+| `src/detlog_fast.js` | the deterministic engine for converted Detlog code: compiled to JavaScript source (JIT), with the closure compiler as fallback, and the native tier for DET predicates |
+| `bench/` | `compare.js` against hand-written C (`reference.c`) and JavaScript (`reference.js`); `minimise.js` measures DFA minimisation of the generated code |
 | `src/detlog_engine.js` | the reference Detlog engine and the Detlog runtime |
 | `src/backconv.js` | Detlog → Prolog and change warnings |
 | `src/proof.js` | the independent proof checker |

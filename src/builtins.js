@@ -270,7 +270,8 @@
   det('min_list/2', (a, e) => { const l = arr(a[0]).map(evalArith); if (!l.length) return false; return e.unify(a[1], l.reduce((m, x) => x.v < m.v ? x : m)); });
   det('max_member/2', (a, e) => { const l = arr(a[1]); if (!l.length) return false; return e.unify(a[0], l.reduce((m, x) => compare(x, m) > 0 ? x : m)); });
   det('min_member/2', (a, e) => { const l = arr(a[1]); if (!l.length) return false; return e.unify(a[0], l.reduce((m, x) => compare(x, m) < 0 ? x : m)); });
-  det('numlist/3', (a, e) => { const lo = evalArith(a[0]).v, hi = evalArith(a[1]).v; const o = []; for (let i = lo; i <= hi; i++) o.push(Int(i)); return e.unify(a[2], list(o)); });
+  // the list is ground: its cells are marked so (copies and groundness checks of it are then O(1))
+  det('numlist/3', (a, e) => { const lo = evalArith(a[0]).v, hi = evalArith(a[1]).v; let l = P.NIL; for (let i = hi; i >= lo; i--) l = { t: 'c', f: '.', a: [Int(i), l], gr: true }; return e.unify(a[2], l); });
   det('delete/3', (a, e) => { const o = arr(a[0]).filter(x => { const m = e.trail.length; const r = e.unify(x, a[1]); e.undo(m); return !r; }); return e.unify(a[2], list(o)); });
   det('exclude_eq/3', () => false);
   det('subtract/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => !b.some(y => { const m = e.trail.length; const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o)); });

@@ -4,7 +4,7 @@
   "description": "Convert Prolog to Detlog (cut-free, choicepoint-free answer packets), with MNN optimisation, back-conversion to Prolog with change warnings, proofs, and C/HTML exports.",
   "main": "dist/pl2detlog.js",
   "bin": { "pl2detlog": "cli.js" },
-  "scripts": { "build": "node build.js", "test": "node build.js && node test/run.js && node --test test/ios.test.js", "ios": "node io/make-ios.mjs" },
+  "scripts": { "build": "node build.js", "test": "node build.js && node test/run.js && node --test test/ios.test.js test/engines.test.js", "ios": "node io/make-ios.mjs" },
   "license": "BSD-3-Clause",
   "repository": { "type": "git", "url": "https://github.com/luciangreen/pl2detlog" }
 }

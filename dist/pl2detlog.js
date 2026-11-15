@@ -1360,7 +1360,8 @@
   det('min_list/2', (a, e) => { const l = arr(a[0]).map(evalArith); if (!l.length) return false; return e.unify(a[1], l.reduce((m, x) => x.v < m.v ? x : m)); });
   det('max_member/2', (a, e) => { const l = arr(a[1]); if (!l.length) return false; return e.unify(a[0], l.reduce((m, x) => compare(x, m) > 0 ? x : m)); });
   det('min_member/2', (a, e) => { const l = arr(a[1]); if (!l.length) return false; return e.unify(a[0], l.reduce((m, x) => compare(x, m) < 0 ? x : m)); });
-  det('numlist/3', (a, e) => { const lo = evalArith(a[0]).v, hi = evalArith(a[1]).v; const o = []; for (let i = lo; i <= hi; i++) o.push(Int(i)); return e.unify(a[2], list(o)); });
+  // the list is ground: its cells are marked so (copies and groundness checks of it are then O(1))
+  det('numlist/3', (a, e) => { const lo = evalArith(a[0]).v, hi = evalArith(a[1]).v; let l = P.NIL; for (let i = hi; i >= lo; i--) l = { t: 'c', f: '.', a: [Int(i), l], gr: true }; return e.unify(a[2], l); });
   det('delete/3', (a, e) => { const o = arr(a[0]).filter(x => { const m = e.trail.length; const r = e.unify(x, a[1]); e.undo(m); return !r; }); return e.unify(a[2], list(o)); });
   det('exclude_eq/3', () => false);
   det('subtract/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => !b.some(y => { const m = e.trail.length; const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o)); });
@@ -1855,9 +1856,10 @@
       // --- FACTS ---
       const hasCut = cls.some(c => flatConj(c.body).some(g => D(g).t === 'a' && D(g).n === '!'));
       let memoWrap = feat.memo && inf.pure && inf.tree && n > 0 && !queryPreds.has(k);
-      const detForms = !memoWrap && detPlan.get(k);
-      const target = memoWrap ? Cmp(f + '__cpc', A.concat([Rows])) : detForms ? Cmp(f + '__cpx', A.concat([Rows])) : headCp;
-      if (detForms) { genDet(k, f, n, detForms, cls); predOut.kind = 'det-mode'; predOut.notes.push('deterministic mode (DET): runs without packets when its first argument selects one clause'); }
+      const detForms = detPlan.get(k);
+      // MEMO and DET together: p__cp tables, p__cpc is the DET wrapper, p__cpx the packet code
+      const target = detForms ? Cmp(f + '__cpx', A.concat([Rows])) : memoWrap ? Cmp(f + '__cpc', A.concat([Rows])) : headCp;
+      if (detForms) { genDet(k, f, n, detForms, cls, memoWrap ? f + '__cpc' : cpName(f)); predOut.kind = 'det-mode'; predOut.notes.push('deterministic mode (DET): runs without packets when its index argument selects one clause'); }
       if (memoWrap) {
         predOut.kind = 'memo';
         const Fd = Var('F__1'), R0 = Var('R__9');
@@ -1907,8 +1909,8 @@
         const inf = info.get(k); const cls = srcPreds.get(k).filter(Boolean);
         if (!inf || queryPreds.has(k) || inf.err || inf.dyn || inf.writes || !cls.length || cls.some(c => c.error)) continue;
         const [f, nS] = splitKey(k); const n = +nS;
-        if (feat.memo && inf.pure && inf.tree && n > 0) continue;
-        if (feat.s2a && inf.pure && n > 0 && s2aOf(k, f, n).ok) continue;
+        const memo = feat.memo && inf.pure && inf.tree && n > 0;
+        if (!memo && feat.s2a && inf.pure && n > 0 && s2aOf(k, f, n).ok) continue;
         const topCut = cls.some(c => flatConj(c.body).some(g => D(g).t === 'a' && D(g).n === '!'));
         let forms = cls;
         if (topCut) { const IA = []; for (let i = 0; i < n; i++) IA.push(Var('A__' + (i + 1))); forms = [cutElim(f, n, cls, IA)]; }
@@ -1921,9 +1923,24 @@
             const keys = forms.map(c => firstKey(D(c.head).a[j]));
             if (!keys.some(x => x === null) && new Set(keys).size === keys.length) ix = j;
           }
+          // guarded: one clause with a variable there, whose body starts with integer comparisons on that
+          // variable that fail for every other clause's (integer) key, as fib(N, F) :- N > 1, ... does
+          let guarded = -1;
+          for (let j = 0; j < n && ix < 0; j++) {
+            const keys = forms.map(c => firstKey(D(c.head).a[j]));
+            const vi = keys.map((x, i) => x === null ? i : -1).filter(i => i >= 0);
+            const ks = keys.filter(x => x !== null);
+            if (vi.length !== 1 || new Set(ks).size !== ks.length || !ks.every(x => /^n-?\d+$/.test(x))) continue;
+            const vc = forms[vi[0]], hv = D(D(vc.head).a[j]);
+            const guards = [];
+            for (const g of flatConj(vc.body)) { const gd = D(g); if (GUARDS()[kk(gd)] && termVars(gd).every(v => v === hv) && termVars(gd).length) guards.push(gd); else break; }
+            const fails = v => guards.some(gd => { const a = evalGuard(gd.a[0], hv, v), b = evalGuard(gd.a[1], hv, v); return a !== null && b !== null && !GUARDS()[kk(gd)](a, b); });
+            if (guards.length && ks.every(x => fails(+x.slice(1)))) { ix = j; guarded = vi[0]; }
+          }
           if (ix < 0) continue;
-        }
-        forms = forms.slice(); forms.ix = ix;
+          forms = forms.slice(); forms.guarded = guarded;
+        } else forms = forms.slice();
+        forms.ix = ix; forms.memo = memo;
         cand.set(k, forms);
       }
       let changed = true;
@@ -1933,6 +1950,8 @@
       }
       return cand;
     }
+    function GUARDS() { return GUARDS.m || (GUARDS.m = { '>/2': (a, b) => a > b, '</2': (a, b) => a < b, '>=/2': (a, b) => a >= b, '=</2': (a, b) => a <= b, '=:=/2': (a, b) => a === b, '=\\=/2': (a, b) => a !== b }); }
+    function evalGuard(t, hv, v) { t = D(t); if (t === hv) return v; if (t.t === 'n' && !t.f) return t.v; if (t.t === 'c' && t.a.length === 2 && '+-*'.includes(t.f) && t.f.length === 1) { const a = evalGuard(t.a[0], hv, v), b = evalGuard(t.a[1], hv, v); if (a === null || b === null) return null; return t.f === '+' ? a + b : t.f === '-' ? a - b : a * b; } return null; }
     function firstKey(t) { t = D(t); if (t.t === 'v') return null; if (t.t === 'c') return 'c' + t.f + '/' + t.a.length; if (t.t === 'a') return 'a' + t.n; if (t.t === 'n') return 'n' + t.v + (t.f ? 'f' : ''); if (t.t === 's') return 's' + t.v; return null; }
     function detGoalOK(g, cand) {
       g = D(g); const k = kk(g);
@@ -1947,14 +1966,26 @@
     // p__dr(yes, B.., _, [e(B)]).  p__dr(no, _, _, []).  p__dr(maybe, _, A.., Rows) :- p__cpx(A.., Rows).
     // p__d(X.., S): Prolog's own clause selection and body, with status yes (one answer), no (none) or
     // maybe (a first argument was unbound where several clauses could match: the packet code decides).
-    function genDet(k, f, n, forms, cls) {
+    function genDet(k, f, n, forms, cls, wrapName) {
       const ix = forms.ix || 0;
-      const st = step('DET', k, cls.map(c => c.origText).join('\n'), { clauses: forms.length, index: ix + 1 });
+      const st = step('DET', k, cls.map(c => c.origText).join('\n'), { clauses: forms.length, index: ix + 1, guarded: forms.guarded >= 0, memo: !!forms.memo });
       const mk = (p) => { const a = []; for (let i = 0; i < n; i++) a.push(Var(p + '__' + (i + 1))); return a; };
       const A = mk('A'), B = mk('B'), X = mk('X'), U = () => mk('_').map(() => Var('_'));
       const S = Var('S__0'), Rows = Var('R__0');
       const dn = f + '__d', dr = f + '__dr';
-      emit(st, Cmp(':-', [Cmp(cpName(f), A.concat([Rows])), conj([Cmp('copy_term', [list(A), list(B)]), Cmp(dn, B.concat([S])), Cmp(dr, [S].concat(B, A, [Rows]))])]), k);
+      emit(st, Cmp(':-', [Cmp(wrapName, A.concat([Rows])), conj([Cmp('copy_term', [list(A), list(B)]), Cmp(dn, B.concat([S])), Cmp(dr, [S].concat(B, A, [Rows]))])]), k);
+      if (forms.memo) {
+        // q__dm(X.., S): a tabled call, as a status: its packet (from the table) has no row, one row or more
+        //   q__dm(X.., S) :- q__cp(X.., P), q__dms(P, X.., S).
+        //   q__dms([], _.., no).   q__dms([R|Rs], X.., S) :- q__dms1(Rs, R, X.., S).
+        //   q__dms1([], e(Vs), X.., S) :- if_commit([X..] = Vs, S = yes, S = no).   q__dms1([_|_], _, _.., maybe).
+        const Pm = Var('P__1'), Rr = Var('R__1'), Rs = Var('R__2'), Vs = Var('V__1');
+        emit(st, Cmp(':-', [Cmp(f + '__dm', X.concat([S])), conj([Cmp(cpName(f), X.concat([Pm])), Cmp(f + '__dms', [Pm].concat(X, [S]))])]), k);
+        emit(st, Cmp(f + '__dms', [NIL].concat(U(), [Atom('no')])), k);
+        emit(st, Cmp(':-', [Cmp(f + '__dms', [cons(Rr, Rs)].concat(X, [S])), Cmp(f + '__dms1', [Rs, Rr].concat(X, [S]))]), k);
+        emit(st, Cmp(':-', [Cmp(f + '__dms1', [NIL, E(Vs)].concat(X, [S])), Cmp('if_commit', [eq(list(X), Vs), eq(S, Atom('yes')), eq(S, Atom('no'))])]), k);
+        emit(st, Cmp(f + '__dms1', [cons(Var('_'), Var('_')), Var('_')].concat(U(), [Atom('maybe')])), k);
+      }
       emit(st, Cmp(dr, [Atom('yes')].concat(B, U(), [list([E(list(B))])])), k);
       emit(st, Cmp(dr, [Atom('no')].concat(U(), U(), [NIL])), k);
       emit(st, Cmp(':-', [Cmp(dr, [Atom('maybe')].concat(U(), A, [Rows])), Cmp(f + '__cpx', A.concat([Rows]))]), k);
@@ -1983,7 +2014,10 @@
       if (forms.length === 1) body = codes[0].code;
       else {
         let chain = eq(S, Atom('no'));
-        for (let i = codes.length - 1; i >= 0; i--) chain = Cmp('if_commit', [eq(X[ix], codes[i].first), codes[i].code, chain]);
+        const g = forms.guarded >= 0 ? forms.guarded : -1;
+        // the guarded clause matches any value its guard admits, which excludes every key: it comes last
+        if (g >= 0) chain = Cmp('if_commit', [eq(X[ix], codes[g].first), codes[g].code, chain]);
+        for (let i = codes.length - 1; i >= 0; i--) if (i !== g) chain = Cmp('if_commit', [eq(X[ix], codes[i].first), codes[i].code, chain]);
         body = Cmp('if_commit', [Cmp('var', [X[ix]]), eq(S, Atom('maybe')), chain]);
       }
       emit(st, Cmp(':-', [Cmp(dn, X.concat([S])), body]), k);
@@ -2011,9 +2045,10 @@
       if (k === '\\+/1') return condOf(g.a[0], eq(S, Atom('no')), detSeq(rest, S, ctx), S);
       if (userPreds.has(k) || srcPreds.has(k)) {
         const as = g.t === 'c' ? g.a : [];
-        if (!rest.length) return Cmp(P.name(g) + '__d', as.concat([S]));
+        const dname = P.name(g) + (detPlan.has(k) && detPlan.get(k).memo ? '__dm' : '__d');
+        if (!rest.length) return Cmp(dname, as.concat([S]));
         const S1 = Var('S__' + (++ctx.n));
-        return conj([Cmp(P.name(g) + '__d', as.concat([S1])), Cmp('if_commit', [eq(S1, Atom('yes')), detSeq(rest, S, ctx), eq(S, S1)])]);
+        return conj([Cmp(dname, as.concat([S1])), Cmp('if_commit', [eq(S1, Atom('yes')), detSeq(rest, S, ctx), eq(S, S1)])]);
       }
       return Cmp('if_commit', [g, detSeq(rest, S, ctx), eq(S, Atom('no'))]);
     }
@@ -3026,16 +3061,94 @@
     function fuseGen(g1, g2, rest, slot, FAIL) {
       if (P.key(g1) !== 'builtin_rows/2' || P.key(g2) !== 'splice_extend/4') return null;
       const G = D(g1.a[0]), Pv = D(g1.a[1]);
-      if (P.key(G) !== 'member/2' || Pv.t !== 'v' || D(g2.a[0]) !== Pv) return null;
+      const gk = P.key(G);
+      if ((gk !== 'member/2' && gk !== 'permutation/2') || Pv.t !== 'v' || D(g2.a[0]) !== Pv) return null;
       const pat = P.listToArray(g2.a[1]); if (!pat || pat.length !== 1 || P.show(pat[0]) !== P.show(G) || !sameTerm(pat[0], G)) return null;
       if (rest.some(x => termVars(x).includes(Pv)) || termVars(g2.a[2]).includes(Pv) || termVars(g2.a[3]).includes(Pv) || mentioned.has(Pv)) return null;
       const generic = goal0(g1, slot, FAIL) + goal0(g2, slot, FAIL);
+      if (gk === 'permutation/2') {
+        // permutation(Xs, Ys) with Xs a proper list: the builtin's order (each element first in turn, then the
+        // permutations of the rest), each permutation unified with Ys, the environment copied, undone
+        return '{ const xs = LA(' + build(G.a[0], slot) + ');\nif (xs === null) {\n' + generic + '} else {\n' + TICK + ' ' + TICK + '\nconst y = ' + build(G.a[1], slot) + ', env = ' + build(g2.a[2], slot) + ', res = [];\n' +
+          'PERMS(xs, p => { const m = E.trail.length; if (E.unify(y, p)) { E.steps += 2; if (E.steps > E.stepLimit) OVER(E); res.push(COPY(env)); if (res.length > 1e6) throw new LIMIT("builtin_rows: infinite generator permutation/2 (no finite packet)"); } E.undo(m); });\n' +
+          'E.rowsBuilt += res.length; if (res.length > E.maxRows) E.maxRows = res.length;\n' +
+          '{ const m = E.trail.length; if (!E.unify(' + build(g2.a[3], slot) + ', LIST(res))) { E.undo(m); ' + FAIL + ' } } } }\n';
+      }
       // steps as the two goals count them: one per call and one per solution, for each of the two
       return '{ const xs = LA(' + build(G.a[1], slot) + ');\nif (xs === null) {\n' + generic + '} else {\n' + TICK + ' ' + TICK + '\nconst x = ' + build(G.a[0], slot) + ', env = ' + build(g2.a[2], slot) + ', res = [];\n' +
         'for (let i = 0; i < xs.length; i++) { const m = E.trail.length; if (E.unify(x, xs[i])) { E.steps += 2; if (E.steps > E.stepLimit) OVER(E); res.push(COPY(env)); } E.undo(m); }\n' +
         'E.rowsBuilt += res.length; if (res.length > E.maxRows) E.maxRows = res.length;\n' +
         '{ const m = E.trail.length; if (!E.unify(' + build(g2.a[3], slot) + ', LIST(res))) { E.undo(m); ' + FAIL + ' } } } }\n';
     }
+    // generator, splice and row loop in one loop:
+    //   builtin_rows(G, P), splice_extend(P, [G], e(Env), R2), loop(R2, R1)
+    // with G member/2 or permutation/2 over a proper list, loop a packet loop (no cut) whose row predicate
+    // starts by copying its row: each solution is bound in place, the row predicate runs on the environment
+    // directly (it copies it first), its rows are copied (they may hold variables bound inside the row
+    // predicate) and kept, and the binding is undone.  Same rows in the same order,
+    // with the steps the three goals count; the list of rows R2 is never built.
+    function fuseGenLoop(g1, g2, g3, rest, slot, FAIL) {
+      if (P.key(g1) !== 'builtin_rows/2' || P.key(g2) !== 'splice_extend/4') return null;
+      const G = D(g1.a[0]), Pv = D(g1.a[1]), gk = P.key(G);
+      if ((gk !== 'member/2' && gk !== 'permutation/2') || Pv.t !== 'v' || D(g2.a[0]) !== Pv) return null;
+      const pat = P.listToArray(g2.a[1]); if (!pat || pat.length !== 1 || !sameTerm(pat[0], G)) return null;
+      const R2 = D(g2.a[3]); if (R2.t !== 'v' || D(g3.a ? g3.a[0] : null) !== R2 || !g3.a || g3.a.length !== 2) return null;
+      const k3 = P.key(g3); const lcls = prog.preds.get(k3); if (!lcls) return null;
+      const sh = loopShape(k3, lcls); if (!sh || sh.cutVariant || !fname.has(sh.callKey)) return null;
+      // the row predicate's row clause must copy its row before anything else
+      const rcl = (prog.preds.get(sh.callKey) || []).find(c => isC(D(c.head).a[0], 'e', 1));
+      if (!rcl || P.key(D(P.flatConj(rcl.body)[0])) !== 'copy_term/2' || D(D(P.flatConj(rcl.body)[0]).a[0]) !== D(D(D(rcl.head).a[0]).a[0])) return null;
+      const used = rest.concat([g3.a[1]]).some(x => termVars(x).some(v => v === Pv || v === R2)) || termVars(g2.a[2]).includes(R2) || mentioned.has(Pv) || mentioned.has(R2);
+      if (used) return null;
+      const env = g2.a[2]; if (!isC(env, 'e', 1)) return null;
+      const generic = goal0(g1, slot, FAIL) + goal0(g2, slot, FAIL) + goal0(g3, slot, FAIL);
+      const rf = fname.get(sh.callKey);
+      // a DET filter as the row predicate:
+      //   r(e(W), O) :- copy_term(W, L), if_commit((q__d(As.., S), S \== maybe), if_commit(S = yes, O = [e(L)], O = []), Packet)
+      // the native q__d runs on the solution in place; only a kept row is copied.  Without a native function
+      // (or when it declines) the row predicate runs as above.
+      let filt = null;
+      { const rb = P.flatConj(rcl.body).map(D);
+        const Lr = P.listToArray(rb[0].a[1]), Ev = P.listToArray(D(env).a[0]);
+        const ic = rb[1];
+        if (rb.length === 2 && Lr && Ev && Lr.length === Ev.length && Lr.every(v => D(v).t === 'v') && P.key(ic) === 'if_commit/3') {
+          const c = P.flatConj(ic.a[0]).map(D), th = D(ic.a[1]);
+          if (c.length === 2 && c[0].t === 'c' && /__d$/.test(c[0].f) && P.key(c[1]) === '\\==/2' && D(c[1].a[0]) === D(c[0].a[c[0].a.length - 1]) && P.key(th) === 'if_commit/3') {
+            const Sv = D(c[0].a[c[0].a.length - 1]);
+            const yes = D(th.a[0]), keep = D(th.a[1]), drop = D(th.a[2]);
+            const Orow = D(D(rcl.head).a[1]);
+            const okYes = P.key(yes) === '=/2' && D(yes.a[0]) === Sv && D(yes.a[1]).t === 'a' && D(yes.a[1]).n === 'yes';
+            const okKeep = P.key(keep) === '=/2' && D(keep.a[0]) === Orow && sameTerm(keep.a[1], P.list([P.Cmp('e', [P.list(Lr)])]));
+            const okDrop = P.key(drop) === '=/2' && D(drop.a[0]) === Orow && D(drop.a[1]).t === 'a' && D(drop.a[1]).n === '[]';
+            // the call's arguments, over the loop's environment instead of the row's copy
+            const sub = new Map(Lr.map((v, i) => [D(v), Ev[i]]));
+            const subst = t => { t = D(t); if (t.t === 'v') return sub.has(t) ? sub.get(t) : null; if (t.t === 'c') { const a = t.a.map(subst); return a.includes(null) ? null : P.Cmp(t.f, a); } return t; };
+            const args = c[0].a.slice(0, -1).map(subst);
+            if (okYes && okKeep && okDrop && !args.includes(null)) filt = { k: P.key(c[0]), args };
+          }
+        } }
+      if (filt) {
+        const each = gk === 'member/2' ? '(fn) => { for (let i = 0; i < xs.length; i++) fn(xs[i]); }' : '(fn) => PERMS(xs, fn)';
+        const argsCode = filt.args.map(a => build(a, slot)).join(', ');
+        return '{ const xs = LA(' + build(G.a[1 - (gk === 'member/2' ? 0 : 1)], slot) + ');\nif (xs === null) {\n' + generic + '} else {\n' +
+          TICK + ' ' + TICK + ' ' + TICK + '\nconst x = ' + build(G.a[gk === 'member/2' ? 0 : 1], slot) + ', ev = ' + build(env, slot) + ', res = []; let ok = true, nrow = 0;\n' +
+          '(' + each + ')(y => { if (!ok) return; const m = E.trail.length; if (E.unify(x, y)) { E.steps += 4; if (E.steps > E.stepLimit) OVER(E); if (++nrow > 1e6) throw new LIMIT("builtin_rows: infinite generator ' + gk + ' (no finite packet)"); ' +
+          'const Sv = V(null); const h = NATE(' + JSON.stringify(filt.k) + ', [' + argsCode + (argsCode ? ', ' : '') + 'Sv], E);\n' +
+          'if (h === true) { E.steps += 1; if (D(Sv).n === "yes") res.push(COPY(ev)); }\n' +
+          'else { const Ov = V(null); if (!' + rf + '(ev, Ov, E)) ok = false; else { const o1 = LA(Ov); E.steps += (o1.length || 1); if (E.steps > E.stepLimit) OVER(E); for (let j = 0; j < o1.length; j++) res.push(COPY(o1[j])); } } } E.undo(m); });\n' +
+          'E.rowsBuilt += nrow; if (nrow > E.maxRows) E.maxRows = nrow;\n' +
+          'if (!ok) { ' + FAIL + ' }\n{ const m = E.trail.length; if (!E.unify(' + build(g3.a[1], slot) + ', LIST(res))) { E.undo(m); ' + FAIL + ' } } } }\n';
+      }
+      const each = gk === 'member/2'
+        ? '(fn) => { for (let i = 0; i < xs.length; i++) fn(xs[i]); }'
+        : '(fn) => PERMS(xs, fn)';
+      return '{ const xs = LA(' + build(G.a[1 - (gk === 'member/2' ? 0 : 1)], slot) + ');\nif (xs === null) {\n' + generic + '} else {\n' +
+        TICK + ' ' + TICK + ' ' + TICK + '\nconst x = ' + build(G.a[gk === 'member/2' ? 0 : 1], slot) + ', ev = ' + build(env, slot) + ', res = []; let ok = true, nrow = 0;\n' +
+        '(' + each + ')(y => { if (!ok) return; const m = E.trail.length; if (E.unify(x, y)) { E.steps += 4; if (E.steps > E.stepLimit) OVER(E); if (++nrow > 1e6) throw new LIMIT("builtin_rows: infinite generator ' + gk + ' (no finite packet)"); const Ov = V(null); if (!' + rf + '(ev, Ov, E)) ok = false; else { const o1 = LA(Ov); E.steps += (o1.length || 1); if (E.steps > E.stepLimit) OVER(E); for (let j = 0; j < o1.length; j++) res.push(COPY(o1[j])); } } E.undo(m); });\n' +
+        'E.rowsBuilt += nrow; if (nrow > E.maxRows) E.maxRows = nrow;\n' +
+        'if (!ok) { ' + FAIL + ' }\n{ const m = E.trail.length; if (!E.unify(' + build(g3.a[1], slot) + ', LIST(res))) { E.undo(m); ' + FAIL + ' } } } }\n';
+    }
+    function isC(t, f, n) { t = D(t); return t.t === 'c' && t.f === f && t.a.length === n; }
     function sameTerm(a, b) { a = D(a); b = D(b); if (a === b) return true; if (a.t !== b.t) return false; if (a.t === 'c') return a.f === b.f && a.a.length === b.a.length && a.a.every((x, i) => sameTerm(x, b.a[i])); if (a.t === 'a') return a === b; if (a.t === 'n') return a.v === b.v && a.f === b.f; if (a.t === 's') return a.v === b.v; return false; }
     function goal0(g, slot, FAIL) {
       g = D(g); const k = P.key(g);
@@ -3066,6 +3179,8 @@
       if (k === ',/2') {
         const gs = P.flatConj(g).map(D); let code = '';
         for (let i = 0; i < gs.length; i++) {
+          const f3 = i + 2 < gs.length && fuseGenLoop(gs[i], gs[i + 1], gs[i + 2], gs.slice(i + 3), slot, FAIL);
+          if (f3) { code += f3; mention(gs[i]); mention(gs[i + 1]); mention(gs[i + 2]); i += 2; continue; }
           const f = i + 1 < gs.length && fuseGen(gs[i], gs[i + 1], gs.slice(i + 2), slot, FAIL);
           if (f) { code += f; mention(gs[i]); mention(gs[i + 1]); i++; continue; }
           code += goal(gs[i], slot, FAIL);
@@ -3080,12 +3195,17 @@
       }
       if (k === '=/2') return TICK + '\n{ const m = E.trail.length; if (!E.unify(' + build(g.a[0], slot) + ', ' + build(g.a[1], slot) + ')) { E.undo(m); ' + FAIL + ' } }\n';
       const as = g.t === 'c' ? g.a.map(x => build(x, slot)) : [];
-      if (prog.preds.has(k)) return 'if (!' + fname.get(k) + '(' + as.concat(['E']).join(', ') + ')) ' + FAIL + '\n';
+      if (prog.preds.has(k)) {
+        if (/__d$/.test(g.f) && !/__d$/.test(curPred)) return '{ const h = NATE(' + JSON.stringify(k) + ', [' + as.join(', ') + '], E); if (h === undefined && !' + fname.get(k) + '(' + as.concat(['E']).join(', ') + ')) ' + FAIL + ' }\n';
+        return 'if (!' + fname.get(k) + '(' + as.concat(['E']).join(', ') + ')) ' + FAIL + '\n';
+      }
       const rb = RBf(k);
       if (rb) return TICK + '\n{ const m = E.trail.length; if (!' + rb + '([' + as.join(', ') + '], E)) { E.undo(m); ' + FAIL + ' } }\n';
       return 'throw new Error(' + JSON.stringify('Detlog engine: unknown procedure ' + k) + ');\n';
     }
+    let curPred = '';
     for (const [k, cls] of prog.preds) {
+      curPred = k.slice(0, k.lastIndexOf('/'));
       const n = arityOf(k), A = []; for (let i = 0; i < n; i++) A.push('a' + i);
       const sig = A.concat(['E']).join(', ');
       const sh = loopShape(k, cls);
@@ -3115,10 +3235,362 @@
       }
       out.push('function ' + nm + '(' + sig + ') {\n' + body + '\n}');
     }
+    // ---------------- native tier: DET predicates in functional mode ----------------
+    // A deterministic-mode predicate p__d(X1..Xn, S) entered from packet code with ground inputs ('i') and
+    // fresh, distinct output variables ('o') is compiled, for that mode, to a JS function of its inputs that
+    // returns its outputs (or NO / MAYBE): ground terms in and out, no logic variables, no trail, native
+    // integer arithmetic, direct calls between native functions.  Anything the analysis cannot follow means
+    // "no native function for this mode"; anything unexpected at run time (a non-integer in arithmetic, a
+    // zero divisor, a deep stack) throws BAIL and the generic p__d runs from the untouched arguments, so
+    // answers and errors are the generic code's.  Pure code: running it twice cannot be observed.
+    const NAT = { fns: Object.create(null), done: new Map(), seq: 0, entry: new Map() };
+    const NOPE = { nope: true };
+    const nope = () => { if (P.NATIVE_DEBUG) NAT.why = new Error().stack.split('\n')[2]; throw NOPE; };
+    function nativeFor(k, mode) {
+      const key = k + '|' + mode;
+      if (NAT.done.has(key)) return NAT.done.get(key);
+      let batch = new Map(); // key -> {name, src, intRet}
+      let fn = null;
+      // which functions return a raw integer (single output, every return an integer): a fixpoint, from none
+      const retInt = new Map();
+      try {
+        const need = (k2, m2) => {
+          const key2 = k2 + '|' + m2;
+          if (NAT.done.has(key2)) { const f = NAT.done.get(key2); if (!f) nope(); return { name: 'NF.' + f.nativeName, retInt: !!f.retInt }; }
+          if (batch.has(key2)) return { name: batch.get(key2).name, retInt: !!retInt.get(key2) };
+          const name = 'n' + (NAT.seq++);
+          const ent = { name, src: null }; batch.set(key2, ent);
+          const g = genNative(k2, m2, name, need, !!retInt.get(key2));
+          ent.src = g.src; ent.intRet = g.intRet;
+          return { name, retInt: !!retInt.get(key2) };
+        };
+        for (let pass = 0; ; pass++) {
+          batch = new Map(); need(k, mode);
+          let changed = false;
+          for (const [key2, e] of batch) { const want = e.intRet; if (want !== !!retInt.get(key2)) { if (retInt.get(key2) && !want && pass > 0) { /* an assumption failed */ } retInt.set(key2, want); changed = true; } }
+          if (!changed) break;
+          if (pass > 6) nope();
+        }
+        const names = [...batch.values()].map(e => e.name);
+        const src = '"use strict";\n' + [...batch.values()].map(e => e.src).join('\n') + '\nreturn {' + names.map(n => n + ': ' + n).join(', ') + '};';
+        const made = new Function('K', 'NF', 'H', src)(consts, NAT.fns, NH);
+        for (const [key2, e] of batch) { const f = made[e.name]; f.nativeName = e.name; f.retInt = !!retInt.get(key2); NAT.fns[e.name] = f; NAT.done.set(key2, f); }
+        fn = NAT.done.get(key);
+      } catch (e) {
+        if (e !== NOPE) throw e;
+        if (P.NATIVE_DEBUG) console.log('native refused', key, NAT.why);
+        NAT.done.set(key, null);
+      }
+      return fn;
+    }
+    function genNative(k, mode, fnName, need, selfInt) {
+      const cls = prog.preds.get(k); if (!cls || cls.length !== 1) nope();
+      const cl = P.copy(Cmp('-', [cls[0].head, cls[0].body]));
+      const head = D(cl.a[0]); const n = head.a.length - 1;
+      const S0 = D(head.a[n]); if (S0.t !== 'v') nope();
+      const jsName = new Map(); let nv = 0, nl = 0;
+      const js = v => { let x = jsName.get(v); if (!x) { x = 'v' + (nv++); jsName.set(v, x); } return x; };
+      let st = new Map(); const params = [], outs = [];
+      st.set(S0, { k: 'TOP' });
+      for (let i = 0; i < n; i++) {
+        const hv = D(head.a[i]); if (hv.t !== 'v' || st.has(hv)) nope();
+        if (mode[i] === 'i') { st.set(hv, { k: 'G', js: 'a' + i }); params.push('a' + i); }
+        else if (mode[i] === 'n') { st.set(hv, { k: 'G', js: 'a' + i, int: true }); params.push('a' + i); }
+        else { st.set(hv, { k: 'F' }); outs.push(hv); }
+      }
+      const statusLocals = new Set();
+      const get = (s, v) => s.get(v) || { k: 'F' };
+      const clone = s => new Map(s);
+      const join = (a, b) => {
+        if (!a) return b; if (!b) return a;
+        const r = new Map();
+        for (const v of new Set([...a.keys(), ...b.keys()])) {
+          const x = get(a, v), y = get(b, v);
+          if (x.k === y.k && x.js === y.js && x.t === y.t && x.set === y.set) r.set(v, x); else r.set(v, { k: 'U' });
+        }
+        return r;
+      };
+      const ATOM = { yes: 'H.YES', no: 'H.NO', maybe: 'H.MAYBE' };
+      const isStatusAtom = t => { t = D(t); return t.t === 'a' && ATOM[t.n] !== undefined; };
+      // ground values
+      const allG = (t, s) => termVars(t).every(v => { const x = get(s, v); return x.k === 'G' || (x.k === 'P' && allG(x.t, s)); });
+      const build = (t, s) => {
+        t = D(t);
+        if (t.t === 'v') { const x = get(s, t); if (x.k === 'G') return x.int ? 'H.INT(' + x.js + ')' : x.js; if (x.k === 'P') return build(x.t, s); nope(); }
+        if (t.t !== 'c') return K(t);
+        if (P.isGround(t)) { markGround(t); return K(t); }
+        return '{t: "c", f: ' + JSON.stringify(t.f) + ', a: [' + t.a.map(x => build(x, s)).join(', ') + '], gr: true}';
+      };
+      let tmp = 0;
+      // match a ground value (JS expression) against a pattern: binds fresh variables, tests the rest
+      function match(expr, pat, s, fail) {
+        pat = D(pat);
+        if (pat.t === 'v') {
+          const x = get(s, pat);
+          if (x.k === 'F') { s.set(pat, { k: 'G', js: js(pat) }); return js(pat) + ' = ' + expr + ';\n'; }
+          if (x.k === 'G') return x.int ? '{ const q = ' + expr + '; if (!(q.t === "n" && !q.f && q.v === ' + x.js + ')) ' + fail + ' }\n' : 'if (!H.EQ(' + expr + ', ' + x.js + ')) ' + fail + '\n';
+          if (x.k === 'P') return match(expr, x.t, s, fail);
+          nope();
+        }
+        const t = 't' + (tmp++);
+        if (pat.t === 'a') return 'if (' + expr + ' !== ' + K(pat) + ') ' + fail + '\n';
+        if (pat.t !== 'c') return '{ const ' + t + ' = ' + expr + '; if (!(' + keyTest(pat, t) + ')) ' + fail + ' }\n';
+        let code = '{ const ' + t + ' = ' + expr + ';\nif (' + t + '.t !== "c" || ' + t + '.f !== ' + JSON.stringify(pat.f) + ' || ' + t + '.a.length !== ' + pat.a.length + ') ' + fail + '\n';
+        pat.a.forEach((y, i) => { code += match(t + '.a[' + i + ']', y, s, fail); });
+        return code + '}\n';
+      }
+      // unification in functional mode; returns code, or null for a unification that fails statically
+      function unify(a, b, s, fail) {
+        a = D(a); b = D(b);
+        if (a === b) return '';
+        const xa = a.t === 'v' ? get(s, a) : null, xb = b.t === 'v' ? get(s, b) : null;
+        if (xa && xa.k === 'U' || xb && xb.k === 'U') nope();
+        if (xa && xa.k === 'F') {
+          // an integer stays a raw number: an integer constant, or another variable holding one
+          if (b.t === 'n' && !b.f && Number.isSafeInteger(b.v)) { s.set(a, { k: 'G', js: js(a), int: true }); return js(a) + ' = ' + b.v + ';\n'; }
+          if (xb && xb.k === 'G' && xb.int) { s.set(a, { k: 'G', js: js(a), int: true }); return js(a) + ' = ' + xb.js + ';\n'; }
+          if (allG(b, s)) { s.set(a, { k: 'G', js: js(a) }); return js(a) + ' = ' + build(b, s) + ';\n'; } if (termVars(b).includes(a)) nope(); s.set(a, { k: 'P', t: b }); return ''; }
+        if (xb && xb.k === 'F') return unify(b, a, s, fail);
+        if (xa && xa.k === 'P') return unify(xa.t, b, s, fail);
+        if (xb && xb.k === 'P') return unify(a, xb.t, s, fail);
+        if (xa && xb) {
+          if (xa.int && xb.int) return 'if (' + xa.js + ' !== ' + xb.js + ') ' + fail + '\n';
+          if (xa.int || xb.int) { const [i, t] = xa.int ? [xa, xb] : [xb, xa]; return 'if (!(' + t.js + '.t === "n" && !' + t.js + '.f && ' + t.js + '.v === ' + i.js + ')) ' + fail + '\n'; }
+          return 'if (!H.EQ(' + xa.js + ', ' + xb.js + ')) ' + fail + '\n';
+        }
+        if (xa && xa.int) return intMatch(xa.js, b, fail);
+        if (xb && xb.int) return intMatch(xb.js, a, fail);
+        if (xa) return match(xa.js, b, s, fail);
+        if (xb) return match(xb.js, a, s, fail);
+        if (a.t !== b.t) return null;
+        if (a.t === 'c') {
+          if (a.f !== b.f || a.a.length !== b.a.length) return null;
+          let code = '';
+          for (let i = 0; i < a.a.length; i++) { const c = unify(a.a[i], b.a[i], s, fail); if (c === null) return null; code += c; }
+          return code;
+        }
+        return sameTerm(a, b) ? '' : null;
+      }
+      // an integer against a pattern: only an equal integer constant unifies
+      function intMatch(v, pat, fail) {
+        pat = D(pat);
+        if (pat.t === 'n' && !pat.f) return 'if (' + v + ' !== ' + pat.v + ') ' + fail + '\n';
+        return fail + '\n';
+      }
+      // integer arithmetic on ground values; IV bails on anything but an integer
+      const OPS = { '+': '+', '-': '-', '*': '*' };
+      function arith(t, s) {
+        t = D(t);
+        if (t.t === 'n') { if (t.f || !Number.isSafeInteger(t.v)) nope(); return '(' + t.v + ')'; }
+        if (t.t === 'v') { const x = get(s, t); if (x.k !== 'G') nope(); return x.int ? x.js : 'H.IV(' + x.js + ')'; }
+        if (t.t !== 'c') nope();
+        if (t.a.length === 2) {
+          const a = arith(t.a[0], s), b = arith(t.a[1], s);
+          if (OPS[t.f]) return '(' + a + ' ' + OPS[t.f] + ' ' + b + ')';
+          if (t.f === '//') return 'H.IDIV(' + a + ', ' + b + ')';
+          if (t.f === 'mod') return 'H.IMOD(' + a + ', ' + b + ')';
+          if (t.f === 'rem') return 'H.IREM(' + a + ', ' + b + ')';
+          if (t.f === 'min') return 'Math.min(' + a + ', ' + b + ')';
+          if (t.f === 'max') return 'Math.max(' + a + ', ' + b + ')';
+          nope();
+        }
+        if (t.a.length === 1 && t.f === '-') return '(-' + arith(t.a[0], s) + ')';
+        if (t.a.length === 1 && t.f === 'abs') return 'Math.abs(' + arith(t.a[0], s) + ')';
+        nope();
+      }
+      const CMPN = { '=:=': '===', '=\\=': '!==', '<': '<', '>': '>', '=<': '<=', '>=': '>=' };
+      let intRet = outs.length === 1;
+      const RET = s => {
+        if (outs.length === 1) {
+          const x = get(s, outs[0]);
+          if (!(x.k === 'G' && x.int)) intRet = false;
+          if (selfInt) { if (!(x.k === 'G' && x.int)) nope(); return 'return ' + x.js + ';'; }
+        }
+        const vals = outs.map(v => build(v, s));
+        if (outs.length === 1) return 'return ' + vals[0] + ';';
+        return vals.map((v, i) => 'H.OUTS[' + i + '] = ' + v + ';').join(' ') + ' return H.YES;';
+      };
+      let lab = 0;
+      // compile a goal; fail is the statement run when it fails; returns { code, out } (out = state after,
+      // null when control never falls through)
+      function G(g, s, fail) {
+        g = D(g); const kk = P.key(g);
+        if (kk === ',/2') {
+          const gs = P.flatConj(g); let code = '', cur = s;
+          for (const x of gs) { if (!cur) break; const r = G(x, cur, fail); code += r.code; cur = r.out; }
+          return { code, out: cur };
+        }
+        if (kk === 'true/0') return { code: '', out: s };
+        if (kk === 'fail/0' || kk === 'false/0') return { code: fail + '\n', out: null };
+        if (kk === 'if_commit/3') {
+          const L = 'c' + (lab++), ok = 'ok' + L;
+          const rc = G(g.a[0], clone(s), 'break ' + L + ';');
+          const rt = rc.out ? G(g.a[1], rc.out, fail) : null;
+          // a condition that cannot fail (no break of its label) is just its code then the then-branch
+          if (rt && !rc.code.includes('break ' + L + ';')) return { code: rc.code + rt.code, out: rt.out };
+          const re = G(g.a[2], clone(s), fail);
+          if (!rt) return { code: rc.code === 'break ' + L + ';\n' ? re.code : L + ': {\n' + rc.code + '}\n' + re.code, out: re.out };
+          // a single test:  if (!(test)) else-branch, otherwise then-branch
+          const one = rc.code.match(new RegExp('^if \\((.*)\\) break ' + L + ';\\n$'));
+          if (one && !one[1].includes('break')) return { code: 'if (' + one[1] + ') {\n' + re.code + '} else {\n' + rt.code + '}\n', out: join(rt.out, re.out) };
+          return { code: '{ let ' + ok + ' = false;\n' + L + ': {\n' + rc.code + ok + ' = true;\n}\nif (' + ok + ') {\n' + rt.code + '} else {\n' + re.code + '}\n}\n', out: join(rt.out, re.out) };
+        }
+        if (kk === 'var/1' || kk === 'nonvar/1') {
+          const x = D(g.a[0]); const xs = x.t === 'v' ? get(s, x) : { k: 'G' };
+          if (xs.k === 'U' || xs.k === 'P') nope();
+          const isVar = xs.k === 'F';
+          return (kk === 'var/1') === isVar ? { code: '', out: s } : { code: fail + '\n', out: null };
+        }
+        if (kk === '=/2' || kk === '\\==/2' || kk === '==/2') {
+          const a = D(g.a[0]), b = D(g.a[1]);
+          const sa = a.t === 'v' && get(s, a), sb = b.t === 'v' && get(s, b);
+          const stat = x => x && (x.k === 'TOP' || x.k === 'S');
+          if (stat(sa) || stat(sb) || isStatusAtom(a) || isStatusAtom(b)) return statusGoal(kk, a, b, s, fail);
+          if (kk === '=/2') { const s2 = clone(s); const c = unify(a, b, s2, fail); if (c === null) return { code: fail + '\n', out: null }; return { code: c, out: s2 }; }
+          if (!allG(a, s) || !allG(b, s)) nope();
+          return { code: 'if (' + (kk === '==/2' ? '!' : '') + 'H.EQ(' + build(a, s) + ', ' + build(b, s) + ')) ' + fail + '\n', out: s };
+        }
+        if (kk === 'is/2') {
+          const x = D(g.a[0]), e = arith(g.a[1], s);
+          const s2 = clone(s);
+          if (x.t === 'v' && get(s, x).k === 'F') { s2.set(x, { k: 'G', js: js(x), int: true }); return { code: js(x) + ' = ' + e + ';\n', out: s2 }; }
+          return { code: 'if (' + arith(x, s) + ' !== ' + e + ') ' + fail + '\n', out: s };
+        }
+        if (CMPN[g.f] && g.t === 'c' && g.a.length === 2) return { code: 'if (!(' + arith(g.a[0], s) + ' ' + CMPN[g.f] + ' ' + arith(g.a[1], s) + ')) ' + fail + '\n', out: s };
+        // a tabled call (q__dm): the native call of q__d for that mode, memoised on its ground inputs
+        const memo = g.t === 'c' && /__dm$/.test(g.f) && prog.preds.has(g.f.slice(0, -1) + '/' + g.a.length);
+        if (memo || (g.t === 'c' && /__d$/.test(g.f) && prog.preds.has(kk))) {
+          const dk = memo ? g.f.slice(0, -1) + '/' + g.a.length : kk;
+          const as = g.a.slice(0, -1), Sx = D(g.a[g.a.length - 1]);
+          let m = ''; const ins = [], os = [];
+          for (const a of as) {
+            const ad = D(a);
+            if (ad.t === 'v' && get(s, ad).k === 'F' && !os.includes(ad)) { m += 'o'; os.push(ad); }
+            else if (ad.t === 'v' && get(s, ad).k === 'G' && get(s, ad).int) { m += 'n'; ins.push(get(s, ad).js); }
+            else if (ad.t === 'n' && !ad.f && Number.isSafeInteger(ad.v)) { m += 'n'; ins.push(String(ad.v)); }
+            else if (allG(a, s)) { m += 'i'; ins.push(build(a, s)); }
+            else nope();
+          }
+          if (os.some(v => as.filter(a => termVars(a).includes(v)).length > 1)) nope();
+          const cinfo = need(dk, m), callee = cinfo.name;
+          const r = 'r' + (lab++);
+          const s2 = clone(s); for (const v of os) s2.set(v, os.length === 1 && cinfo.retInt ? { k: 'G', js: js(v), int: true } : { k: 'G', js: js(v) });
+          const assign = os.length === 1 ? js(os[0]) + ' = ' + r + ';' : os.map((v, i) => js(v) + ' = H.OUTS[' + i + '];').join(' ');
+          let call = 'const ' + r + ' = ' + callee + '(' + ins.join(', ') + ');\n';
+          if (memo && os.length <= 1) {
+            const tb = JSON.stringify(dk + '|' + m), kv = 'k' + r;
+            call = 'const ' + kv + ' = H.KEY(' + ins.join(', ') + '); const T' + r + ' = H.TAB(' + tb + '); let ' + r + ' = T' + r + '.get(' + kv + ');\n' +
+              'if (' + r + ' === undefined) { ' + r + ' = ' + callee + '(' + ins.join(', ') + '); T' + r + '.set(' + kv + ', ' + r + '); }\n';
+          }
+          const sx = get(s, Sx);
+          if (sx.k === 'TOP') return { code: '{ ' + call + 'if (' + r + ' === H.NO || ' + r + ' === H.MAYBE) return ' + r + ';\n' + assign + '\n' + RET(s2) + ' }\n', out: null };
+          if (sx.k !== 'F') nope();
+          const sv = 's' + (nl++); statusLocals.add(sv);
+          s2.set(Sx, { k: 'S', js: sv, set: true });
+          return { code: '{ ' + call + 'if (' + r + ' === H.NO || ' + r + ' === H.MAYBE) ' + sv + ' = ' + r + '; else { ' + assign + ' ' + sv + ' = H.YES; } }\n', out: s2 };
+        }
+        nope();
+      }
+      // status variables: the top S returns; local ones are assigned once, then tested
+      function statusGoal(kk, a, b, s, fail) {
+        const val = (t, x) => isStatusAtom(t) ? ATOM[D(t).n] : x && x.k === 'S' && x.set ? x.js : null;
+        let sa = D(a).t === 'v' ? get(s, D(a)) : null, sb = D(b).t === 'v' ? get(s, D(b)) : null;
+        if (kk === '=/2') {
+          if (sb && sb.k === 'TOP') { [a, b] = [b, a]; [sa, sb] = [sb, sa]; }
+          if (sa && sa.k === 'TOP') {
+            const v = val(b, sb); if (!v) nope();
+            if (v === 'H.YES') return { code: RET(s) + '\n', out: null };
+            if (v === 'H.NO' || v === 'H.MAYBE') return { code: 'return ' + v + ';\n', out: null };
+            // after if_commit(S1 = yes, .., S = S1) the value cannot be yes, and the outputs need not exist
+            let ret; const keep = intRet; try { ret = RET(s); } catch (e) { if (e !== NOPE) throw e; ret = 'throw H.BAIL;'; intRet = keep; }
+            return { code: 'if (' + v + ' === H.YES) { ' + ret + ' }\nreturn ' + v + ';\n', out: null };
+          }
+          if (sb && (sb.k === 'F') && !(sa && sa.k === 'F')) { [a, b] = [b, a]; [sa, sb] = [sb, sa]; }
+          if (sa && sa.k === 'F') { // a fresh local status takes a value
+            const v = val(b, sb); if (!v) nope();
+            const sv = 's' + (nl++); statusLocals.add(sv);
+            const s2 = clone(s); s2.set(D(a), { k: 'S', js: sv, set: true });
+            return { code: sv + ' = ' + v + ';\n', out: s2 };
+          }
+          const va = val(a, sa), vb = val(b, sb); if (!va || !vb) nope();
+          return { code: 'if (' + va + ' !== ' + vb + ') ' + fail + '\n', out: s };
+        }
+        const va = val(a, sa), vb = val(b, sb); if (!va || !vb) nope();
+        return { code: 'if (' + va + (kk === '==/2' ? ' !== ' : ' === ') + vb + ') ' + fail + '\n', out: s };
+      }
+      const body = G(cl.a[1], st, 'throw H.BAIL;');
+      const decl = (nv ? 'let ' + [...jsName.values()].join(', ') + ';\n' : '') + (statusLocals.size ? 'let ' + [...statusLocals].join(', ') + ';\n' : '');
+      return { src: 'function ' + fnName + '(' + params.join(', ') + ') {\nif (++H.N.s > H.N.l) H.OVER();\n' + decl + body.code + 'throw H.BAIL;\n}', intRet };
+    }
+    // run-time entry from packet code: decide the mode, run the native function, bind the outputs
+    const NH = {
+      YES: { native: 'yes' }, NO: { native: 'no' }, MAYBE: { native: 'maybe' }, BAIL: { native: 'bail' }, OUTS: [], N: { s: 0, l: 0 },
+      IV: x => (x.t === 'n' && !x.f) ? x.v : bailN(),
+      IDIV: (a, b) => b === 0 ? bailN() : Math.trunc(a / b),
+      IMOD: (a, b) => { if (b === 0) return bailN(); const m = a % b; return m !== 0 && (m < 0) !== (b < 0) ? m + b : m; },
+      IREM: (a, b) => b === 0 ? bailN() : a % b,
+      INT: v => ({ t: 'n', v, f: false }),
+      EQ: eqG, OVER: () => { throw new P.LimitError('step limit exceeded'); },
+      // tables for memoised native calls: one per callee and mode, emptied at each entry from packet code
+      T: new Map(),
+      TAB: k => { let t = NH.T.get(k); if (!t) { t = new Map(); NH.T.set(k, t); } return t; },
+      KEY: function () { if (arguments.length === 1) { const x = arguments[0]; if (typeof x === 'number') return x; if (x.t === 'n' && !x.f) return x.v; } let s = ''; for (let i = 0; i < arguments.length; i++) { const x = arguments[i]; s += (typeof x === 'number' ? 'i' + x : P.variantKey(x)) + '\u0001'; } return s; },
+    };
+    function bailN() { throw NH.BAIL; }
+    // every permutation of xs, as a list, in permutation/2's order; ground lists are marked ground
+    function perms(xs, fn) {
+      const n = xs.length, ground = xs.every(x => { x = D(x); return x.t !== 'v' && (x.t !== 'c' || x.gr === true); });
+      const cur = new Array(n), used = new Array(n).fill(false);
+      const xr = xs.map(D);
+      (function rec(k) {
+        if (k === n) { let l = P.NIL; for (let i = n - 1; i >= 0; i--) l = ground ? { t: 'c', f: '.', a: [cur[i], l], gr: true } : { t: 'c', f: '.', a: [cur[i], l] }; fn(l); return; }
+        // the builtin removes the chosen element and permutes the rest in their original order
+        for (let i = 0; i < n; i++) if (!used[i]) { used[i] = true; cur[k] = xr[i]; rec(k + 1); used[i] = false; }
+      })(0);
+    }
+    function eqG(a, b) {
+      if (a === b) return true;
+      if (a.t !== b.t) return false;
+      if (a.t === 'n') return a.v === b.v && a.f === b.f;
+      if (a.t === 's') return a.v === b.v;
+      if (a.t !== 'c' || a.f !== b.f || a.a.length !== b.a.length) return false;
+      for (let i = 0; i < a.a.length; i++) if (!eqG(a.a[i], b.a[i])) return false;
+      return true;
+    }
+    const ATOMS = { yes: P.Atom('yes'), no: P.Atom('no') };
+    // returns true when the native function answered (outputs and status bound), undefined otherwise
+    function natEntry(k, args, E) {
+      if (!P.DETLOG_NATIVE) return undefined;
+      const n = args.length - 1; let mode = ''; const ins = [], outv = [];
+      for (let i = 0; i < n; i++) {
+        const x = D(args[i]);
+        if (x.t === 'v') { if (outv.includes(x)) return undefined; mode += 'o'; outv.push(x); continue; }
+        if (x.t === 'n' && !x.f) { mode += 'n'; ins.push(x.v); continue; }
+        const r = P.resolve(x);
+        if (r.t === 'c' && !r.gr) return undefined;
+        mode += 'i'; ins.push(r);
+      }
+      const S = D(args[n]); if (S.t !== 'v' || outv.includes(S)) return undefined;
+      // per predicate: mode -> native function (or null), without building a key per call
+      let byMode = NAT.entry.get(k); if (!byMode) { byMode = new Map(); NAT.entry.set(k, byMode); }
+      let fn = byMode.get(mode); if (fn === undefined) { fn = nativeFor(k, mode); byMode.set(mode, fn); }
+      if (!fn) return undefined;
+      let r;
+      NH.N.s = E.steps; NH.N.l = E.stepLimit; if (NH.T.size) NH.T.clear();
+      try { r = fn.apply(null, ins); }
+      catch (e) { E.steps = NH.N.s; if (e === NH.BAIL || e instanceof RangeError) return undefined; throw e; }
+      E.steps = NH.N.s; E.nativeCalls = (E.nativeCalls || 0) + 1;
+      if (r === NH.MAYBE) return undefined;
+      if (r === NH.NO) { E.bind(S, ATOMS.no); return true; }
+      if (outv.length === 1) E.bind(outv[0], fn.retInt ? P.Int(r) : r); else for (let i = 0; i < outv.length; i++) E.bind(outv[i], NH.OUTS[i]);
+      E.bind(S, ATOMS.yes); return true;
+    }
+    P.nativeFor = nativeFor;
+
     const src = '"use strict";\n' + out.join('\n') + '\nreturn {' + [...fname].map(([k, f]) => JSON.stringify(k) + ': ' + f).join(', ') + '};';
     const OVER = E => { throw new P.LimitError('step limit (' + E.stepLimit + ') exceeded'); };
     const BADV = { t: 'v', ref: null }; // stands for a variable that was never created (an unbound leaf)
-    const fns = new Function('K', 'RB', 'D', 'V', 'LA', 'LIST', 'OVER', 'INT', 'COPY', 'BADV', src)(consts, rbs, D, Var, listToArray, list, OVER, P.Int, P.copy, BADV);
+    const fns = new Function('K', 'RB', 'D', 'V', 'LA', 'LIST', 'OVER', 'INT', 'COPY', 'BADV', 'NATE', 'PERMS', 'LIMIT', src)(consts, rbs, D, Var, listToArray, list, OVER, P.Int, P.copy, BADV, natEntry, perms, P.LimitError);
     const preds = new Map();
     for (const [k, f] of Object.entries(fns)) preds.set(k, { k, fn: (args, E) => f(...args, E), pos: f });
     return { preds, src, jit: true };
@@ -3135,6 +3607,7 @@
     return f;
   }
   P.jitCompile = jitCompile;
+  if (P.DETLOG_NATIVE === undefined) P.DETLOG_NATIVE = true;
 
   // same interface and result shape as runDetlog
   function runDetlogFast(prog, qpred, varNames, opts) {

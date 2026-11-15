@@ -95,6 +95,8 @@ All times are microseconds per run, in Node 22 and `cc -O2`, recorded by `node b
 
 **Against hand-written code.** Apart from `fib`, which MEMO makes faster than both references, MNN Detlog's C export is within 2.9–16× of the hand-written C, and the JIT within 2.6–9× of the hand-written JavaScript. The exception is `anc(X, dee)`: its C takes nanoseconds, and MNN's cost is the fixed per-query cost of 2–3 µs. The remaining gap is term allocation: a C term is a 72-byte cell, and every solution of `permutation/2` is built as a list so that it can be an answer.
 
+**In the app**, the results show **% of C's speed**: the same algorithm's time written by hand in C, over MNN Detlog's time (100% is as fast as C). It appears per query and as a mean, for the benchmark algorithms, and only when the reference's answers are exactly the program's. The app can't compile C, so it times the hand-written JavaScript in the browser and scales that by the C ÷ JavaScript ratio measured for that algorithm (`src/cref.js`). The C tab gives the C export's measured %.
+
 **The C export** has the same native tier as the JIT. The JS engine runs the queries once, and every (predicate, mode) its native tier compiled is compiled to C as well: `long long` integers, outputs through pointers, `longjmp` to bail out, memo tables keyed by integers. It also has the JIT's generate-and-test fusion. Its runtime allocates a compound in one block, shares ground subterms when copying, and clears the memo table in proportion to what was stored.
 
 **On all nine examples (63 queries) in steady state,** MNN Detlog takes 0.70× Prolog's time (geometric mean). The queries where it is still slower are small nondeterministic ones (1–24 µs), where building packets costs more than Prolog's backtracking.
@@ -145,6 +147,7 @@ Detlog2 rejects a cut inside an if-then-else branch. pl2detlog converts it with 
 | `src/detlog_interp.js` | the Detlog interpreter: the cut-free program run as answer packets, without choicepoints |
 | `src/detlog_fast.js` | the deterministic engine for converted Detlog code: compiled to JavaScript source (JIT), with the closure compiler as fallback, and the native tier for DET predicates |
 | `src/native.js` | the native tier's compiler, shared by the JIT (JavaScript) and the C export (C) |
+| `src/cref.js` | the benchmark algorithms written by hand, for the app's % of C's speed |
 | `bench/` | `compare.js` against hand-written C (`reference.c`) and JavaScript (`reference.js`); `minimise.js` measures DFA minimisation of the generated code |
 | `src/detlog_engine.js` | the reference Detlog engine and the Detlog runtime |
 | `src/backconv.js` | Detlog → Prolog and change warnings |

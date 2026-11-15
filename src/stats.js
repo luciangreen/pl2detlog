@@ -138,6 +138,11 @@
         r.interp.ms = timeIt(() => P.runDetlogInterp(res.plain, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
         r.plain.ms = timeIt(() => P.runDetlogFast(progPlain, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
         r.mnn.ms = timeIt(() => P.runDetlogFast(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 })).ms;
+        // against the same algorithm written by hand: MNN Detlog's computation alone, as the reference measures
+        if (P.cReference && !r.mnn.error) {
+          r.cref = P.cReference(q.text, r.mnn.events);
+          if (r.cref) r.mnn.computeMs = timeIt(() => P.runDetlogFast(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20, noDecode: true })).ms;
+        }
       }
       return r;
     };

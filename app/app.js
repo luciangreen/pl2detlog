@@ -94,19 +94,19 @@
       '<div><b class="' + (same === runs.length ? 'good' : 'badc') + '">' + same + ' / ' + runs.length + '</b><span>queries with identical answer packets in all engines</span></div>' +
       '<div><b class="' + (pf.ok ? 'good' : 'badc') + '">' + (pf.ok ? 'Proved' : pf.fails + ' failed') + '</b><span>' + pf.checks.length + ' proof checks' + (pf.warns ? ', ' + pf.warns + ' with warnings' : '') + '</span></div>' +
       '<div>' + (plt && itt ? cmp(plt, itt, 'time', 'Detlog interpreter', ms(itt) + ' vs ' + ms(plt) + ' ms') : cmp(pl, it, 'steps', 'Detlog interpreter', fmt(it) + ' vs ' + fmt(pl))) + '</div>' +
-      '<div>' + (plt && mnt ? cmp(plt, mnt, 'time', 'MNN Detlog', ms(mnt) + ' vs ' + ms(plt) + ' ms') : cmp(pl, mn, 'steps', 'MNN Detlog', fmt(mn) + ' vs ' + fmt(pl))) + '</div></div>';
-    h += '<h3>Answers and cost per query</h3><div class="scroll"><table><thead><tr><th rowspan="2">Query</th><th rowspan="2">Answer packet</th><th colspan="3" style="text-align:center">Prolog</th><th colspan="2" style="text-align:center">Detlog interpreter</th><th colspan="2" style="text-align:center">Detlog code</th><th colspan="3" style="text-align:center">MNN Detlog</th></tr>' +
-      '<tr><th class="num">steps</th><th class="num">ms</th><th class="num">choice­points</th><th class="num">steps</th><th class="num">ms</th><th class="num">steps</th><th class="num">ms</th><th class="num">steps</th><th class="num">ms</th><th class="num">decisions</th></tr></thead><tbody>';
+      '<div>' + (plt && mnt ? cmp(plt, mnt, 'time', 'MNN Detlog', ms(mnt) + ' vs ' + ms(plt) + ' ms') : cmp(pl, mn, 'steps', 'MNN Detlog', fmt(mn) + ' vs ' + fmt(pl))) + '</div>' + cVerdict(runs) + '</div>';
+    h += '<h3>Answers and cost per query</h3><div class="scroll"><table><thead><tr><th rowspan="2">Query</th><th rowspan="2">Answer packet</th><th colspan="3" style="text-align:center">Prolog</th><th colspan="2" style="text-align:center">Detlog interpreter</th><th colspan="2" style="text-align:center">Detlog code</th><th colspan="4" style="text-align:center">MNN Detlog</th></tr>' +
+      '<tr><th class="num">steps</th><th class="num">ms</th><th class="num">choice­points</th><th class="num">steps</th><th class="num">ms</th><th class="num">steps</th><th class="num">ms</th><th class="num">steps</th><th class="num">ms</th><th class="num">decisions</th><th class="num" title="C\'s time for the same algorithm written by hand, over MNN Detlog\'s time">% of C\'s speed</th></tr></thead><tbody>';
     for (const r of runs) {
       h += '<tr><td class="q">' + esc(r.query) + ' ' + (r.same ? '<span class="badge ok">same</span>' : '<span class="badge bad">differs</span>') + '</td><td>' + packetHtml(r.prolog) +
         (r.same ? '' : '<div class="hint" style="margin-top:4px">Interpreter:</div>' + packetHtml(r.interp) + '<div class="hint">Detlog code:</div>' + packetHtml(r.plain) + '<div class="hint">MNN:</div>' + packetHtml(r.mnn)) + '</td>' +
         '<td class="num">' + fmt(r.prolog.steps) + '</td><td class="num">' + ms(r.prolog.ms) + '</td><td class="num">' + fmt(r.prolog.cps) + '</td>' +
         '<td class="num">' + fmt(r.interp.steps) + '</td><td class="num">' + msCmp(r.interp.ms, r.prolog.ms) + '</td>' +
         '<td class="num">' + fmt(r.plain.steps) + '</td><td class="num">' + msCmp(r.plain.ms, r.prolog.ms) + '</td>' +
-        '<td class="num">' + fmt(r.mnn.steps) + '</td><td class="num">' + msCmp(r.mnn.ms, r.prolog.ms) + '</td><td class="num">' + fmt(r.mnn.decisions) + (r.mnn.memoHits ? '<div class="hint">' + fmt(r.mnn.memoHits) + ' memo hits</div>' : '') + '</td></tr>';
+        '<td class="num">' + fmt(r.mnn.steps) + '</td><td class="num">' + msCmp(r.mnn.ms, r.prolog.ms) + '</td><td class="num">' + fmt(r.mnn.decisions) + (r.mnn.memoHits ? '<div class="hint">' + fmt(r.mnn.memoHits) + ' memo hits</div>' : '') + '</td><td class="num">' + pctCell(r) + '</td></tr>';
     }
     h += '</tbody></table></div>';
-    h += '<p class="hint">The Detlog interpreter runs the cut-free program as answer packets: clauses compiled once, heads matched without copying, a callee\'s packet spliced into the conjunction row by row, and no choicepoint ever created. Detlog code is the converted p__cp program on the deterministic engine (and in the C export). A step is one goal call or one packet row; Prolog choicepoints are the alternatives it created. Times faster than Prolog are shown in green. Both Prolog and Detlog run on engines written in this app.' + (R.plain.report.length || R.mnn.report.length ? ' MNN S2A tables are computed at conversion time (' + ms(R.convertMnnMs) + ' ms in total).' : '') + '</p>';
+    h += '<p class="hint">The Detlog interpreter runs the cut-free program as answer packets: clauses compiled once, heads matched without copying, a callee\'s packet spliced into the conjunction row by row, and no choicepoint ever created. Detlog code is the converted p__cp program on the deterministic engine (and in the C export). A step is one goal call or one packet row; Prolog choicepoints are the alternatives it created. Times faster than Prolog are shown in green. Both Prolog and Detlog run on engines written in this app. <b>% of C\'s speed</b> is C\'s time for the same algorithm written by hand, over MNN Detlog\'s time without formatting its answers: 100% is as fast as C, and above 100% is faster. The app can\'t compile C, so C\'s time is estimated: the hand-written JavaScript version is timed here and scaled by C\'s time over JavaScript\'s for that algorithm (measured with <code>cc -O2</code> and Node). It is shown only for the benchmark algorithms (<code>fib</code>, <code>nrev</code>, <code>doubles</code>/<code>total</code>, <code>queens</code>, <code>pin</code>, <code>anc</code>), and only when their answers are exactly the program\'s. The C tab gives the C export\'s measured %.' + (R.plain.report.length || R.mnn.report.length ? ' MNN S2A tables are computed at conversion time (' + ms(R.convertMnnMs) + ' ms in total).' : '') + '</p>';
     h += '<h3>Steps per query <span class="hint">(log scale)</span></h3>' + legend() + '<div class="chart" id="ch-steps"></div>';
     if (R.sweep) {
       const f = R.sweep.fit;
@@ -125,6 +125,21 @@
     $('p-stats').innerHTML = h;
     barChart($('ch-steps'), runs.map(r => ({ label: r.query, vals: [r.prolog.steps, r.plain.steps, r.mnn.steps, r.interp.steps] })));
     if (R.sweep) lineChart($('ch-sweep'), R.sweep.points.map(p => ({ x: p.n, vals: [p.prolog.error ? null : p.prolog.steps, p.plain.error ? null : p.plain.steps, p.mnn.error ? null : p.mnn.steps, p.interp.error ? null : p.interp.steps] })));
+  }
+  // % of C's speed: C's time for the hand-written algorithm over MNN Detlog's computation time
+  const us = m => { const u = m * 1000; return (u >= 100 ? Math.round(u).toLocaleString() : u >= 1 ? u.toFixed(1) : u.toFixed(3)) + ' µs'; };
+  const sig3 = v => v >= 100 ? Math.round(v).toLocaleString() : String(+v.toPrecision(3));
+  const pctOf = r => r.cref && r.mnn.computeMs ? 100 * r.cref.cMs / r.mnn.computeMs : null;
+  const pctFmt = x => (x >= 100 ? Math.round(x).toLocaleString() : x >= 10 ? x.toFixed(0) : x >= 1 ? x.toFixed(1) : x.toFixed(2)) + '%';
+  function pctCell(r) {
+    const x = pctOf(r); if (x === null) return '<span class="hint" title="no hand-written reference for this query">—</span>';
+    return '<span' + (x >= 100 ? ' style="color:var(--ok);font-weight:600"' : '') + ' title="C ≈ ' + us(r.cref.cMs) + ' (hand-written JavaScript ' + us(r.cref.jsMs) + ' × ' + r.cref.ratio + '); MNN Detlog ' + us(r.mnn.computeMs) + '">' + pctFmt(x) + '</span>';
+  }
+  function cVerdict(runs) {
+    const xs = runs.map(pctOf).filter(x => x !== null);
+    if (!xs.length) return '';
+    const g = Math.exp(xs.reduce((s, x) => s + Math.log(x), 0) / xs.length);
+    return '<div><b' + (g >= 100 ? ' class="good"' : '') + '>' + pctFmt(g) + '</b><span>of C\'s speed: MNN Detlog against the algorithm written by hand in C' + (xs.length > 1 ? ' (mean of ' + xs.length + ' queries)' : '') + '</span></div>';
   }
   const val = v => v === undefined ? '—' : v;
   const msCmp = (x, p) => x == null ? '—' : (p && x < p ? '<span style="color:var(--ok);font-weight:600">' + ms(x) + '</span>' : ms(x));
@@ -307,6 +322,10 @@
     let c; try { c = cFor(conv); } catch (e) { $('p-c').innerHTML = '<div class="errbox">' + esc(e.message) + '</div>'; return; }
     let h = '<div class="row-actions"><label>From <select id="csrc"><option value="mnn">MNN Detlog</option><option value="plain">Detlog</option></select></label><button class="btn" id="dlc">Save .c</button><button class="btn" id="cpc">Copy</button><span class="hint">Build with <code>cc -O2 -o prog prog.c -lm</code>, run <code>./prog</code>, time with <code>./prog -r 1000</code>.</span></div>';
     if (c.warnings.length) h += '<div class="errbox">' + esc(c.warnings.join('\n')) + '</div>';
+    const rec = (R.queries || []).map(q => q.trim().replace(/\.\s*$/, '')).filter(q => P.C_EXPORT_RECORDED && P.C_EXPORT_RECORDED[q]);
+    if (rec.length) h += '<h3>Speed of the C export, as % of C\'s speed</h3><div class="scroll"><table><thead><tr><th>Query</th><th class="num">hand-written C µs</th><th class="num">MNN Detlog in C µs</th><th class="num">% of C\'s speed</th></tr></thead><tbody>' +
+      rec.map(q => { const x = P.C_EXPORT_RECORDED[q], p = 100 * x.c / x.mnnC; return '<tr><td class="q">' + esc(q) + '</td><td class="num">' + (x.c < 0.01 ? '&lt;0.01' : sig3(x.c)) + '</td><td class="num">' + sig3(x.mnnC) + '</td><td class="num"' + (p >= 100 ? ' style="color:var(--ok);font-weight:600"' : '') + '>' + pctFmt(p) + '</td></tr>'; }).join('') +
+      '</tbody></table></div><p class="hint">Measured with <code>cc -O2</code> on one machine (<code>bench/compare.js</code>), for the example programs\' benchmark queries: the C export runs with <code>./prog -r N</code>, the hand-written C is <code>bench/reference.c</code>. Times on your machine will differ; the percentages are what to compare.</p>';
     h += '<p class="hint">One C function per Detlog predicate selects its clause by the first argument and commits to it; if_commit/3 is a trail mark, the condition, and an undo before the else branch. There is no choicepoint stack.</p><pre class="out" id="ctext"></pre>';
     $('p-c').innerHTML = h;
     $('ctext').textContent = c.code.length > 400000 ? c.code.slice(0, 400000) + '\n/* … truncated in view; download for the full file */' : c.code;

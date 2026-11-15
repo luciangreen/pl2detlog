@@ -13,9 +13,8 @@
     this.out = ''; this.stepLimit = opts.stepLimit || 2e7; this.memo = new Map(); this.memoHits = 0; this.memoStores = 0;
     this.globals = new Map(); this.rowsBuilt = 0; this.maxRows = 0;
     this.depth = 0;
-    // index clauses by first-argument functor
-    this.index = new Map();
-    for (const [k, cls] of prog.preds) this.index.set(k, cls);
+    // clauses by predicate key (the program's own map: nothing to build per run)
+    this.index = prog.preds;
   }
   DetEngine.prototype.bind = function (v, t) { v.ref = t; this.trail.push(v); };
   DetEngine.prototype.undo = function (mark) { const tr = this.trail; while (tr.length > mark) tr.pop().ref = null; };
@@ -117,6 +116,18 @@
     e.rowsBuilt += all.length;
     return e.unify(a[1], list(all, ls[ls.length - 1]));
   });
+  // Rows are renamed apart by copying.  When the instantiated result is ground there is nothing to rename:
+  // unify in place, resolve, undo.  NO = the unification failed; null = not ground (copy as before).
+  const NO = {};
+  const isG = r => r.t !== 'v' && (r.t !== 'c' || r.gr === true);
+  // One pass: unify the pattern with the row in place, copy the instantiated output (copy dereferences bindings
+  // and renames what is still unbound, so the result shares no variable with the environment), undo.
+  // A variable private to the row is renamed too, which no answer can observe.
+  function groundRow(e, pat, val, out) {
+    const mk = e.trail.length; let r = NO;
+    if (e.unify(pat, val)) r = copy(out);
+    e.undo(mk); return r;
+  }
   // splice_extend(Packet, Pattern, e(Env), Out)
   R('splice_extend/4', (a, e) => {
     const res = [];
@@ -124,6 +135,9 @@
       e.tick();
       const x = D(it);
       if (isOut(x) || isCut(x)) { res.push(x); continue; }
+      const g = groundRow(e, a[1], x.a[0], a[2]);
+      if (g === NO) continue;
+      if (g !== null) { res.push(g); continue; }
       const c = copy(Cmp('-', [a[1], a[2]]));
       const mk = e.trail.length;
       if (e.unify(c.a[0], x.a[0])) res.push(P.resolve(c.a[1]));
@@ -139,6 +153,9 @@
       e.tick();
       const x = D(it);
       if (isOut(x) || isCut(x)) { res.push(x); continue; }
+      const g = groundRow(e, a[1], x.a[0], a[2]);
+      if (g === NO) continue;
+      if (g !== null) { res.push(Cmp('e', [g])); continue; }
       const c = copy(Cmp('-', [a[1], a[2]]));
       const mk = e.trail.length;
       if (e.unify(c.a[0], x.a[0])) res.push(Cmp('e', [P.resolve(c.a[1])]));
@@ -152,6 +169,9 @@
     for (const it of items(a[0])) {
       e.tick();
       const x = D(it); if (!isRow(x)) continue;
+      const g = groundRow(e, a[1], x, a[2]);
+      if (g === NO) continue;
+      if (g !== null) { res.push(g); continue; }
       const c = copy(Cmp('-', [a[1], a[2]]));
       const mk = e.trail.length;
       if (e.unify(c.a[0], x)) res.push(P.resolve(c.a[1]));
@@ -252,29 +272,36 @@
     return true;
   });
   // s2a_rows(s2a(K, Cols), Args, Rows)
+  // the specification is a constant of the program: it is decoded once (per specification term), and its
+  // table of values is built once, so a call costs one unification per candidate row
+  const s2aCache = new WeakMap();
+  function s2aDecode(spec) {
+    let d = s2aCache.get(spec); if (d) return d;
+    const K = D(spec.a[0]).v; const cols = items(spec.a[1]).map(D);
+    const dec = cols.map(c => c.f === 'const' ? { k: 'const', v: c.a[0] } : c.f === 'data' ? { k: 'data', vs: items(c.a[0]) } : { k: 'newton', ds: items(c.a[0]).map(x => D(x).v) });
+    const val = (c, I) => { if (c.k === 'const') return c.v; if (c.k === 'data') return c.vs[I]; let s = 0; for (let j = 0; j < c.ds.length; j++) s += c.ds[j] * binom(I, j); return Int(s); };
+    const rows = []; for (let I = 0; I < K; I++) { const r = list(dec.map(c => val(c, I))); markGr(r); rows.push(r); }
+    d = { K, dec, rows }; s2aCache.set(spec, d); return d;
+  }
+  function markGr(t) { t = D(t); if (t.t === 'c') { if (P.isGround(t)) { (function m(x) { x = D(x); if (x.t === 'c' && !x.gr) { x.gr = true; x.a.forEach(m); } })(t); } } }
   R('s2a_rows/3', (a, e) => {
-    const spec = D(a[0]); const K = D(spec.a[0]).v; const cols = items(spec.a[1]).map(D); const args = items(a[1]);
-    const val = (c, I) => {
-      if (c.f === 'const') return c.a[0];
-      if (c.f === 'data') return items(c.a[0])[I];
-      const ds = items(c.a[0]).map(x => D(x).v); let s = 0; for (let d = 0; d < ds.length; d++) s += ds[d] * binom(I, d); return Int(s);
-    };
+    const spec = D(a[0]); const { K, dec, rows } = s2aDecode(spec); const args = items(a[1]);
     // direct solve on a bound linear column
     let only = null;
-    for (let j = 0; j < cols.length; j++) {
-      const c = cols[j], x = D(args[j]);
-      if (c.f === 'newton' && x.t === 'n' && !x.f) {
-        const ds = items(c.a[0]).map(y => D(y).v);
+    for (let j = 0; j < dec.length; j++) {
+      const c = dec[j], x = D(args[j]);
+      if (c.k === 'newton' && x.t === 'n' && !x.f) {
+        const ds = c.ds;
         if (ds.length === 2 && ds[1] !== 0) { const q = (x.v - ds[0]) / ds[1]; only = Number.isInteger(q) && q >= 0 && q < K ? [q] : []; break; }
       }
     }
-    const idx = only || Array.from({ length: K }, (_, i) => i);
-    const res = [];
-    for (const I of idx) {
+    const res = []; const al = a[1]; const n = only ? only.length : K;
+    for (let i = 0; i < n; i++) {
+      const I = only ? only[i] : i;
       e.tick();
-      const row = cols.map(c => val(c, I));
-      const c = copy(list(args)); const mk = e.trail.length;
-      if (e.unify(c, list(row))) res.push(Cmp('e', [P.resolve(c)]));
+      // one pass: unify the arguments with the row in place, copy them (renaming what stays unbound), undo
+      const mk = e.trail.length;
+      if (e.unify(al, rows[I])) res.push(Cmp('e', [copy(al)]));
       e.undo(mk);
     }
     return e.unify(a[2], list(res));

@@ -158,6 +158,7 @@ details > summary { cursor: pointer; font-weight: 600; }
           <label><input type="checkbox" id="o-splice" checked> splice generators</label>
           <label><input type="checkbox" id="o-s2a" checked> S2A unfold</label>
           <label><input type="checkbox" id="o-memo" checked> memoise</label>
+          <label><input type="checkbox" id="o-det" checked> deterministic mode</label>
         </div>
         <div>
           <div class="fieldlabel" style="margin-bottom:4px">Complexity sweep <span class="hint">— a query with N, run for each value</span></div>
@@ -1716,6 +1717,8 @@ details > summary { cursor: pointer; font-weight: 600; }
     const mnn = !!opts.mnn;
     const feat = { fuse: opts.fuse !== false, // det_prefix, effect_prefix, ite_det, neg_det are detlog2's standard goal rules (plain and MNN)
       scan: opts.scan !== false, // ite_scan/neg_scan: a committed member/2 condition is a first-match scan (plain and MNN)
+      factScan: mnn && opts.scan !== false, // ite_scan over a predicate of facts (MNN)
+      det: mnn && opts.det !== false, // DET: output-free predicates with first-argument-exclusive clauses run without packets
       splice: mnn && opts.splice !== false, s2a: mnn && opts.s2a !== false, memo: mnn && opts.memo !== false };
     const prog = typeof src === 'string' ? P.loadProgram(src) : src;
     const out = { mode: mnn ? 'mnn' : 'plain', preds: [], clauses: [], steps: [], warnings: [], errors: [], report: [], feat, specs: [], queries: [] };
@@ -1997,6 +2000,11 @@ details > summary { cursor: pointer; font-weight: 600; }
     function restoreNames(a, b) { /* copy keeps names already */ }
 
     const s2aDone = new Map();
+    // S2A tables are computed once: the DET analysis needs to know which predicates become loops
+    const s2aCache = new Map();
+    const s2aOf = (k, f, n) => { if (!s2aCache.has(k)) s2aCache.set(k, s2aTable(prog, f, n, opts.s2aMax || 1000)); return s2aCache.get(k); };
+    const detPlan = feat.det ? planDet() : new Map();
+    const factRowsUsed = new Set(); // facts predicates scanned by ite_scan: their table p__rows/1 is emitted
     out.ir = new Map(); // the cut-free source the Detlog interpreter runs: normalised clauses, rule CUT applied
     for (const k of order) {
       const cls = srcPreds.get(k).filter(Boolean);
@@ -2030,7 +2038,7 @@ details > summary { cursor: pointer; font-weight: 600; }
       }
       // --- MNN S2A unfold ---
       if (feat.s2a && inf.pure && n > 0 && !queryPreds.has(k)) {
-        const tab = s2aTable(prog, f, n, opts.s2aMax || 1000);
+        const tab = s2aOf(k, f, n);
         if (tab.ok) {
           const spec = s2aSpec(tab.rows, n);
           predOut.kind = 's2a';
@@ -2044,7 +2052,9 @@ details > summary { cursor: pointer; font-weight: 600; }
       // --- FACTS ---
       const hasCut = cls.some(c => flatConj(c.body).some(g => D(g).t === 'a' && D(g).n === '!'));
       let memoWrap = feat.memo && inf.pure && inf.tree && n > 0 && !queryPreds.has(k);
-      const target = memoWrap ? Cmp(f + '__cpc', A.concat([Rows])) : headCp;
+      const detForms = !memoWrap && detPlan.get(k);
+      const target = memoWrap ? Cmp(f + '__cpc', A.concat([Rows])) : detForms ? Cmp(f + '__cpx', A.concat([Rows])) : headCp;
+      if (detForms) { genDet(k, f, n, detForms, cls); predOut.kind = 'det-mode'; predOut.notes.push('deterministic mode (DET): runs without packets when its first argument selects one clause'); }
       if (memoWrap) {
         predOut.kind = 'memo';
         const Fd = Var('F__1'), R0 = Var('R__9');
@@ -2081,6 +2091,128 @@ details > summary { cursor: pointer; font-weight: 600; }
         emit(st, Cmp(':-', [target, conj(work.map((c, i) => Cmp(f + '__c' + (i + 1), A.concat([Rs[i]]))).concat([Cmp(marks ? 'rows_cut_concat' : 'rows_concat', [list(Rs), Rows])]))]), k);
         work.forEach((c, i) => { const Ri = Var('R__0'); genClausePacket(c, Cmp(f + '__c' + (i + 1), A.concat([Ri])), A, Ri, k, f + '__c' + (i + 1), false); });
       }
+    }
+
+    // ----- DET: deterministic mode -----
+    // A predicate qualifies when it writes nothing, is not dynamic, is not tabled (MEMO) or unfolded (S2A),
+    // its clauses (after rule CUT) are one clause or are told apart by distinct non-variable first arguments,
+    // and every body goal is true/fail, a deterministic builtin, a call of a qualifying predicate, or
+    // ( C -> T ; F ) / \+ C with C a conjunction of deterministic builtins.  Greatest fixpoint over calls.
+    function planDet() {
+      const cand = new Map();
+      for (const k of order) {
+        const inf = info.get(k); const cls = srcPreds.get(k).filter(Boolean);
+        if (!inf || queryPreds.has(k) || inf.err || inf.dyn || inf.writes || !cls.length || cls.some(c => c.error)) continue;
+        const [f, nS] = splitKey(k); const n = +nS;
+        if (feat.memo && inf.pure && inf.tree && n > 0) continue;
+        if (feat.s2a && inf.pure && n > 0 && s2aOf(k, f, n).ok) continue;
+        const topCut = cls.some(c => flatConj(c.body).some(g => D(g).t === 'a' && D(g).n === '!'));
+        let forms = cls;
+        if (topCut) { const IA = []; for (let i = 0; i < n; i++) IA.push(Var('A__' + (i + 1))); forms = [cutElim(f, n, cls, IA)]; }
+        // the index argument: the first position where every clause has a distinct non-variable key
+        let ix = 0;
+        if (forms.length > 1) {
+          if (!n) continue;
+          ix = -1;
+          for (let j = 0; j < n && ix < 0; j++) {
+            const keys = forms.map(c => firstKey(D(c.head).a[j]));
+            if (!keys.some(x => x === null) && new Set(keys).size === keys.length) ix = j;
+          }
+          if (ix < 0) continue;
+        }
+        forms = forms.slice(); forms.ix = ix;
+        cand.set(k, forms);
+      }
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const [k, forms] of cand) if (!forms.every(c => detGoalOK(c.body, cand))) { cand.delete(k); changed = true; }
+      }
+      return cand;
+    }
+    function firstKey(t) { t = D(t); if (t.t === 'v') return null; if (t.t === 'c') return 'c' + t.f + '/' + t.a.length; if (t.t === 'a') return 'a' + t.n; if (t.t === 'n') return 'n' + t.v + (t.f ? 'f' : ''); if (t.t === 's') return 's' + t.v; return null; }
+    function detGoalOK(g, cand) {
+      g = D(g); const k = kk(g);
+      if (k === 'true/0' || k === 'fail/0' || k === 'false/0') return true;
+      if (k === ',/2') return detGoalOK(g.a[0], cand) && detGoalOK(g.a[1], cand);
+      if (k === ';/2') { const l = D(g.a[0]); return isIte(l) && detGoalOK(l.a[0], cand) && detGoalOK(l.a[1], cand) && detGoalOK(g.a[1], cand); }
+      if (k === '\\+/1') return detGoalOK(g.a[0], cand);
+      if (userPreds.has(k) || srcPreds.has(k)) return cand.has(k);
+      return isDetBi(g);
+    }
+    // p__cp(A.., Rows) :- copy_term(A, B), p__d(B.., S), p__dr(S, B.., A.., Rows).
+    // p__dr(yes, B.., _, [e(B)]).  p__dr(no, _, _, []).  p__dr(maybe, _, A.., Rows) :- p__cpx(A.., Rows).
+    // p__d(X.., S): Prolog's own clause selection and body, with status yes (one answer), no (none) or
+    // maybe (a first argument was unbound where several clauses could match: the packet code decides).
+    function genDet(k, f, n, forms, cls) {
+      const ix = forms.ix || 0;
+      const st = step('DET', k, cls.map(c => c.origText).join('\n'), { clauses: forms.length, index: ix + 1 });
+      const mk = (p) => { const a = []; for (let i = 0; i < n; i++) a.push(Var(p + '__' + (i + 1))); return a; };
+      const A = mk('A'), B = mk('B'), X = mk('X'), U = () => mk('_').map(() => Var('_'));
+      const S = Var('S__0'), Rows = Var('R__0');
+      const dn = f + '__d', dr = f + '__dr';
+      emit(st, Cmp(':-', [Cmp(cpName(f), A.concat([Rows])), conj([Cmp('copy_term', [list(A), list(B)]), Cmp(dn, B.concat([S])), Cmp(dr, [S].concat(B, A, [Rows]))])]), k);
+      emit(st, Cmp(dr, [Atom('yes')].concat(B, U(), [list([E(list(B))])])), k);
+      emit(st, Cmp(dr, [Atom('no')].concat(U(), U(), [NIL])), k);
+      emit(st, Cmp(':-', [Cmp(dr, [Atom('maybe')].concat(U(), A, [Rows])), Cmp(f + '__cpx', A.concat([Rows]))]), k);
+      const ctx = { n: 0 };
+      const clauseCode = (c, i) => {
+        const cc = copy(Cmp(':-', [c.head, c.body]));
+        for (const v of termVars(cc)) v.name = (v.name && v.name !== '_' ? v.name.replace(/__+/g, '_') : 'V') + '__d' + (i + 1);
+        const h = D(cc.a[0]); const hargs = h.t === 'c' ? h.a.slice() : [];
+        const first = hargs[ix];
+        // a head argument that is a variable seen for the first time is the argument itself: no unification
+        const seen = new Set(termVars(forms.length > 1 && n ? first : NIL));
+        const rest = [];
+        hargs.forEach((x, j) => {
+          if (j === ix && forms.length > 1) return;
+          const xd = D(x);
+          if (xd.t === 'v' && !seen.has(xd)) { seen.add(xd); seen.add(X[j]); xd.ref = X[j]; return; }
+          termVars(xd).forEach(v => seen.add(v));
+          rest.push(eq(X[j], x));
+        });
+        const body = detSeq(flatConj(P.resolve(cc.a[1])).map(g => P.resolve(g)), S, ctx);
+        const restR = rest.map(r => P.resolve(r));
+        return { first: first && P.resolve(first), code: restR.length ? Cmp('if_commit', [conj(restR), body, eq(S, Atom('no'))]) : body };
+      };
+      const codes = forms.map(clauseCode);
+      let body;
+      if (forms.length === 1) body = codes[0].code;
+      else {
+        let chain = eq(S, Atom('no'));
+        for (let i = codes.length - 1; i >= 0; i--) chain = Cmp('if_commit', [eq(X[ix], codes[i].first), codes[i].code, chain]);
+        body = Cmp('if_commit', [Cmp('var', [X[ix]]), eq(S, Atom('maybe')), chain]);
+      }
+      emit(st, Cmp(':-', [Cmp(dn, X.concat([S])), body]), k);
+    }
+    function detSeq(gs, S, ctx) {
+      if (!gs.length) return eq(S, Atom('yes'));
+      const g = D(gs[0]), rest = gs.slice(1), k = kk(g);
+      if (k === 'true/0') return detSeq(rest, S, ctx);
+      if (k === 'fail/0' || k === 'false/0') return eq(S, Atom('no'));
+      if (k === ',/2') return detSeq(flatConj(g).concat(rest), S, ctx);
+      // a condition of deterministic builtins is an if_commit/3 condition as it stands; any other deterministic
+      // condition runs with its own status Sc inside the condition: no fails it (undoing its bindings),
+      // yes commits, maybe abandons the deterministic attempt
+      const condOf = (C, yesCode, noCode, S1) => {
+        if (flatConj(C).every(isDetBi)) return Cmp('if_commit', [C, yesCode, noCode]);
+        const Sc = Var('S__' + (++ctx.n));
+        return Cmp('if_commit', [conj([detSeq(flatConj(C), Sc, ctx), Cmp('\\==', [Sc, Atom('no')])]), Cmp('if_commit', [eq(Sc, Atom('yes')), yesCode, eq(S1, Atom('maybe'))]), noCode]);
+      };
+      if (k === ';/2') {
+        const C = D(g.a[0]).a[0], T = D(g.a[0]).a[1], F = g.a[1];
+        if (!rest.length) return condOf(C, detSeq(flatConj(T), S, ctx), detSeq(flatConj(F), S, ctx), S);
+        const S2 = Var('S__' + (++ctx.n));
+        return conj([condOf(C, detSeq(flatConj(T), S2, ctx), detSeq(flatConj(F), S2, ctx), S2), Cmp('if_commit', [eq(S2, Atom('yes')), detSeq(rest, S, ctx), eq(S, S2)])]);
+      }
+      if (k === '\\+/1') return condOf(g.a[0], eq(S, Atom('no')), detSeq(rest, S, ctx), S);
+      if (userPreds.has(k) || srcPreds.has(k)) {
+        const as = g.t === 'c' ? g.a : [];
+        if (!rest.length) return Cmp(P.name(g) + '__d', as.concat([S]));
+        const S1 = Var('S__' + (++ctx.n));
+        return conj([Cmp(P.name(g) + '__d', as.concat([S1])), Cmp('if_commit', [eq(S1, Atom('yes')), detSeq(rest, S, ctx), eq(S, S1)])]);
+      }
+      return Cmp('if_commit', [g, detSeq(rest, S, ctx), eq(S, Atom('no'))]);
     }
 
     function cutElim(f, n, cls, A) {
@@ -2121,14 +2253,24 @@ details > summary { cursor: pointer; font-weight: 600; }
       if (cl.merged) hargs.forEach((h, i) => { const hv = D(h); if (hv.t === 'v') hv.name = 'H__' + (i + 1); });
       const Vs = termVars(Cmp('-', [head, body]));
       ctx.L = list(Vs);
-      const R0 = fresh(ctx, 'R');
+      const distinctVars = hargs.every((h, i) => { const hv = D(h); return hv.t === 'v' && hargs.findIndex(x => D(x) === hv) === i; });
+      // MNN: when the environment is exactly the head arguments, projecting the rows on the head renames them
+      // only: the rows are the packet (rule CLAUSE with identity projection)
+      const identity = (feat.det || feat.splice) && !ctx.marks && distinctVars && hargs.length === Vs.length && hargs.every((h, i) => D(h) === Vs[i]);
+      const st = step('CLAUSE', k, cl.origText || P.showClause(Cmp(':-', [cl.head, cl.body])), { single, vars: Vs.map(v => v.name), identity });
+      // MNN call-through:  h(V1..Vn) :- q(V1..Vn)  with distinct variables has q's packet
+      const bg = D(body);
+      if (identity && single && (userPreds.has(kk(bg)) || srcPreds.has(kk(bg))) && bg.t === 'c' && bg.a.length === hargs.length && bg.a.every((x, i) => D(x) === Vs[i]) && !(feat.det && detPlan.has(kk(bg)) && false)) {
+        st.info.callThrough = true;
+        emit(st, Cmp(':-', [Cmp(P.name(target), A.concat([Rows])), Cmp(cpName(P.name(bg)), A.concat([Rows]))]), k);
+        return;
+      }
+      const R0 = identity ? Rows : fresh(ctx, 'R');
       const code = genGoal(body, ctx.L, R0, ctx);
-      const st = step('CLAUSE', k, cl.origText || P.showClause(Cmp(':-', [cl.head, cl.body])), { single, vars: Vs.map(v => v.name) });
       // rename the call apart and unify it with the head (resolution), then project the env rows on the head
-      let proj = [Cmp('project_rows', [R0, ctx.L, list(hargs), Rows])];
+      let proj = identity ? [] : [Cmp('project_rows', [R0, ctx.L, list(hargs), Rows])];
       if (ctx.marks && single) { const R9 = fresh(ctx, 'R'); proj = [Cmp('project_rows', [R0, ctx.L, list(hargs), R9]), Cmp('strip_cut', [R9, Rows])]; }
       // when the head arguments are distinct variables the renaming always succeeds: no decision is needed
-      const distinctVars = hargs.every((h, i) => { const hv = D(h); return hv.t === 'v' && hargs.findIndex(x => D(x) === hv) === i; });
       const rename = Cmp('copy_term', [list(A), list(hargs)]);
       const clauseBody = distinctVars ? conj([rename].concat(code, proj)) : Cmp('if_commit', [rename, conj(code.concat(proj)), eq(Rows, NIL)]);
       emit(st, Cmp(':-', [Cmp(P.name(target), A.concat([Rows])), clauseBody]), k);
@@ -2162,10 +2304,19 @@ details > summary { cursor: pointer; font-weight: 600; }
         case '!/0': step('cut_mark', ctx.k, '!'); ctx.usedMarks = true; return [eq(O, list([Atom('cut'), E(L)]))];
       }
       if (userPreds.has(k) || srcPreds.has(k)) {
-        const st = step('call', ctx.k, show(g));
-        const Pk = fresh(ctx, 'P');
         const as = g.t === 'c' ? g.a : [];
-        return [Cmp(cpName(P.name(g)), as.concat([Pk])), Cmp('splice_extend', [Pk, list(as), E(L), O])];
+        const Pk = fresh(ctx, 'P');
+        const packetCall = [Cmp(cpName(P.name(g)), as.concat([Pk])), Cmp('splice_extend', [Pk, list(as), E(L), O])];
+        // MNN DET-call: a deterministic-mode callee binds the environment in place; status maybe undoes that and
+        // runs the packet call
+        if (feat.det && detPlan.has(k) && !(feat.memo && info.get(k) && info.get(k).pure && info.get(k).tree)) {
+          step('call_det', ctx.k, show(g));
+          const S = fresh(ctx, 'S');
+          return [Cmp('if_commit', [conj([Cmp(P.name(g) + '__d', as.concat([S])), Cmp('\\==', [S, Atom('maybe')])]),
+            Cmp('if_commit', [eq(S, Atom('yes')), eq(O, list([E(L)])), eq(O, NIL)]), conj(packetCall)])];
+        }
+        step('call', ctx.k, show(g));
+        return packetCall;
       }
       const bk = biKind(k, g);
       if (bk === 'effect' || bk === 'dbeffect') {
@@ -2286,28 +2437,34 @@ details > summary { cursor: pointer; font-weight: 600; }
       const gs = flatConj(C).filter(x => !(D(x).t === 'a' && D(x).n === 'true'));
       const i = gs.findIndex(x => !isDetBi(x));
       if (i < 0) return null;
-      const gen = D(gs[i]);
-      if (kk(gen) !== 'member/2' || userPreds.has('member/2') || srcPreds.has('member/2')) return null;
+      const gen = D(gs[i]); const gk = kk(gen);
       const post = gs.slice(i + 1);
       if (!post.every(isDetBi)) return null;
-      return { pre: gs.slice(0, i), gen, post };
+      if (gk === 'member/2' && !userPreds.has('member/2') && !srcPreds.has('member/2')) return { pre: gs.slice(0, i), gen, post };
+      // a predicate of facts (no cut, not dynamic): its first answer is the first fact that unifies
+      const inf = info.get(gk);
+      if (inf && inf.facts && !inf.dyn && !inf.cut && !queryPreds.has(gk) && feat.factScan) return { pre: gs.slice(0, i), gen, post, facts: gk };
+      return null;
     }
     // nm(Xs, e(L), O) :- if_commit(Xs = [Y|Ys], if_commit((X = Y, Post), T(L, O), nm(Ys, e(L), O)), F(L, O)).
     // The condition binds the environment in place: if_commit/3 undoes a failed attempt, and the first success
     // is the row T runs on.  An open list is extended one cell at a time, as member/2 does.
     function genScan(sc, T, F, L, O, ctx, g, kind) {
-      const st = step(kind === 'neg' ? 'neg_scan' : 'ite_scan', ctx.k, show(g), { gen: show(sc.gen), filters: sc.pre.concat(sc.post).map(x => show(x)) });
+      const st = step(kind === 'neg' ? 'neg_scan' : 'ite_scan', ctx.k, show(g), { gen: show(sc.gen), filters: sc.pre.concat(sc.post).map(x => show(x)), facts: sc.facts || null });
       const nm = auxName(ctx, 'q');
       const m = new Map(); const L2 = copy(L, m); const Ob = Var('O__0');
       const Xs = Var('Y__1'), Y = Var('Y__2'), Ys = Var('Y__3');
       const gen2 = copy(sc.gen, m);
-      const cond = conj([eq(gen2.a[0], Y)].concat(sc.post.map(x => copy(x, m))));
+      // member/2: X = Y.  facts: the fact (renamed apart) unifies with the call's arguments
+      const first = sc.facts ? Cmp('copy_term', [Y, list(gen2.t === 'c' ? gen2.a : [])]) : eq(gen2.a[0], Y);
+      const cond = conj([first].concat(sc.post.map(x => copy(x, m))));
       const tC = conj(genGoal(copy(T, m), L2, Ob, ctx)), fC = conj(genGoal(copy(F, m), L2, Ob, ctx));
       const body = Cmp('if_commit', [eq(Xs, cons(Y, Ys)), Cmp('if_commit', [cond, tC, Cmp(nm, [Ys, E(L2), Ob])]), fC]);
       insertAux(ctx, st, [Cmp(':-', [Cmp(nm, [Xs, E(L2), Ob]), body])]);
-      const call = Cmp(nm, [sc.gen.a[1], E(L), O]);
-      if (!sc.pre.length) return [call];
-      return [Cmp('if_commit', [conj(sc.pre), call, conj(genGoal(F, L, O, ctx))])];
+      let call = [Cmp(nm, [sc.gen.a[1], E(L), O])];
+      if (sc.facts) { const Tb = fresh(ctx, 'F'); factRowsUsed.add(sc.facts); call = [Cmp(P.name(sc.gen) + '__rows', [Tb]), Cmp(nm, [Tb, E(L), O])]; }
+      if (!sc.pre.length) return call;
+      return [Cmp('if_commit', [conj(sc.pre), conj(call), conj(genGoal(F, L, O, ctx))])];
     }
     function genFindall(g, L, O, ctx, agg) {
       const st = step(agg ? 'aggregate' : 'findall', ctx.k, show(agg || g), {});
@@ -2329,6 +2486,20 @@ details > summary { cursor: pointer; font-weight: 600; }
       }
       return code;
     }
+
+    // fact tables for scans:  p__rows([[Args1], [Args2], ...]).
+    for (const k of factRowsUsed) {
+      const [f] = splitKey(k);
+      const rows = srcPreds.get(k).filter(Boolean).map(c => list(D(c.head).t === 'c' ? D(c.head).a : []));
+      const st = step('FACTS', k, srcPreds.get(k).filter(Boolean).map(c => c.origText).join('\n'), { n: rows.length, table: true });
+      const at = out.clauses.findIndex(c => c.pred === k);
+      const cl = { term: P.copy(Cmp(f + '__rows', [list(rows)])), step: st.id, pred: k };
+      // keep the table with its predicate's other clauses
+      let j = at; while (j >= 0 && j < out.clauses.length && out.clauses[j].pred === k) j++;
+      if (at < 0) out.clauses.push(cl); else out.clauses.splice(j, 0, cl);
+    }
+    // inserting shifts clause positions: every step's clause list is rebuilt from the clauses
+    if (factRowsUsed.size) { for (const st of out.steps) st.clauses = []; out.clauses.forEach((c, i) => out.steps[c.step - 1].clauses.push(i)); }
 
     // ---- 3. assemble ----
     out.genPreds = genPreds;
@@ -2456,9 +2627,8 @@ details > summary { cursor: pointer; font-weight: 600; }
     this.out = ''; this.stepLimit = opts.stepLimit || 2e7; this.memo = new Map(); this.memoHits = 0; this.memoStores = 0;
     this.globals = new Map(); this.rowsBuilt = 0; this.maxRows = 0;
     this.depth = 0;
-    // index clauses by first-argument functor
-    this.index = new Map();
-    for (const [k, cls] of prog.preds) this.index.set(k, cls);
+    // clauses by predicate key (the program's own map: nothing to build per run)
+    this.index = prog.preds;
   }
   DetEngine.prototype.bind = function (v, t) { v.ref = t; this.trail.push(v); };
   DetEngine.prototype.undo = function (mark) { const tr = this.trail; while (tr.length > mark) tr.pop().ref = null; };
@@ -2560,6 +2730,18 @@ details > summary { cursor: pointer; font-weight: 600; }
     e.rowsBuilt += all.length;
     return e.unify(a[1], list(all, ls[ls.length - 1]));
   });
+  // Rows are renamed apart by copying.  When the instantiated result is ground there is nothing to rename:
+  // unify in place, resolve, undo.  NO = the unification failed; null = not ground (copy as before).
+  const NO = {};
+  const isG = r => r.t !== 'v' && (r.t !== 'c' || r.gr === true);
+  // One pass: unify the pattern with the row in place, copy the instantiated output (copy dereferences bindings
+  // and renames what is still unbound, so the result shares no variable with the environment), undo.
+  // A variable private to the row is renamed too, which no answer can observe.
+  function groundRow(e, pat, val, out) {
+    const mk = e.trail.length; let r = NO;
+    if (e.unify(pat, val)) r = copy(out);
+    e.undo(mk); return r;
+  }
   // splice_extend(Packet, Pattern, e(Env), Out)
   R('splice_extend/4', (a, e) => {
     const res = [];
@@ -2567,6 +2749,9 @@ details > summary { cursor: pointer; font-weight: 600; }
       e.tick();
       const x = D(it);
       if (isOut(x) || isCut(x)) { res.push(x); continue; }
+      const g = groundRow(e, a[1], x.a[0], a[2]);
+      if (g === NO) continue;
+      if (g !== null) { res.push(g); continue; }
       const c = copy(Cmp('-', [a[1], a[2]]));
       const mk = e.trail.length;
       if (e.unify(c.a[0], x.a[0])) res.push(P.resolve(c.a[1]));
@@ -2582,6 +2767,9 @@ details > summary { cursor: pointer; font-weight: 600; }
       e.tick();
       const x = D(it);
       if (isOut(x) || isCut(x)) { res.push(x); continue; }
+      const g = groundRow(e, a[1], x.a[0], a[2]);
+      if (g === NO) continue;
+      if (g !== null) { res.push(Cmp('e', [g])); continue; }
       const c = copy(Cmp('-', [a[1], a[2]]));
       const mk = e.trail.length;
       if (e.unify(c.a[0], x.a[0])) res.push(Cmp('e', [P.resolve(c.a[1])]));
@@ -2595,6 +2783,9 @@ details > summary { cursor: pointer; font-weight: 600; }
     for (const it of items(a[0])) {
       e.tick();
       const x = D(it); if (!isRow(x)) continue;
+      const g = groundRow(e, a[1], x, a[2]);
+      if (g === NO) continue;
+      if (g !== null) { res.push(g); continue; }
       const c = copy(Cmp('-', [a[1], a[2]]));
       const mk = e.trail.length;
       if (e.unify(c.a[0], x)) res.push(P.resolve(c.a[1]));
@@ -2695,29 +2886,36 @@ details > summary { cursor: pointer; font-weight: 600; }
     return true;
   });
   // s2a_rows(s2a(K, Cols), Args, Rows)
+  // the specification is a constant of the program: it is decoded once (per specification term), and its
+  // table of values is built once, so a call costs one unification per candidate row
+  const s2aCache = new WeakMap();
+  function s2aDecode(spec) {
+    let d = s2aCache.get(spec); if (d) return d;
+    const K = D(spec.a[0]).v; const cols = items(spec.a[1]).map(D);
+    const dec = cols.map(c => c.f === 'const' ? { k: 'const', v: c.a[0] } : c.f === 'data' ? { k: 'data', vs: items(c.a[0]) } : { k: 'newton', ds: items(c.a[0]).map(x => D(x).v) });
+    const val = (c, I) => { if (c.k === 'const') return c.v; if (c.k === 'data') return c.vs[I]; let s = 0; for (let j = 0; j < c.ds.length; j++) s += c.ds[j] * binom(I, j); return Int(s); };
+    const rows = []; for (let I = 0; I < K; I++) { const r = list(dec.map(c => val(c, I))); markGr(r); rows.push(r); }
+    d = { K, dec, rows }; s2aCache.set(spec, d); return d;
+  }
+  function markGr(t) { t = D(t); if (t.t === 'c') { if (P.isGround(t)) { (function m(x) { x = D(x); if (x.t === 'c' && !x.gr) { x.gr = true; x.a.forEach(m); } })(t); } } }
   R('s2a_rows/3', (a, e) => {
-    const spec = D(a[0]); const K = D(spec.a[0]).v; const cols = items(spec.a[1]).map(D); const args = items(a[1]);
-    const val = (c, I) => {
-      if (c.f === 'const') return c.a[0];
-      if (c.f === 'data') return items(c.a[0])[I];
-      const ds = items(c.a[0]).map(x => D(x).v); let s = 0; for (let d = 0; d < ds.length; d++) s += ds[d] * binom(I, d); return Int(s);
-    };
+    const spec = D(a[0]); const { K, dec, rows } = s2aDecode(spec); const args = items(a[1]);
     // direct solve on a bound linear column
     let only = null;
-    for (let j = 0; j < cols.length; j++) {
-      const c = cols[j], x = D(args[j]);
-      if (c.f === 'newton' && x.t === 'n' && !x.f) {
-        const ds = items(c.a[0]).map(y => D(y).v);
+    for (let j = 0; j < dec.length; j++) {
+      const c = dec[j], x = D(args[j]);
+      if (c.k === 'newton' && x.t === 'n' && !x.f) {
+        const ds = c.ds;
         if (ds.length === 2 && ds[1] !== 0) { const q = (x.v - ds[0]) / ds[1]; only = Number.isInteger(q) && q >= 0 && q < K ? [q] : []; break; }
       }
     }
-    const idx = only || Array.from({ length: K }, (_, i) => i);
-    const res = [];
-    for (const I of idx) {
+    const res = []; const al = a[1]; const n = only ? only.length : K;
+    for (let i = 0; i < n; i++) {
+      const I = only ? only[i] : i;
       e.tick();
-      const row = cols.map(c => val(c, I));
-      const c = copy(list(args)); const mk = e.trail.length;
-      if (e.unify(c, list(row))) res.push(Cmp('e', [P.resolve(c)]));
+      // one pass: unify the arguments with the row in place, copy them (renaming what stays unbound), undo
+      const mk = e.trail.length;
+      if (e.unify(al, rows[I])) res.push(Cmp('e', [copy(al)]));
       e.undo(mk);
     }
     return e.unify(a[2], list(res));
@@ -2898,6 +3096,26 @@ details > summary { cursor: pointer; font-weight: 600; }
 
   // the generated packet loop, run as a native loop
   FastDetlog.prototype.loopIdiom = function (k, cls) {
+    const sh = loopShape(k, cls); if (!sh) return null;
+    const r = this.ref(sh.callKey), cutVariant = sh.cutVariant;
+    return function (args, E) {
+      E.tick();
+      const items = listToArray(args[0]);
+      if (!items) return false;
+      const out = [];
+      for (let i = 0; i < items.length; i++) {
+        E.tick(2);
+        const Ov = Var();
+        if (!r.fn([items[i], Ov], E)) return false;
+        const o1 = listToArray(Ov); E.tick(o1.length);
+        let hasCut = false;
+        for (const x of o1) { out.push(x); if (cutVariant && D(x).t === 'a' && D(x).n === 'cut') hasCut = true; }
+        if (cutVariant && hasCut) { const it = D(items[i]); if (it.t === 'c' && it.f === 'e') break; }
+      }
+      return E.unify(args[1], list(out));
+    };
+  };
+  function loopShape(k, cls) {
     if (cls.length !== 2 || !/\/2$/.test(k)) return null;
     const [c1, c2] = cls.map(c => ({ h: D(c.head), b: P.flatConj(c.body).map(D) }));
     const nm = c1.h.f;
@@ -2917,27 +3135,203 @@ details > summary { cursor: pointer; font-weight: 600; }
       const O2 = D(e[0].a && e[0].a[1]); if (!(isRec(e[0], O2) && isCat(e[1], O2, O))) return null;
       cutVariant = true;
     } else return null;
-    const r = this.ref(P.key(call));
-    return function (args, E) {
-      E.tick();
-      const items = listToArray(args[0]);
-      if (!items) return false;
-      const out = [];
-      for (let i = 0; i < items.length; i++) {
-        E.tick(2);
-        const Ov = Var();
-        if (!r.fn([items[i], Ov], E)) return false;
-        const o1 = listToArray(Ov); E.tick(o1.length);
-        let hasCut = false;
-        for (const x of o1) { out.push(x); if (cutVariant && D(x).t === 'a' && D(x).n === 'cut') hasCut = true; }
-        if (cutVariant && hasCut) { const it = D(items[i]); if (it.t === 'c' && it.f === 'e') break; }
+    return { callKey: P.key(call), cutVariant };
+  }
+
+  // ---------------- JIT: Detlog compiled to JavaScript source ----------------
+  // One JS function per predicate with positional arguments; clause variables are JS locals; heads are matched
+  // inline; if_commit/3 is a labelled block.  Step counts, clause selection and violation counts are those of the
+  // closure compiler above, which remains the fallback.
+  function jitCompile(prog) {
+    const consts = [], constIdx = new Map();
+    const K = t => { let i = constIdx.get(t); if (i === undefined) { i = consts.length; consts.push(t); constIdx.set(t, i); } return 'K[' + i + ']'; };
+    const rbs = [], rbIdx = new Map();
+    const RBf = k => { let i = rbIdx.get(k); if (i === undefined) { const f = P.DETLOG_RUNTIME[k] || (P.builtins[k] && !P.builtins[k].nondet && !P.builtins[k].call ? P.builtins[k].fn : null); if (!f) return null; i = rbs.length; rbs.push(f); rbIdx.set(k, i); } return 'RB[' + i + ']'; };
+    const fname = new Map(); let pi = 0;
+    for (const k of prog.preds.keys()) fname.set(k, 'p' + (pi++));
+    const arityOf = k => +k.slice(k.lastIndexOf('/') + 1);
+    let lab = 0;
+    let mentioned = new Set(); // variables that occur textually before the goal being compiled
+    const out = [];
+    const TICK = 'if (++E.steps > E.stepLimit) OVER(E);';
+    function keyTest(h, x) {
+      if (h.t === 'v') return 'true';
+      if (h.t === 'a') return x + ' === ' + K(h);
+      if (h.t === 'n') return '(' + x + '.t === "n" && ' + x + '.v === ' + numLit(h.v) + ' && ' + x + '.f === ' + !!h.f + ')';
+      if (h.t === 's') return '(' + x + '.t === "s" && ' + x + '.v === ' + JSON.stringify(h.v) + ')';
+      return '(' + x + '.t === "c" && ' + x + '.f === ' + JSON.stringify(h.f) + ' && ' + x + '.a.length === ' + h.a.length + ')';
+    }
+    function numLit(v) { return Number.isFinite(v) ? String(v) : (v > 0 ? 'Infinity' : v < 0 ? '-Infinity' : 'NaN'); }
+    // a clause: inline (single-clause predicate: head failure returns false) or fn (head failure returns undefined)
+    function genClause(cl, ci, A) {
+      const vars = termVars(Cmp('-', [cl.head, cl.body]));
+      const slot = new Map(); vars.forEach((v, i) => slot.set(v, i));
+      const decl = vars.length ? 'let ' + vars.map((_, i) => 'v' + i).join(', ') + ';\n' : '';
+      const seen = new Set();
+      const head = D(cl.head); const hargs = head.t === 'c' ? head.a : [];
+      const mk = (headFail) => {
+        seen.clear(); let d = 0;
+        const match = (h, x) => {
+          h = D(h);
+          if (h.t === 'v') { const i = slot.get(h); if (!seen.has(h)) { seen.add(h); return 'v' + i + ' = ' + x + ';\n'; } return 'if (!E.unify(v' + i + ', ' + x + ')) ' + headFail + '\n'; }
+          const t = 'h' + (d++);
+          if (h.t !== 'c') return '{ const ' + t + ' = D(' + x + '); if (' + t + '.t === "v") E.bind(' + t + ', ' + K(h) + '); else if (!(' + keyTest(h, t) + ')) ' + headFail + ' }\n';
+          // the build branch creates the pattern's new variables lazily, the match branch assigns them:
+          // either way they are defined afterwards, so first occurrences are tracked once, in order
+          const b = build(h, slot);
+          let sub = '';
+          h.a.forEach((y, i) => { sub += match(y, t + '.a[' + i + ']'); });
+          return '{ const ' + t + ' = D(' + x + ');\nif (' + t + '.t === "v") E.bind(' + t + ', ' + b + ');\nelse if (' + t + '.t === "c" && ' + t + '.f === ' + JSON.stringify(h.f) + ' && ' + t + '.a.length === ' + h.a.length + ') {\n' + sub + '} else ' + headFail + ' }\n';
+        };
+        let code = '';
+        hargs.forEach((h, i) => { code += match(h, A[i]); });
+        return code;
+      };
+      const bodyCode = (fail) => { mentioned = new Set(termVars(cl.head)); return goal(cl.body, slot, fail); };
+      const inlineHead = mk('{ E.undo(m0); return false; }');
+      const inl = decl + 'const m0 = E.trail.length;\n' + inlineHead + bodyCode('return false;') + 'return true;';
+      const fnHead = mk('{ E.undo(m0); return undefined; }');
+      const fn = decl + 'const m0 = E.trail.length;\n' + fnHead + bodyCode('return false;') + 'return true;';
+      return { inline: inl, fn };
+    }
+    function build(t, slot) {
+      t = D(t);
+      if (t.t === 'v') { const i = slot.get(t); return '(v' + i + ' || (v' + i + ' = V(' + JSON.stringify(t.name) + ')))'; }
+      if (t.t !== 'c' || P.isGround(t)) { if (t.t === 'c') markGround(t); return K(t); }
+      return '{t: "c", f: ' + JSON.stringify(t.f) + ', a: [' + t.a.map(x => build(x, slot)).join(', ') + ']}';
+    }
+    const mention = t => { for (const v of termVars(t)) mentioned.add(v); };
+    const ARITH2 = { '+': '+', '-': '-', '*': '*' };
+    const CMP = { '=:=/2': '===', '=\\=/2': '!==', '</2': '<', '>/2': '>', '=</2': '<=', '>=/2': '>=' };
+    // an integer expression compiled to JS: leaves are integers or variables, operators + - * and unary -;
+    // a leaf that is not an integer sets bad, and the generic builtin runs instead (errors, floats)
+    function arith(t, slot) {
+      t = D(t);
+      if (t.t === 'n') return t.f || !Number.isSafeInteger(t.v) ? null : '(' + t.v + ')';
+      if (t.t === 'v') { const i = slot.get(t); return '((q = D(v' + i + ' || BADV)).t === "n" && !q.f ? q.v : (bad = true, 0))'; }
+      if (t.t !== 'c') return null;
+      if (t.a.length === 2 && ARITH2[t.f]) { const a = arith(t.a[0], slot), b = arith(t.a[1], slot); return a && b ? '(' + a + ' ' + ARITH2[t.f] + ' ' + b + ')' : null; }
+      if (t.a.length === 1 && t.f === '-') { const a = arith(t.a[0], slot); return a ? '(-' + a + ')' : null; }
+      return null;
+    }
+    function goal(g, slot, FAIL) {
+      const code = goal0(g, slot, FAIL); mention(g); return code;
+    }
+    // builtin_rows(member(X, L), P), splice_extend(P, [member(X, L)], Env, R), with P used nowhere else:
+    // for each element Y of the proper list L, unify X = Y in place, copy Env, undo.  This is what the two goals
+    // compute (each row is the goal's instance; unifying it back binds X and nothing else that is observable).
+    function fuseGen(g1, g2, rest, slot, FAIL) {
+      if (P.key(g1) !== 'builtin_rows/2' || P.key(g2) !== 'splice_extend/4') return null;
+      const G = D(g1.a[0]), Pv = D(g1.a[1]);
+      if (P.key(G) !== 'member/2' || Pv.t !== 'v' || D(g2.a[0]) !== Pv) return null;
+      const pat = P.listToArray(g2.a[1]); if (!pat || pat.length !== 1 || P.show(pat[0]) !== P.show(G) || !sameTerm(pat[0], G)) return null;
+      if (rest.some(x => termVars(x).includes(Pv)) || termVars(g2.a[2]).includes(Pv) || termVars(g2.a[3]).includes(Pv) || mentioned.has(Pv)) return null;
+      const generic = goal0(g1, slot, FAIL) + goal0(g2, slot, FAIL);
+      // steps as the two goals count them: one per call and one per solution, for each of the two
+      return '{ const xs = LA(' + build(G.a[1], slot) + ');\nif (xs === null) {\n' + generic + '} else {\n' + TICK + ' ' + TICK + '\nconst x = ' + build(G.a[0], slot) + ', env = ' + build(g2.a[2], slot) + ', res = [];\n' +
+        'for (let i = 0; i < xs.length; i++) { const m = E.trail.length; if (E.unify(x, xs[i])) { E.steps += 2; if (E.steps > E.stepLimit) OVER(E); res.push(COPY(env)); } E.undo(m); }\n' +
+        'E.rowsBuilt += res.length; if (res.length > E.maxRows) E.maxRows = res.length;\n' +
+        '{ const m = E.trail.length; if (!E.unify(' + build(g2.a[3], slot) + ', LIST(res))) { E.undo(m); ' + FAIL + ' } } } }\n';
+    }
+    function sameTerm(a, b) { a = D(a); b = D(b); if (a === b) return true; if (a.t !== b.t) return false; if (a.t === 'c') return a.f === b.f && a.a.length === b.a.length && a.a.every((x, i) => sameTerm(x, b.a[i])); if (a.t === 'a') return a === b; if (a.t === 'n') return a.v === b.v && a.f === b.f; if (a.t === 's') return a.v === b.v; return false; }
+    function goal0(g, slot, FAIL) {
+      g = D(g); const k = P.key(g);
+      if (k === 'is/2' || CMP[k]) {
+        const rb = RBf(k);
+        const generic = '{ const m = E.trail.length; if (!' + rb + '([' + g.a.map(x => build(x, slot)).join(', ') + '], E)) { E.undo(m); ' + FAIL + ' } }';
+        if (k === 'is/2') {
+          const ex = arith(g.a[1], slot);
+          if (ex) return TICK + '\n{ let bad = false, q; const r = ' + ex + ';\nif (bad) ' + generic + '\nelse { const m = E.trail.length; if (!E.unify(' + build(g.a[0], slot) + ', INT(r))) { E.undo(m); ' + FAIL + ' } } }\n';
+        } else {
+          const ea = arith(g.a[0], slot), eb = arith(g.a[1], slot);
+          if (ea && eb) return TICK + '\n{ let bad = false, q; const x = ' + ea + ', y = ' + eb + ';\nif (bad) ' + generic + '\nelse if (!(x ' + CMP[k] + ' y)) ' + FAIL + ' }\n';
+        }
       }
-      return E.unify(args[1], list(out));
-    };
-  };
+      if (k === 'copy_term/2') {
+        // copy_term(Ts, [V1..Vn]) with V1..Vn distinct variables not seen before: assign the copies
+        const dst = P.listToArray(g.a[1]), src = P.listToArray(g.a[0]);
+        const fresh = dst && dst.every((v, i) => { v = D(v); return v.t === 'v' && !mentioned.has(v) && dst.findIndex(w => D(w) === v) === i; }) && !termVars(g.a[0]).some(v => dst.some(w => D(w) === v));
+        if (fresh && src && dst.length === src.length) {
+          return TICK + '\n{ const mp = new Map(); ' + dst.map((v, i) => 'v' + slot.get(D(v)) + ' = COPY(' + build(src[i], slot) + ', mp);').join(' ') + ' }\n';
+        }
+        // copy_term(Row, [V1..Vn]): copy the row once; a proper list of n items is assigned, anything else unifies
+        if (fresh && !src) {
+          const rb = RBf(k);
+          return TICK + '\n{ const c = COPY(' + build(g.a[0], slot) + '); const ca = LA(c);\nif (ca && ca.length === ' + dst.length + ') { ' + dst.map((v, i) => 'v' + slot.get(D(v)) + ' = ca[' + i + '];').join(' ') + ' }\nelse { const m = E.trail.length; if (!E.unify(c, ' + build(g.a[1], slot) + ')) { E.undo(m); ' + FAIL + ' } } }\n';
+        }
+      }
+      if (k === ',/2') {
+        const gs = P.flatConj(g).map(D); let code = '';
+        for (let i = 0; i < gs.length; i++) {
+          const f = i + 1 < gs.length && fuseGen(gs[i], gs[i + 1], gs.slice(i + 2), slot, FAIL);
+          if (f) { code += f; mention(gs[i]); mention(gs[i + 1]); i++; continue; }
+          code += goal(gs[i], slot, FAIL);
+        }
+        return code;
+      }
+      if (k === 'true/0') return TICK + '\n';
+      if (k === 'fail/0' || k === 'false/0') return TICK + ' ' + FAIL + '\n';
+      if (k === 'if_commit/3') {
+        const L = 'L' + (lab++);
+        return TICK + ' E.decisions++;\n{ const m' + L + ' = E.trail.length; let ok' + L + ' = false;\n' + L + ': {\n' + goal(g.a[0], slot, 'break ' + L + ';') + 'ok' + L + ' = true;\n}\nif (ok' + L + ') {\n' + goal(g.a[1], slot, FAIL) + '} else {\nE.undo(m' + L + ');\n' + goal(g.a[2], slot, FAIL) + '}\n}\n';
+      }
+      if (k === '=/2') return TICK + '\n{ const m = E.trail.length; if (!E.unify(' + build(g.a[0], slot) + ', ' + build(g.a[1], slot) + ')) { E.undo(m); ' + FAIL + ' } }\n';
+      const as = g.t === 'c' ? g.a.map(x => build(x, slot)) : [];
+      if (prog.preds.has(k)) return 'if (!' + fname.get(k) + '(' + as.concat(['E']).join(', ') + ')) ' + FAIL + '\n';
+      const rb = RBf(k);
+      if (rb) return TICK + '\n{ const m = E.trail.length; if (!' + rb + '([' + as.join(', ') + '], E)) { E.undo(m); ' + FAIL + ' } }\n';
+      return 'throw new Error(' + JSON.stringify('Detlog engine: unknown procedure ' + k) + ');\n';
+    }
+    for (const [k, cls] of prog.preds) {
+      const n = arityOf(k), A = []; for (let i = 0; i < n; i++) A.push('a' + i);
+      const sig = A.concat(['E']).join(', ');
+      const sh = loopShape(k, cls);
+      if (sh && fname.has(sh.callKey)) {
+        const cf = fname.get(sh.callKey);
+        out.push('function ' + fname.get(k) + '(' + sig + ') {\n' + TICK +
+          '\nconst items = LA(a0); if (!items) return false; const res = [];\nfor (let i = 0; i < items.length; i++) {\nE.steps += 2; if (E.steps > E.stepLimit) OVER(E);\nconst Ov = V(null);\nif (!' + cf + '(items[i], Ov, E)) return false;\nconst o1 = LA(Ov); E.steps += (o1.length || 1); if (E.steps > E.stepLimit) OVER(E);\n' +
+          (sh.cutVariant ? 'let hc = false; for (const x of o1) { res.push(x); const xd = D(x); if (xd.t === "a" && xd.n === "cut") hc = true; }\nif (hc) { const it = D(items[i]); if (it.t === "c" && it.f === "e") break; }\n' : 'for (let j = 0; j < o1.length; j++) res.push(o1[j]);\n') +
+          '}\nreturn E.unify(a1, LIST(res));\n}');
+        continue;
+      }
+      const clauseFns = cls.map((cl, ci) => genClause(cl, ci, A));
+      const nm = fname.get(k);
+      if (cls.length === 1) { out.push('function ' + nm + '(' + sig + ') {\n' + TICK + '\n' + clauseFns[0].inline + '\n}'); continue; }
+      // clause selection by first argument, as in compilePred: variable -> all clauses; otherwise the clauses
+      // whose first head argument is a variable or has the argument's key, in order
+      clauseFns.forEach((c, i) => out.push('function ' + nm + '_' + i + '(' + sig + ') {\n' + c.fn + '\n}'));
+      const calls = i => '{ const r = ' + nm + '_' + i + '(' + sig + '); if (r !== undefined) return r; }';
+      let body = TICK + '\n';
+      if (!n || cls.length === 0) body += cls.map((_, i) => calls(i)).join('\n') + '\nreturn false;';
+      else {
+        const tests = cls.map(cl => keyTest(D(D(cl.head).a[0]), 't0'));
+        body += 'const t0 = D(a0);\nif (t0.t === "v") {\nif (E.violations.length < 1000) E.violations.push(' + JSON.stringify(k) + ');\n' + cls.map((_, i) => calls(i)).join('\n') + '\nreturn false;\n}\n';
+        body += tests.map((t, i) => 'const k' + i + ' = ' + t + ';').join('\n') + '\n';
+        body += 'if ((' + tests.map((_, i) => '(k' + i + ' ? 1 : 0)').join(' + ') + ') > 1 && E.violations.length < 1000) E.violations.push(' + JSON.stringify(k) + ');\n';
+        body += cls.map((_, i) => 'if (k' + i + ') ' + calls(i)).join('\n') + '\nreturn false;';
+      }
+      out.push('function ' + nm + '(' + sig + ') {\n' + body + '\n}');
+    }
+    const src = '"use strict";\n' + out.join('\n') + '\nreturn {' + [...fname].map(([k, f]) => JSON.stringify(k) + ': ' + f).join(', ') + '};';
+    const OVER = E => { throw new P.LimitError('step limit (' + E.stepLimit + ') exceeded'); };
+    const BADV = { t: 'v', ref: null }; // stands for a variable that was never created (an unbound leaf)
+    const fns = new Function('K', 'RB', 'D', 'V', 'LA', 'LIST', 'OVER', 'INT', 'COPY', 'BADV', src)(consts, rbs, D, Var, listToArray, list, OVER, P.Int, P.copy, BADV);
+    const preds = new Map();
+    for (const [k, f] of Object.entries(fns)) preds.set(k, { k, fn: (args, E) => f(...args, E), pos: f });
+    return { preds, src, jit: true };
+  }
 
   const cache = new WeakMap();
-  function compiled(prog) { let f = cache.get(prog); if (!f) { f = new FastDetlog(prog); cache.set(prog, f); } return f; }
+  function compiled(prog) {
+    let f = cache.get(prog);
+    if (!f) {
+      try { f = P.DETLOG_JIT === false ? new FastDetlog(prog) : jitCompile(prog); }
+      catch (e) { f = new FastDetlog(prog); f.jitError = e.message; }
+      cache.set(prog, f);
+    }
+    return f;
+  }
+  P.jitCompile = jitCompile;
 
   // same interface and result shape as runDetlog
   function runDetlogFast(prog, qpred, varNames, opts) {
@@ -2945,19 +3339,24 @@ details > summary { cursor: pointer; font-weight: 600; }
     let F;
     try { F = compiled(prog); } catch (e) { return Object.assign(P.runDetlog(prog, qpred, varNames, opts), { engine: 'reference (compile failed: ' + e.message + ')' }); }
     const E = new P.DetEngine(prog, opts);
-    const vs = varNames.map(n => Var(n)); const Rv = Var('R');
-    const k = qpred + '__cp/' + (varNames.length + 1);
+    const nv = varNames.length, args = new Array(nv + 1);
+    for (let i = 0; i < nv; i++) args[i] = Var(varNames[i]);
+    const Rv = Var('R'); args[nv] = Rv;
+    const k = qpred + '__cp/' + (nv + 1);
     const t0 = P.now(); let ok = false, error = null;
     try {
       const r = F.preds.get(k); if (!r || !r.fn) throw new Error('no query predicate ' + k);
-      ok = r.fn(vs.concat([Rv]), E);
+      ok = r.pos ? (args.push(E), r.pos.apply(null, args)) : r.fn(args, E);
     } catch (e) {
       if (e instanceof RangeError) return Object.assign(P.runDetlog(prog, qpred, varNames, opts), { engine: 'reference (JS stack exhausted)' });
       error = e.message;
     }
     const t1 = P.now();
     const res = P.decodePacket(ok, error, Rv, varNames);
-    return Object.assign(res, { steps: E.steps, decisions: E.decisions, violations: E.violations.length, violationPreds: [...new Set(E.violations)], cps: 0, maxCP: 0, timeMs: t1 - t0, memoHits: E.memoHits, memoStores: E.memoStores, rowsBuilt: E.rowsBuilt, maxRows: E.maxRows, engine: 'fast' });
+    return { ok: res.ok, answers: res.answers, events: res.events, output: res.output, error: res.error,
+      engine: F.jit ? 'fast (JIT)' : 'fast', steps: E.steps, decisions: E.decisions, violations: E.violations.length,
+      violationPreds: E.violations.length ? [...new Set(E.violations)] : [], cps: 0, maxCP: 0, timeMs: t1 - t0,
+      memoHits: E.memoHits, memoStores: E.memoStores, rowsBuilt: E.rowsBuilt, maxRows: E.maxRows };
   }
   P.FastDetlog = FastDetlog; P.runDetlogFast = runDetlogFast;
 })(typeof module !== 'undefined' && module.exports ? (globalThis.PL2D = globalThis.PL2D || {}) : (window.PL2D = window.PL2D || {}));
@@ -3288,6 +3687,14 @@ details > summary { cursor: pointer; font-weight: 600; }
       }
       // S2A
       if (gs.length === 1 && isC(b0, 's2a_rows', 3)) { note(pk, 'S2A loop back-converted'); return s2aClauses(b0.a[0], pname, A.length, pk); }
+      // DET wrapper:  copy_term(A, B), p__d(B.., S), p__dr(S, B.., A.., Rows)  -- the packet code is p__cpx
+      if (gs.length === 3 && isC(b0, 'copy_term', 2) && D(gs[1]).t === 'c' && /__d$/.test(D(gs[1]).f) && D(gs[2]).t === 'c' && /__dr$/.test(D(gs[2]).f)) {
+        note(pk, 'deterministic mode dropped (DET is an optimisation only)');
+        const inner = getCls(pname + '__cpx/' + (A.length + 1));
+        if (inner.length !== 1) throw BackError('DET packet predicate has several clauses');
+        const ih = D(inner[0].head);
+        return decompPacketClause({ head: Cmp(pname + '__cp', ih.a), body: inner[0].body }, pk, pname);
+      }
       // MEMO wrapper
       if (gs.length === 2 && isC(b0, 'memo_lookup', 3)) {
         note(pk, 'memo table dropped (memoisation is an optimisation only)');
@@ -3301,7 +3708,7 @@ details > summary { cursor: pointer; font-weight: 600; }
       }
       // PRED: clause packets then rows_concat
       const last = D(gs[gs.length - 1]);
-      if ((isC(last, 'rows_concat', 2) || isC(last, 'rows_cut_concat', 2)) && D(last.a[1]) === D(Rows) && gs.length >= 2) {
+      if ((isC(last, 'rows_concat', 2) || isC(last, 'rows_cut_concat', 2)) && D(last.a[1]) === D(Rows) && gs.length >= 2 && !isC(b0, 'copy_term', 2) && !isC(b0, 'if_commit', 3)) {
         const out = [];
         for (const g of gs.slice(0, -1)) {
           const cc = getCls(P.key(g)); if (cc.length !== 1) throw BackError('clause packet ' + P.key(g) + ' has several clauses');
@@ -3355,17 +3762,28 @@ details > summary { cursor: pointer; font-weight: 600; }
     function decompClausePacket(cl, pname, pk) {
       const gs = flat(cl.body);
       let ren0, tg;
+      // call-through:  h__cp(A.., Rows) :- q__cp(A.., Rows)
+      { const h = D(cl.head); const g0 = D(gs[0]);
+        if (gs.length === 1 && g0.t === 'c' && /__cp$/.test(g0.f) && g0.a.length === h.a.length && g0.a.every((x, i) => D(x) === D(h.a[i]))) {
+          const vs = h.a.slice(0, -1).map((_, i) => Var('X' + (i + 1)));
+          return [{ head: Cmp(pname, vs), body: Cmp(g0.f.replace(/__cp$/, ''), vs) }];
+        } }
       if (gs.length === 1 && isC(gs[0], 'if_commit', 3) && isC(D(gs[0]).a[0], 'copy_term', 2)) { ren0 = D(D(gs[0]).a[0]); tg = flat(D(gs[0]).a[1]); }
       else if (gs.length >= 2 && isC(gs[0], 'copy_term', 2)) { ren0 = D(gs[0]); tg = gs.slice(1); }
       else throw BackError('unexpected clause packet ' + P.key(cl.head));
       const H = listToArray(ren0.a[1]);
       if (isC(tg[tg.length - 1], 'strip_cut', 2)) tg = tg.slice(0, -1);
       const pr = D(tg[tg.length - 1]);
-      if (!isC(pr, 'project_rows', 4)) throw BackError('clause packet without project_rows');
-      const R0 = D(pr.a[0]); const L = pr.a[1];
+      let R0, L, code;
+      if (isC(pr, 'project_rows', 4)) { R0 = D(pr.a[0]); L = pr.a[1]; code = tg.slice(0, -1); }
+      else { // identity projection: the environment is the head arguments and the code computes the packet itself
+        const Rows = D(cl.head).a[D(cl.head).a.length - 1];
+        if (!H.every(x => D(x).t === 'v')) throw BackError('clause packet without project_rows');
+        R0 = D(Rows); L = list(H); code = tg;
+      }
       const names = new Map();
       const ctx = { names, L, pk };
-      const body = decompCode(tg.slice(0, -1), R0, ctx);
+      const body = decompCode(code, R0, ctx);
       let clause = { head: Cmp(pname, H.map(x => ren(x, names))), body };
       const restored = restoreCuts(clause, pname, pk);
       return restored.map(c => cleanup(c, pk));
@@ -3439,6 +3857,11 @@ details > summary { cursor: pointer; font-weight: 600; }
         // det:  if_commit(B, O = [e(L)], O = [])
         const OT = outOfSimple(T), OF = outOfSimple(F);
         if (OT && OF && OT.v === OF.v && OT.kind === 'row' && OF.kind === 'none') return { goal: r(C), out: OT.v, next: i + 1 };
+        // DET-call:  if_commit((q__d(As.., S), S \== maybe), if_commit(S = yes, ..), (q__cp(As.., P), splice_extend(..)))
+        if (isC(C, ',', 2) && D(D(C).a[0]).t === 'c' && /__d$/.test(D(D(C).a[0]).f) && isC(D(C).a[1], '\\==', 2)) {
+          const Os = findOut(F);
+          return { goal: decompCode(F, Os, ctx), out: Os, next: i + 1 };
+        }
         // splice:  if_commit(splice_safe(..), Chain, Seq)
         if (isC(C, 'splice_safe', 2)) {
           ctx.splice = true; note(ctx.pk, 'splice written back as the sequential conjunction');
@@ -3458,7 +3881,8 @@ details > summary { cursor: pointer; font-weight: 600; }
           const tg = decompCode(T, Ot, ctx), fg = decompCode(F, Of, ctx);
           // a scan with a deterministic prefix:  if_commit(Pre, q(Xs, e(L), O), CodeF(O))
           const tc = D(tg);
-          if (T.length === 1 && tc.t === 'c' && tc.f === ';' && isC(tc.a[0], '->', 2) && scanOf(P.key(T[0]), ctx) && show(tc.a[1]) === show(fg))
+          const isScan = (T.length === 1 && scanOf(P.key(T[0]), ctx)) || (T.length === 2 && D(T[0]).t === 'c' && /__rows$/.test(D(T[0]).f) && scanOf(P.key(T[1]), ctx, D(T[0]).f.replace(/__rows$/, '')));
+          if (isScan && tc.t === 'c' && tc.f === ';' && isC(tc.a[0], '->', 2) && show(tc.a[1]) === show(fg))
             return { goal: mkIte(conj([r(C), D(tc.a[0]).a[0]]), D(tc.a[0]).a[1], fg), out: Ot, next: i + 1 };
           return { goal: mkIte(r(C), tg, fg), out: Ot, next: i + 1 };
         }
@@ -3525,6 +3949,11 @@ details > summary { cursor: pointer; font-weight: 600; }
         let dg = alts[alts.length - 1]; for (let q = alts.length - 2; q >= 0; q--) dg = Cmp(';', [alts[q], dg]);
         return { goal: dg, out: D(D(rc).a[1]), next: j + 1 };
       }
+      // facts scan:  p__rows(T), q(T, e(L), O)
+      if (g.t === 'c' && g.a.length === 1 && /__rows$/.test(g.f) && gs[i + 1] && D(gs[i + 1]).t === 'c' && D(D(gs[i + 1]).a[0]) === D(g.a[0])) {
+        const q = D(gs[i + 1]); const sc = scanOf(P.key(q), ctx, g.f.replace(/__rows$/, ''));
+        if (sc) return { goal: mkIte(conj([sc.gen, sc.post]), sc.T, sc.F), out: D(q.a[2]), next: i + 2 };
+      }
       // first-match scan:  q(Xs, e(L), O)
       if (g.t === 'c' && g.a.length === 3 && isC(g.a[1], 'e', 1)) {
         const sc = scanOf(P.key(g), ctx);
@@ -3540,7 +3969,7 @@ details > summary { cursor: pointer; font-weight: 600; }
       throw BackError('unrecognised goal ' + show(g, { varName: v => v.name || '_' }));
     }
     // nm(Xs, e(L), O) :- if_commit(Xs = [Y|Ys], if_commit((X = Y, Post), T, nm(Ys, e(L), O)), F)
-    function scanOf(k, ctx) {
+    function scanOf(k, ctx, factsName) {
       const cls = prog.preds.get(k); if (!cls || cls.length !== 1) return null;
       const h = D(cls[0].head); const b = D(cls[0].body);
       if (!isC(b, 'if_commit', 3)) return null;
@@ -3548,9 +3977,13 @@ details > summary { cursor: pointer; font-weight: 600; }
       if (!isC(c1, '=', 2) || D(c1.a[0]) !== D(h.a[0]) || !isC(c1.a[1], '.', 2) || !isC(inner, 'if_commit', 3)) return null;
       const Y = D(D(c1.a[1]).a[0]), Ys = D(D(c1.a[1]).a[1]);
       const cg = flat(inner.a[0]); const first = D(cg[0]);
-      if (!isC(first, '=', 2) || D(first.a[1]) !== Y) return null;
       const rec = flat(inner.a[2]); if (rec.length !== 1 || P.key(rec[0]) !== k || D(D(rec[0]).a[0]) !== Ys) return null;
       const r = x => ren(x, ctx.names); const O = h.a[2];
+      if (factsName) {
+        if (!isC(first, 'copy_term', 2) || D(first.a[0]) !== Y) return null;
+        return { gen: Cmp(factsName, listToArray(first.a[1]).map(r)), post: conj(cg.slice(1).map(r)), T: decompCode(flat(inner.a[1]), O, ctx), F: decompCode(flat(b.a[2]), O, ctx) };
+      }
+      if (!isC(first, '=', 2) || D(first.a[1]) !== Y) return null;
       return { X: r(first.a[0]), post: conj(cg.slice(1).map(r)), T: decompCode(flat(inner.a[1]), O, ctx), F: decompCode(flat(b.a[2]), O, ctx) };
     }
     function outOfSimple(gs) {
@@ -3927,7 +4360,7 @@ details > summary { cursor: pointer; font-weight: 600; }
   const { deref, Cmp, Var, list, listToArray, show, termVars } = P;
   const D = deref;
   const FORBIDDEN = new Set(['!/0', ';/2', '->/2', '*->/2', '\\+/1', 'not/1', 'findall/3', 'findall/4', 'bagof/3', 'setof/3', 'aggregate_all/3', 'aggregate_all/4', 'forall/2', 'once/1', 'ignore/1', 'call/1', 'catch/3']);
-  const RULES = new Set(['CUT', 'SPEC', 'PRED', 'FACTS', 'CLAUSE', 'S2A', 'MEMO', 'UNSUPPORTED', 'true', 'fail', 'det', 'effect', 'call', 'member_cp', 'between_cp', 'builtin_rows', 'seq', 'det_prefix', 'effect_prefix', 'disj', 'ite', 'ite_det', 'ite_scan', 'neg', 'neg_det', 'neg_scan', 'findall', 'aggregate', 'splice', 'cut_mark']);
+  const RULES = new Set(['CUT', 'SPEC', 'PRED', 'FACTS', 'CLAUSE', 'S2A', 'MEMO', 'DET', 'call_det', 'UNSUPPORTED', 'true', 'fail', 'det', 'effect', 'call', 'member_cp', 'between_cp', 'builtin_rows', 'seq', 'det_prefix', 'effect_prefix', 'disj', 'ite', 'ite_det', 'ite_scan', 'neg', 'neg_det', 'neg_scan', 'findall', 'aggregate', 'splice', 'cut_mark']);
   const RUNTIME_PREDS = () => new Set(Object.keys(P.DETLOG_RUNTIME).concat(['if_commit/3']));
 
   function checkShape(detlogText) {
@@ -4024,6 +4457,19 @@ details > summary { cursor: pointer; font-weight: 600; }
           const same = !err && got.length === exp.length && got.every((r, i) => r.every((x, j) => P.compare(x, exp[i][j]) === 0));
           add('Side conditions', 'S2A ' + k + ': pure, and the loop gives exactly the source answers in order', isPure && same, (isPure ? 'pure' : 'NOT pure') + '; ' + got.length + ' source rows vs ' + exp.length + ' loop rows' + (err ? '; ' + err : '') + '; ' + st.info.formula);
         }
+        if (st.rule === 'DET') {
+          // re-derived from the Detlog itself: nothing reachable from p__d writes output or updates the database,
+          // so running it and then the packet code (status maybe) cannot repeat an effect
+          const [f, n] = splitKey(st.pred); const dprog = P.loadProgram(conv.text);
+          const seen = new Set(); const todo = [f + '__d/' + (+n + 1)]; let bad = null;
+          const EFF = new Set(['effect_text/2', 'assert/1', 'asserta/1', 'assertz/1', 'retract/1', 'retractall/1', 'nb_setval/2', 'b_setval/2', 'setarg/3', 'nb_setarg/3']);
+          while (todo.length && !bad) {
+            const k = todo.pop(); if (seen.has(k)) continue; seen.add(k);
+            const cls = dprog.preds.get(k); if (!cls) { bad = 'missing ' + k; break; }
+            for (const cl of cls) (function walk(g) { g = D(g); const gk = P.key(g); if (gk === ',/2') { walk(g.a[0]); walk(g.a[1]); return; } if (gk === 'if_commit/3') { g.a.forEach(walk); return; } if (EFF.has(gk) || P.EFFECT.has(gk)) bad = gk; else if (dprog.preds.has(gk)) todo.push(gk); })(cl.body);
+          }
+          add('Side conditions', 'DET ' + st.pred + ': deterministic mode writes no output (re-derived from the Detlog); status maybe runs the packet code', !bad, bad ? 'reaches ' + bad : seen.size + ' predicate(s) reachable from ' + f + '__d, none writes');
+        }
         if (st.rule === 'MEMO') add('Side conditions', 'MEMO ' + st.pred + ': pure (variant calls give equal packets)', !!pur.pure.get(st.pred), pur.pure.get(st.pred) ? 'purity re-derived from the source' : 'not pure');
         if (st.rule === 'splice') {
           let ok = false, why = '';
@@ -4037,7 +4483,9 @@ details > summary { cursor: pointer; font-weight: 600; }
         }
         if (st.rule === 'FACTS' && st.info.n) {
           const k = st.pred; const cl = conv.clauses[st.clauses[0]];
-          const rows = listToArray(D(D(cl.term).a[1]).a[0]).map(r => P.canonClauses ? show(D(r).a[0], { varName: P.namer() }) : '');
+          const rows = st.info.table
+            ? listToArray(D(cl.term).a[0]).map(r => P.canonClauses ? show(r, { varName: P.namer() }) : '')
+            : listToArray(D(D(cl.term).a[1]).a[0]).map(r => P.canonClauses ? show(D(r).a[0], { varName: P.namer() }) : '');
           const srcRows = pur.prog.preds.get(k).map(c => show(list(D(c.head).t === 'c' ? D(c.head).a : []), { varName: P.namer() }));
           const same = rows.length === srcRows.length && rows.every((r, i) => r === srcRows[i]);
           add('Side conditions', 'FACTS ' + k + ': rows are the source facts in order', same, rows.length + ' facts');
@@ -4049,11 +4497,13 @@ details > summary { cursor: pointer; font-weight: 600; }
         const badScan = [];
         for (const s of scanSteps) {
           try {
-            const gk = P.key(P.readTerm(s.info.gen).term); if (gk !== 'member/2') badScan.push(s.info.gen);
+            const gk = P.key(P.readTerm(s.info.gen).term);
+            if (s.info.facts) { const cls = pur.prog.preds.get(gk); if (!cls || !cls.length || pur.prog.dynamic.has(gk) || cls.some(c => !(D(c.body).t === 'a' && D(c.body).n === 'true'))) badScan.push(s.info.gen + ' (not a predicate of facts)'); }
+            else if (gk !== 'member/2') badScan.push(s.info.gen);
             for (const f of s.info.filters) { const fk = P.key(P.readTerm(f).term); const b = P.builtins[fk]; if (fk !== 'true/0' && (!b || b.nondet || b.call || P.EFFECT.has(fk))) badScan.push(f); }
           } catch (e) { badScan.push(s.src); }
         }
-        add('Side conditions', label + ': first-match scans run member/2 with deterministic builtin filters', badScan.length === 0, scanSteps.length + ' scan(s)' + (badScan.length ? '; not allowed: ' + badScan.join(', ') : ''));
+        add('Side conditions', label + ': first-match scans run member/2 or a predicate of facts, with deterministic builtin filters', badScan.length === 0, scanSteps.length + ' scan(s)' + (badScan.length ? '; not allowed: ' + badScan.join(', ') : ''));
       }
       const detSteps = conv.steps.filter(s => s.rule === 'det' || s.rule === 'det_prefix' || s.rule === 'ite_det' || s.rule === 'neg_det');
       let badDet = [];
@@ -4130,7 +4580,9 @@ details > summary { cursor: pointer; font-weight: 600; }
     ['splice', 'MNN: independent generators computed once and combined by a Cartesian product in Prolog order'],
     ['S2A', 'MNN: a pure predicate with a finite ground table becomes a loop over I = 0..K-1 (Newton formulas, constants or data)'],
     ['cut_mark', 'a cut inside a branch emits [cut, e(Row)]: row loops stop after it and later alternatives and clauses are dropped'],
-    ['MEMO', 'MNN: a pure tree-recursive predicate is tabled by call variant']
+    ['MEMO', 'MNN: a pure tree-recursive predicate is tabled by call variant'],
+    ['call_det', 'MNN: a call of a DET predicate in packet code runs its deterministic mode in place: yes gives [Env], no gives []; maybe undoes it and makes the packet call'],
+    ['DET', 'MNN: an output-free predicate whose clauses are told apart by their first argument, and whose goals are deterministic, runs as p__d(Args, Status) without packets; status maybe (a first argument unbound where several clauses match) falls back to the packet code']
   ];
   P.checkShape = checkShape; P.prove = prove; P.purity = purity; P.RULE_DOC = RULE_DOC;
 })(typeof module !== 'undefined' && module.exports ? (globalThis.PL2D = globalThis.PL2D || {}) : (window.PL2D = window.PL2D || {}));
@@ -4313,6 +4765,7 @@ details > summary { cursor: pointer; font-weight: 600; }
   "src": "% Cuts of several kinds.  detlog2 turns each into an explicit decision.\n\n% a :- b, !, c.  a :- d.   becomes   a :- if_commit(b, c, d).\na(X) :- b(X), !, c(X).\na(X) :- d(X).\nb(1). b(2).\nc(1).\nd(3).\n\n% A red cut (meaning-changing) and a green one.\nmax(X, Y, X) :- X >= Y, !.\nmax(_, Y, Y).\n\nclassify(N, neg) :- N < 0, !.\nclassify(0, zero) :- !.\nclassify(_, pos).\n\n% First solution only, with a cut local to findall's goal.\nfirsts(L, F) :- findall(X, (member(X, L), X > 1, !), F).\n\n% Two cuts in one clause.\ntwo(X, Y) :- member(X, [1, 2, 3]), X > 1, !, member(Y, [a, b]), !.\ntwo(none, none).\n\n% A cut inside \\+ is local to it.\nno_big(L) :- \\+ (member(X, L), X > 5, !).\n\n% \"!\" here is data (a character list), not a cut.\nbang(Out) :- append(\"Hi\", \"!\", Out).\n",
   "queries": [
    "a(X)",
+   "a(3)",
    "max(5, 3, Z)",
    "max(1, 3, Z)",
    "classify(0, C)",
@@ -4669,7 +5122,7 @@ dl_print_more([N|Ns], [V|Vs]) :- format(", ~w = ~q", [N, V]), dl_print_more(Ns, 
         const sweep = $('sweep').value.trim() ? { template: $('sweep').value.trim(), values: $('sweepvals').value.trim() || '1..10' } : null;
         const t0 = P.now();
         R = P.analyse($('src').value, queries, {
-          mnn: { fuse: $('o-fuse').checked, splice: $('o-splice').checked, s2a: $('o-s2a').checked, memo: $('o-memo').checked },
+          mnn: { fuse: $('o-fuse').checked, splice: $('o-splice').checked, s2a: $('o-s2a').checked, memo: $('o-memo').checked, det: $('o-det').checked },
           sweep, timing: $('o-time').checked
         });
         R.queries = queries; editedBack = null;

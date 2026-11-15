@@ -42,6 +42,8 @@
     const mnn = !!opts.mnn;
     const feat = { fuse: opts.fuse !== false, // det_prefix, effect_prefix, ite_det, neg_det are detlog2's standard goal rules (plain and MNN)
       scan: opts.scan !== false, // ite_scan/neg_scan: a committed member/2 condition is a first-match scan (plain and MNN)
+      factScan: mnn && opts.scan !== false, // ite_scan over a predicate of facts (MNN)
+      det: mnn && opts.det !== false, // DET: output-free predicates with first-argument-exclusive clauses run without packets
       splice: mnn && opts.splice !== false, s2a: mnn && opts.s2a !== false, memo: mnn && opts.memo !== false };
     const prog = typeof src === 'string' ? P.loadProgram(src) : src;
     const out = { mode: mnn ? 'mnn' : 'plain', preds: [], clauses: [], steps: [], warnings: [], errors: [], report: [], feat, specs: [], queries: [] };
@@ -323,6 +325,11 @@
     function restoreNames(a, b) { /* copy keeps names already */ }
 
     const s2aDone = new Map();
+    // S2A tables are computed once: the DET analysis needs to know which predicates become loops
+    const s2aCache = new Map();
+    const s2aOf = (k, f, n) => { if (!s2aCache.has(k)) s2aCache.set(k, s2aTable(prog, f, n, opts.s2aMax || 1000)); return s2aCache.get(k); };
+    const detPlan = feat.det ? planDet() : new Map();
+    const factRowsUsed = new Set(); // facts predicates scanned by ite_scan: their table p__rows/1 is emitted
     out.ir = new Map(); // the cut-free source the Detlog interpreter runs: normalised clauses, rule CUT applied
     for (const k of order) {
       const cls = srcPreds.get(k).filter(Boolean);
@@ -356,7 +363,7 @@
       }
       // --- MNN S2A unfold ---
       if (feat.s2a && inf.pure && n > 0 && !queryPreds.has(k)) {
-        const tab = s2aTable(prog, f, n, opts.s2aMax || 1000);
+        const tab = s2aOf(k, f, n);
         if (tab.ok) {
           const spec = s2aSpec(tab.rows, n);
           predOut.kind = 's2a';
@@ -370,7 +377,9 @@
       // --- FACTS ---
       const hasCut = cls.some(c => flatConj(c.body).some(g => D(g).t === 'a' && D(g).n === '!'));
       let memoWrap = feat.memo && inf.pure && inf.tree && n > 0 && !queryPreds.has(k);
-      const target = memoWrap ? Cmp(f + '__cpc', A.concat([Rows])) : headCp;
+      const detForms = !memoWrap && detPlan.get(k);
+      const target = memoWrap ? Cmp(f + '__cpc', A.concat([Rows])) : detForms ? Cmp(f + '__cpx', A.concat([Rows])) : headCp;
+      if (detForms) { genDet(k, f, n, detForms, cls); predOut.kind = 'det-mode'; predOut.notes.push('deterministic mode (DET): runs without packets when its first argument selects one clause'); }
       if (memoWrap) {
         predOut.kind = 'memo';
         const Fd = Var('F__1'), R0 = Var('R__9');
@@ -407,6 +416,128 @@
         emit(st, Cmp(':-', [target, conj(work.map((c, i) => Cmp(f + '__c' + (i + 1), A.concat([Rs[i]]))).concat([Cmp(marks ? 'rows_cut_concat' : 'rows_concat', [list(Rs), Rows])]))]), k);
         work.forEach((c, i) => { const Ri = Var('R__0'); genClausePacket(c, Cmp(f + '__c' + (i + 1), A.concat([Ri])), A, Ri, k, f + '__c' + (i + 1), false); });
       }
+    }
+
+    // ----- DET: deterministic mode -----
+    // A predicate qualifies when it writes nothing, is not dynamic, is not tabled (MEMO) or unfolded (S2A),
+    // its clauses (after rule CUT) are one clause or are told apart by distinct non-variable first arguments,
+    // and every body goal is true/fail, a deterministic builtin, a call of a qualifying predicate, or
+    // ( C -> T ; F ) / \+ C with C a conjunction of deterministic builtins.  Greatest fixpoint over calls.
+    function planDet() {
+      const cand = new Map();
+      for (const k of order) {
+        const inf = info.get(k); const cls = srcPreds.get(k).filter(Boolean);
+        if (!inf || queryPreds.has(k) || inf.err || inf.dyn || inf.writes || !cls.length || cls.some(c => c.error)) continue;
+        const [f, nS] = splitKey(k); const n = +nS;
+        if (feat.memo && inf.pure && inf.tree && n > 0) continue;
+        if (feat.s2a && inf.pure && n > 0 && s2aOf(k, f, n).ok) continue;
+        const topCut = cls.some(c => flatConj(c.body).some(g => D(g).t === 'a' && D(g).n === '!'));
+        let forms = cls;
+        if (topCut) { const IA = []; for (let i = 0; i < n; i++) IA.push(Var('A__' + (i + 1))); forms = [cutElim(f, n, cls, IA)]; }
+        // the index argument: the first position where every clause has a distinct non-variable key
+        let ix = 0;
+        if (forms.length > 1) {
+          if (!n) continue;
+          ix = -1;
+          for (let j = 0; j < n && ix < 0; j++) {
+            const keys = forms.map(c => firstKey(D(c.head).a[j]));
+            if (!keys.some(x => x === null) && new Set(keys).size === keys.length) ix = j;
+          }
+          if (ix < 0) continue;
+        }
+        forms = forms.slice(); forms.ix = ix;
+        cand.set(k, forms);
+      }
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const [k, forms] of cand) if (!forms.every(c => detGoalOK(c.body, cand))) { cand.delete(k); changed = true; }
+      }
+      return cand;
+    }
+    function firstKey(t) { t = D(t); if (t.t === 'v') return null; if (t.t === 'c') return 'c' + t.f + '/' + t.a.length; if (t.t === 'a') return 'a' + t.n; if (t.t === 'n') return 'n' + t.v + (t.f ? 'f' : ''); if (t.t === 's') return 's' + t.v; return null; }
+    function detGoalOK(g, cand) {
+      g = D(g); const k = kk(g);
+      if (k === 'true/0' || k === 'fail/0' || k === 'false/0') return true;
+      if (k === ',/2') return detGoalOK(g.a[0], cand) && detGoalOK(g.a[1], cand);
+      if (k === ';/2') { const l = D(g.a[0]); return isIte(l) && detGoalOK(l.a[0], cand) && detGoalOK(l.a[1], cand) && detGoalOK(g.a[1], cand); }
+      if (k === '\\+/1') return detGoalOK(g.a[0], cand);
+      if (userPreds.has(k) || srcPreds.has(k)) return cand.has(k);
+      return isDetBi(g);
+    }
+    // p__cp(A.., Rows) :- copy_term(A, B), p__d(B.., S), p__dr(S, B.., A.., Rows).
+    // p__dr(yes, B.., _, [e(B)]).  p__dr(no, _, _, []).  p__dr(maybe, _, A.., Rows) :- p__cpx(A.., Rows).
+    // p__d(X.., S): Prolog's own clause selection and body, with status yes (one answer), no (none) or
+    // maybe (a first argument was unbound where several clauses could match: the packet code decides).
+    function genDet(k, f, n, forms, cls) {
+      const ix = forms.ix || 0;
+      const st = step('DET', k, cls.map(c => c.origText).join('\n'), { clauses: forms.length, index: ix + 1 });
+      const mk = (p) => { const a = []; for (let i = 0; i < n; i++) a.push(Var(p + '__' + (i + 1))); return a; };
+      const A = mk('A'), B = mk('B'), X = mk('X'), U = () => mk('_').map(() => Var('_'));
+      const S = Var('S__0'), Rows = Var('R__0');
+      const dn = f + '__d', dr = f + '__dr';
+      emit(st, Cmp(':-', [Cmp(cpName(f), A.concat([Rows])), conj([Cmp('copy_term', [list(A), list(B)]), Cmp(dn, B.concat([S])), Cmp(dr, [S].concat(B, A, [Rows]))])]), k);
+      emit(st, Cmp(dr, [Atom('yes')].concat(B, U(), [list([E(list(B))])])), k);
+      emit(st, Cmp(dr, [Atom('no')].concat(U(), U(), [NIL])), k);
+      emit(st, Cmp(':-', [Cmp(dr, [Atom('maybe')].concat(U(), A, [Rows])), Cmp(f + '__cpx', A.concat([Rows]))]), k);
+      const ctx = { n: 0 };
+      const clauseCode = (c, i) => {
+        const cc = copy(Cmp(':-', [c.head, c.body]));
+        for (const v of termVars(cc)) v.name = (v.name && v.name !== '_' ? v.name.replace(/__+/g, '_') : 'V') + '__d' + (i + 1);
+        const h = D(cc.a[0]); const hargs = h.t === 'c' ? h.a.slice() : [];
+        const first = hargs[ix];
+        // a head argument that is a variable seen for the first time is the argument itself: no unification
+        const seen = new Set(termVars(forms.length > 1 && n ? first : NIL));
+        const rest = [];
+        hargs.forEach((x, j) => {
+          if (j === ix && forms.length > 1) return;
+          const xd = D(x);
+          if (xd.t === 'v' && !seen.has(xd)) { seen.add(xd); seen.add(X[j]); xd.ref = X[j]; return; }
+          termVars(xd).forEach(v => seen.add(v));
+          rest.push(eq(X[j], x));
+        });
+        const body = detSeq(flatConj(P.resolve(cc.a[1])).map(g => P.resolve(g)), S, ctx);
+        const restR = rest.map(r => P.resolve(r));
+        return { first: first && P.resolve(first), code: restR.length ? Cmp('if_commit', [conj(restR), body, eq(S, Atom('no'))]) : body };
+      };
+      const codes = forms.map(clauseCode);
+      let body;
+      if (forms.length === 1) body = codes[0].code;
+      else {
+        let chain = eq(S, Atom('no'));
+        for (let i = codes.length - 1; i >= 0; i--) chain = Cmp('if_commit', [eq(X[ix], codes[i].first), codes[i].code, chain]);
+        body = Cmp('if_commit', [Cmp('var', [X[ix]]), eq(S, Atom('maybe')), chain]);
+      }
+      emit(st, Cmp(':-', [Cmp(dn, X.concat([S])), body]), k);
+    }
+    function detSeq(gs, S, ctx) {
+      if (!gs.length) return eq(S, Atom('yes'));
+      const g = D(gs[0]), rest = gs.slice(1), k = kk(g);
+      if (k === 'true/0') return detSeq(rest, S, ctx);
+      if (k === 'fail/0' || k === 'false/0') return eq(S, Atom('no'));
+      if (k === ',/2') return detSeq(flatConj(g).concat(rest), S, ctx);
+      // a condition of deterministic builtins is an if_commit/3 condition as it stands; any other deterministic
+      // condition runs with its own status Sc inside the condition: no fails it (undoing its bindings),
+      // yes commits, maybe abandons the deterministic attempt
+      const condOf = (C, yesCode, noCode, S1) => {
+        if (flatConj(C).every(isDetBi)) return Cmp('if_commit', [C, yesCode, noCode]);
+        const Sc = Var('S__' + (++ctx.n));
+        return Cmp('if_commit', [conj([detSeq(flatConj(C), Sc, ctx), Cmp('\\==', [Sc, Atom('no')])]), Cmp('if_commit', [eq(Sc, Atom('yes')), yesCode, eq(S1, Atom('maybe'))]), noCode]);
+      };
+      if (k === ';/2') {
+        const C = D(g.a[0]).a[0], T = D(g.a[0]).a[1], F = g.a[1];
+        if (!rest.length) return condOf(C, detSeq(flatConj(T), S, ctx), detSeq(flatConj(F), S, ctx), S);
+        const S2 = Var('S__' + (++ctx.n));
+        return conj([condOf(C, detSeq(flatConj(T), S2, ctx), detSeq(flatConj(F), S2, ctx), S2), Cmp('if_commit', [eq(S2, Atom('yes')), detSeq(rest, S, ctx), eq(S, S2)])]);
+      }
+      if (k === '\\+/1') return condOf(g.a[0], eq(S, Atom('no')), detSeq(rest, S, ctx), S);
+      if (userPreds.has(k) || srcPreds.has(k)) {
+        const as = g.t === 'c' ? g.a : [];
+        if (!rest.length) return Cmp(P.name(g) + '__d', as.concat([S]));
+        const S1 = Var('S__' + (++ctx.n));
+        return conj([Cmp(P.name(g) + '__d', as.concat([S1])), Cmp('if_commit', [eq(S1, Atom('yes')), detSeq(rest, S, ctx), eq(S, S1)])]);
+      }
+      return Cmp('if_commit', [g, detSeq(rest, S, ctx), eq(S, Atom('no'))]);
     }
 
     function cutElim(f, n, cls, A) {
@@ -447,14 +578,24 @@
       if (cl.merged) hargs.forEach((h, i) => { const hv = D(h); if (hv.t === 'v') hv.name = 'H__' + (i + 1); });
       const Vs = termVars(Cmp('-', [head, body]));
       ctx.L = list(Vs);
-      const R0 = fresh(ctx, 'R');
+      const distinctVars = hargs.every((h, i) => { const hv = D(h); return hv.t === 'v' && hargs.findIndex(x => D(x) === hv) === i; });
+      // MNN: when the environment is exactly the head arguments, projecting the rows on the head renames them
+      // only: the rows are the packet (rule CLAUSE with identity projection)
+      const identity = (feat.det || feat.splice) && !ctx.marks && distinctVars && hargs.length === Vs.length && hargs.every((h, i) => D(h) === Vs[i]);
+      const st = step('CLAUSE', k, cl.origText || P.showClause(Cmp(':-', [cl.head, cl.body])), { single, vars: Vs.map(v => v.name), identity });
+      // MNN call-through:  h(V1..Vn) :- q(V1..Vn)  with distinct variables has q's packet
+      const bg = D(body);
+      if (identity && single && (userPreds.has(kk(bg)) || srcPreds.has(kk(bg))) && bg.t === 'c' && bg.a.length === hargs.length && bg.a.every((x, i) => D(x) === Vs[i]) && !(feat.det && detPlan.has(kk(bg)) && false)) {
+        st.info.callThrough = true;
+        emit(st, Cmp(':-', [Cmp(P.name(target), A.concat([Rows])), Cmp(cpName(P.name(bg)), A.concat([Rows]))]), k);
+        return;
+      }
+      const R0 = identity ? Rows : fresh(ctx, 'R');
       const code = genGoal(body, ctx.L, R0, ctx);
-      const st = step('CLAUSE', k, cl.origText || P.showClause(Cmp(':-', [cl.head, cl.body])), { single, vars: Vs.map(v => v.name) });
       // rename the call apart and unify it with the head (resolution), then project the env rows on the head
-      let proj = [Cmp('project_rows', [R0, ctx.L, list(hargs), Rows])];
+      let proj = identity ? [] : [Cmp('project_rows', [R0, ctx.L, list(hargs), Rows])];
       if (ctx.marks && single) { const R9 = fresh(ctx, 'R'); proj = [Cmp('project_rows', [R0, ctx.L, list(hargs), R9]), Cmp('strip_cut', [R9, Rows])]; }
       // when the head arguments are distinct variables the renaming always succeeds: no decision is needed
-      const distinctVars = hargs.every((h, i) => { const hv = D(h); return hv.t === 'v' && hargs.findIndex(x => D(x) === hv) === i; });
       const rename = Cmp('copy_term', [list(A), list(hargs)]);
       const clauseBody = distinctVars ? conj([rename].concat(code, proj)) : Cmp('if_commit', [rename, conj(code.concat(proj)), eq(Rows, NIL)]);
       emit(st, Cmp(':-', [Cmp(P.name(target), A.concat([Rows])), clauseBody]), k);
@@ -488,10 +629,19 @@
         case '!/0': step('cut_mark', ctx.k, '!'); ctx.usedMarks = true; return [eq(O, list([Atom('cut'), E(L)]))];
       }
       if (userPreds.has(k) || srcPreds.has(k)) {
-        const st = step('call', ctx.k, show(g));
-        const Pk = fresh(ctx, 'P');
         const as = g.t === 'c' ? g.a : [];
-        return [Cmp(cpName(P.name(g)), as.concat([Pk])), Cmp('splice_extend', [Pk, list(as), E(L), O])];
+        const Pk = fresh(ctx, 'P');
+        const packetCall = [Cmp(cpName(P.name(g)), as.concat([Pk])), Cmp('splice_extend', [Pk, list(as), E(L), O])];
+        // MNN DET-call: a deterministic-mode callee binds the environment in place; status maybe undoes that and
+        // runs the packet call
+        if (feat.det && detPlan.has(k) && !(feat.memo && info.get(k) && info.get(k).pure && info.get(k).tree)) {
+          step('call_det', ctx.k, show(g));
+          const S = fresh(ctx, 'S');
+          return [Cmp('if_commit', [conj([Cmp(P.name(g) + '__d', as.concat([S])), Cmp('\\==', [S, Atom('maybe')])]),
+            Cmp('if_commit', [eq(S, Atom('yes')), eq(O, list([E(L)])), eq(O, NIL)]), conj(packetCall)])];
+        }
+        step('call', ctx.k, show(g));
+        return packetCall;
       }
       const bk = biKind(k, g);
       if (bk === 'effect' || bk === 'dbeffect') {
@@ -612,28 +762,34 @@
       const gs = flatConj(C).filter(x => !(D(x).t === 'a' && D(x).n === 'true'));
       const i = gs.findIndex(x => !isDetBi(x));
       if (i < 0) return null;
-      const gen = D(gs[i]);
-      if (kk(gen) !== 'member/2' || userPreds.has('member/2') || srcPreds.has('member/2')) return null;
+      const gen = D(gs[i]); const gk = kk(gen);
       const post = gs.slice(i + 1);
       if (!post.every(isDetBi)) return null;
-      return { pre: gs.slice(0, i), gen, post };
+      if (gk === 'member/2' && !userPreds.has('member/2') && !srcPreds.has('member/2')) return { pre: gs.slice(0, i), gen, post };
+      // a predicate of facts (no cut, not dynamic): its first answer is the first fact that unifies
+      const inf = info.get(gk);
+      if (inf && inf.facts && !inf.dyn && !inf.cut && !queryPreds.has(gk) && feat.factScan) return { pre: gs.slice(0, i), gen, post, facts: gk };
+      return null;
     }
     // nm(Xs, e(L), O) :- if_commit(Xs = [Y|Ys], if_commit((X = Y, Post), T(L, O), nm(Ys, e(L), O)), F(L, O)).
     // The condition binds the environment in place: if_commit/3 undoes a failed attempt, and the first success
     // is the row T runs on.  An open list is extended one cell at a time, as member/2 does.
     function genScan(sc, T, F, L, O, ctx, g, kind) {
-      const st = step(kind === 'neg' ? 'neg_scan' : 'ite_scan', ctx.k, show(g), { gen: show(sc.gen), filters: sc.pre.concat(sc.post).map(x => show(x)) });
+      const st = step(kind === 'neg' ? 'neg_scan' : 'ite_scan', ctx.k, show(g), { gen: show(sc.gen), filters: sc.pre.concat(sc.post).map(x => show(x)), facts: sc.facts || null });
       const nm = auxName(ctx, 'q');
       const m = new Map(); const L2 = copy(L, m); const Ob = Var('O__0');
       const Xs = Var('Y__1'), Y = Var('Y__2'), Ys = Var('Y__3');
       const gen2 = copy(sc.gen, m);
-      const cond = conj([eq(gen2.a[0], Y)].concat(sc.post.map(x => copy(x, m))));
+      // member/2: X = Y.  facts: the fact (renamed apart) unifies with the call's arguments
+      const first = sc.facts ? Cmp('copy_term', [Y, list(gen2.t === 'c' ? gen2.a : [])]) : eq(gen2.a[0], Y);
+      const cond = conj([first].concat(sc.post.map(x => copy(x, m))));
       const tC = conj(genGoal(copy(T, m), L2, Ob, ctx)), fC = conj(genGoal(copy(F, m), L2, Ob, ctx));
       const body = Cmp('if_commit', [eq(Xs, cons(Y, Ys)), Cmp('if_commit', [cond, tC, Cmp(nm, [Ys, E(L2), Ob])]), fC]);
       insertAux(ctx, st, [Cmp(':-', [Cmp(nm, [Xs, E(L2), Ob]), body])]);
-      const call = Cmp(nm, [sc.gen.a[1], E(L), O]);
-      if (!sc.pre.length) return [call];
-      return [Cmp('if_commit', [conj(sc.pre), call, conj(genGoal(F, L, O, ctx))])];
+      let call = [Cmp(nm, [sc.gen.a[1], E(L), O])];
+      if (sc.facts) { const Tb = fresh(ctx, 'F'); factRowsUsed.add(sc.facts); call = [Cmp(P.name(sc.gen) + '__rows', [Tb]), Cmp(nm, [Tb, E(L), O])]; }
+      if (!sc.pre.length) return call;
+      return [Cmp('if_commit', [conj(sc.pre), conj(call), conj(genGoal(F, L, O, ctx))])];
     }
     function genFindall(g, L, O, ctx, agg) {
       const st = step(agg ? 'aggregate' : 'findall', ctx.k, show(agg || g), {});
@@ -655,6 +811,20 @@
       }
       return code;
     }
+
+    // fact tables for scans:  p__rows([[Args1], [Args2], ...]).
+    for (const k of factRowsUsed) {
+      const [f] = splitKey(k);
+      const rows = srcPreds.get(k).filter(Boolean).map(c => list(D(c.head).t === 'c' ? D(c.head).a : []));
+      const st = step('FACTS', k, srcPreds.get(k).filter(Boolean).map(c => c.origText).join('\n'), { n: rows.length, table: true });
+      const at = out.clauses.findIndex(c => c.pred === k);
+      const cl = { term: P.copy(Cmp(f + '__rows', [list(rows)])), step: st.id, pred: k };
+      // keep the table with its predicate's other clauses
+      let j = at; while (j >= 0 && j < out.clauses.length && out.clauses[j].pred === k) j++;
+      if (at < 0) out.clauses.push(cl); else out.clauses.splice(j, 0, cl);
+    }
+    // inserting shifts clause positions: every step's clause list is rebuilt from the clauses
+    if (factRowsUsed.size) { for (const st of out.steps) st.clauses = []; out.clauses.forEach((c, i) => out.steps[c.step - 1].clauses.push(i)); }
 
     // ---- 3. assemble ----
     out.genPreds = genPreds;

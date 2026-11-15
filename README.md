@@ -95,7 +95,9 @@ All times are microseconds per run, in Node 22 and `cc -O2`, recorded by `node b
 
 **Against hand-written code.** Apart from `fib`, which MEMO makes faster than both references, MNN Detlog's C export is within 2.9–16× of the hand-written C, and the JIT within 2.6–9× of the hand-written JavaScript. The exception is `anc(X, dee)`: its C takes nanoseconds, and MNN's cost is the fixed per-query cost of 2–3 µs. The remaining gap is term allocation: a C term is a 72-byte cell, and every solution of `permutation/2` is built as a list so that it can be an answer.
 
-**In the app**, the results show **% of C's speed**: the same algorithm's time written by hand in C, over MNN Detlog's time (100% is as fast as C). It appears per query and as a mean, for the benchmark algorithms, and only when the reference's answers are exactly the program's. The app can't compile C, so it times the hand-written JavaScript in the browser and scales that by the C ÷ JavaScript ratio measured for that algorithm (`src/cref.js`). The C tab gives the C export's measured %.
+**In the app**, the results show **% of C's speed**: the same algorithm's time written by hand in C, over MNN Detlog's time (100% is as fast as C). It appears per query and as a mean, for the benchmark algorithms, and only when the reference's answers are exactly the program's. The app can't compile C, so it times the hand-written JavaScript in the browser and scales that by the C ÷ JavaScript ratio measured for that algorithm (`src/cref.js`). The C tab gives the C export's recorded %.
+
+**The C export reads its own % of C's speed.** For a query that runs one of the benchmark algorithms (and whose answers are exactly the hand-written version's), the generated program includes the hand-written C from `bench/reference.c`. After the query it times that in the same process and prints, for example, `% hand-written C (queens): 0.0076 ms per run; this program runs at 7.98% of C's speed`. Use `./prog -r N` for a steady figure; the step limit applies per run. `node cli.js prog.pl -q QUERY --c prog.c --run [REPS]` builds and runs it, picking the repetitions when REPS is left out.
 
 **The C export** has the same native tier as the JIT. The JS engine runs the queries once, and every (predicate, mode) its native tier compiled is compiled to C as well: `long long` integers, outputs through pointers, `longjmp` to bail out, memo tables keyed by integers. It also has the JIT's generate-and-test fusion. Its runtime allocates a compound in one block, shares ground subterms when copying, and clears the memo table in proportion to what was stored.
 
@@ -169,6 +171,7 @@ node build.js        # builds dist/ and index.html
 node test/run.js     # or: npm test
 node cli.js examples/fib.pl -q "fib(15, F)" --stats --sweep "fib(N, F)" --values 2..18 \
     --detlog fib_detlog.pl --c fib.c --back fib_back.pl --proof proof.txt
+node cli.js examples/queens.pl -q "queens(7, Qs)" --c queens.c --run   # build, run, % of C's speed
 ```
 
 ## Inputs and outputs

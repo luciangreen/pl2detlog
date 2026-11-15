@@ -34,12 +34,12 @@
   // each: query pattern -> { alg, run: () => result, rows: result -> expected answer texts }; sizes are capped
   // so that the reference never takes long (the query itself has already run)
   const REFS = [
-    [/^fib\((\d+),\s*F\)$/, m => { const n = N(m[1]); return n !== null && n <= 32 && { alg: 'fib', run: () => fib(n), rows: v => ['F = ' + v] }; }],
-    [/^numlist\(1,\s*(\d+),\s*L\),\s*nrev\(L,\s*R\)$/, m => { const n = N(m[1]); return n !== null && n >= 1 && n <= 3000 && { alg: 'nrev', run: () => nrev(numlist(1, n)), rows: r => { const a = toArr(r); return ['L = ' + show(a.slice().reverse()) + ', R = ' + show(a)]; } }; }],
-    [/^numlist\(1,\s*(\d+),\s*L\),\s*doubles\(L,\s*D\),\s*total\(D,\s*S\)$/, m => { const n = N(m[1]); return n !== null && n >= 1 && n <= 100000 && { alg: 'doubles', run: () => total(doubles(numlist(1, n))), rows: s => { const a = toArr(numlist(1, n)); return ['L = ' + show(a) + ', D = ' + show(a.map(x => 2 * x)) + ', S = ' + s]; } }; }],
-    [/^queens\((\d+),\s*Qs\)$/, m => { const n = N(m[1]); return n !== null && n >= 1 && n <= 9 && { alg: 'queens', run: () => queens(n), rows: s => s.map(q => 'Qs = ' + show(q)) }; }],
-    [/^pin\(A,\s*B,\s*C\)$/, () => ({ alg: 'pin', run: pin, rows: s => s.map(([a, b, c]) => 'A = ' + a + ', B = ' + b + ', C = ' + c) })],
-    [/^anc\(X,\s*dee\)$/, () => ({ alg: 'anc', run: () => anc(3), rows: s => s.map(i => 'X = ' + PEOPLE[i]) })],
+    [/^fib\((\d+),\s*F\)$/, m => { const n = N(m[1]); return n !== null && n <= 32 && { alg: 'fib', n, run: () => fib(n), rows: v => ['F = ' + v] }; }],
+    [/^numlist\(1,\s*(\d+),\s*L\),\s*nrev\(L,\s*R\)$/, m => { const n = N(m[1]); return n !== null && n >= 1 && n <= 3000 && { alg: 'nrev', n, run: () => nrev(numlist(1, n)), rows: r => { const a = toArr(r); return ['L = ' + show(a.slice().reverse()) + ', R = ' + show(a)]; } }; }],
+    [/^numlist\(1,\s*(\d+),\s*L\),\s*doubles\(L,\s*D\),\s*total\(D,\s*S\)$/, m => { const n = N(m[1]); return n !== null && n >= 1 && n <= 100000 && { alg: 'doubles', n, run: () => total(doubles(numlist(1, n))), rows: s => { const a = toArr(numlist(1, n)); return ['L = ' + show(a) + ', D = ' + show(a.map(x => 2 * x)) + ', S = ' + s]; } }; }],
+    [/^queens\((\d+),\s*Qs\)$/, m => { const n = N(m[1]); return n !== null && n >= 1 && n <= 9 && { alg: 'queens', n, run: () => queens(n), rows: s => s.map(q => 'Qs = ' + show(q)) }; }],
+    [/^pin\(A,\s*B,\s*C\)$/, () => ({ alg: 'pin', n: 0, run: pin, rows: s => s.map(([a, b, c]) => 'A = ' + a + ', B = ' + b + ', C = ' + c) })],
+    [/^anc\(X,\s*dee\)$/, () => ({ alg: 'anc', n: 3, run: () => anc(3), rows: s => s.map(i => 'X = ' + PEOPLE[i]) })],
   ];
   // ms per run, timed in batches (the clock is read per batch, not per run, as nanosecond runs need):
   // after a warm-up, the batch size is set so a batch takes about 4 ms; the median of 3 batches
@@ -54,17 +54,23 @@
   }
   // q: the query text; events: the program's answer events.  Returns null, or
   // { alg, jsMs (hand-written JavaScript, timed here), cMs (estimated C on this machine), ratio }
-  function cReference(q, events) {
+  // the benchmark algorithm a query runs, or null: its pattern matches (cRefPattern) and the hand-written
+  // version's answers are exactly the program's answers (cRefMatch)
+  function cRefPattern(q) {
     q = q.trim().replace(/\.\s*$/, '');
-    for (const [re, mk] of REFS) {
-      const m = q.match(re); if (!m) continue;
-      const ref = mk(m); if (!ref) return null;
-      const exp = ref.rows(ref.run());
-      if (!events || events.some(e => e.k !== 'row') || events.length !== exp.length || events.some((e, i) => e.text !== exp[i])) return null;
-      const jsMs = batchTime(ref.run);
-      return { alg: ref.alg, jsMs, cMs: jsMs * C_OVER_JS[ref.alg], ratio: C_OVER_JS[ref.alg] };
-    }
+    for (const [re, mk] of REFS) { const m = q.match(re); if (m) return mk(m) || null; }
     return null;
+  }
+  function cRefMatch(q, events) {
+    const ref = cRefPattern(q); if (!ref) return null;
+    const exp = ref.rows(ref.run());
+    if (!events || events.some(e => e.k !== 'row') || events.length !== exp.length || events.some((e, i) => e.text !== exp[i])) return null;
+    return ref;
+  }
+  function cReference(q, events) {
+    const ref = cRefMatch(q, events); if (!ref) return null;
+    const jsMs = batchTime(ref.run);
+    return { alg: ref.alg, jsMs, cMs: jsMs * C_OVER_JS[ref.alg], ratio: C_OVER_JS[ref.alg] };
   }
   // the C export of the MNN Detlog against the hand-written C, both compiled with cc -O2 on one machine
   // (bench/results.json; µs per run)
@@ -79,5 +85,5 @@
     "pin(A, B, C)": { c: 0.5094, mnnC: 4.1 },
     "anc(X, dee)": { c: 0.0025, mnnC: 3.6 }
   };
-  P.cReference = cReference; P.C_OVER_JS = C_OVER_JS; P.C_EXPORT_RECORDED = C_EXPORT_RECORDED;
+  P.cReference = cReference; P.cRefPattern = cRefPattern; P.cRefMatch = cRefMatch; P.C_OVER_JS = C_OVER_JS; P.C_EXPORT_RECORDED = C_EXPORT_RECORDED;
 })(typeof module !== 'undefined' && module.exports ? (globalThis.PL2D = globalThis.PL2D || {}) : (window.PL2D = window.PL2D || {}));

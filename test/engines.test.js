@@ -72,9 +72,33 @@ test('C export: native tier on and off print the same answers', (t) => {
       const f = path.join(dir, ex.id + (native ? '_n' : '_g'));
       fs.writeFileSync(f + '.c', code);
       cp.execSync('cc -O2 -w -o ' + f + ' ' + f + '.c -lm');
-      outs.push(cp.execFileSync(f).toString().split('\n').filter(l => !l.startsWith('% steps')).join('\n'));
+      outs.push(cp.execFileSync(f).toString().split('\n').filter(l => !l.startsWith('% steps') && !l.startsWith('% hand-written')).join('\n'));
     }
     assert.strictEqual(outs[1], outs[0], ex.id);
   }
   assert.ok(natives >= 10, natives + ' native C functions');
+});
+
+// The C export's own reading: for a query that runs a benchmark algorithm, the program includes the hand-written
+// C (only when its answers are exactly the program's) and prints its speed as a % of C's.
+test('C export: % of C\'s speed for benchmark queries', (t) => {
+  const cp = require('child_process'), fs = require('fs'), os = require('os');
+  try { cp.execSync('cc --version', { stdio: 'ignore' }); } catch (e) { t.skip('no C compiler'); return; }
+  P.C_RUNTIME = fs.readFileSync(path.join(__dirname, '..', 'src', 'runtime.c'), 'utf8');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pl2d-cref-'));
+  const cases = [['fib', 'fib(16, F)', 'fib'], ['lists', 'numlist(1, 40, L), nrev(L, R)', 'nrev'], ['lists', 'numlist(1, 100, L), doubles(L, D), total(D, S)', 'doubles'],
+    ['queens', 'queens(5, Qs)', 'queens'], ['splice', 'pin(A, B, C)', 'pin'], ['unfold', 'anc(X, dee)', 'anc']];
+  for (const [id, q, alg] of cases) {
+    const ex = P.EXAMPLES.find(e => e.id === id);
+    const conv = P.convert(ex.src, { mnn: true, queries: [q] });
+    const r = P.toC(conv.text, { queries: conv.queries });
+    assert.deepStrictEqual(r.refs, [q], id);
+    const f = path.join(dir, alg); fs.writeFileSync(f + '.c', r.code); cp.execSync('cc -O2 -w -o ' + f + ' ' + f + '.c -lm');
+    const out = cp.execFileSync(f, ['-r', '20']).toString();
+    const m = out.match(/^% hand-written C \((\w+)\): ([0-9.]+) ms per run; this program runs at ([0-9.e+]+)% of C's speed$/m);
+    assert.ok(m, out); assert.strictEqual(m[1], alg); assert.ok(+m[3] > 0, out);
+  }
+  // no reference when the program's answers are not the algorithm's
+  const other = P.convert('fib(N, F) :- F is N * 2.', { mnn: true, queries: ['fib(10, F)'] });
+  assert.deepStrictEqual(P.toC(other.text, { queries: other.queries }).refs, []);
 });

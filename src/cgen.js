@@ -89,6 +89,53 @@ static void nmt_put(NMT *t, long long k, int st, long long iv, Term *tv) {
   t->s[i].key = k; t->s[i].ep = nat_epoch; t->s[i].st = st; t->s[i].iv = iv; t->s[i].tv = tv;
 }
 `;
+  // The hand-written C of the benchmark algorithms (as bench/reference.c), for queries that run one of them:
+  // the program times it too and prints this program's speed as a % of C's.  Lists are cells from a bump
+  // heap, reset before each run, as in bench/reference.c.
+  const REF_C = `
+/* ---------- hand-written C reference (bench/reference.c) ---------- */
+typedef struct ref_cell { long head; struct ref_cell *tail; } ref_cell;
+static ref_cell *ref_heap; static size_t ref_hp, ref_hcap;
+static volatile long ref_sink;
+static void ref_need(size_t n) { if (n > ref_hcap) { free(ref_heap); ref_hcap = n; ref_heap = (ref_cell *)malloc(n * sizeof(ref_cell)); if (!ref_heap) dl_die("out of memory", NULL); } }
+static ref_cell *ref_cons(long h, ref_cell *t) { ref_cell *c = &ref_heap[ref_hp++]; c->head = h; c->tail = t; return c; }
+static long ref_fib(long n) { if (n == 0) return 0; if (n == 1) return 1; return ref_fib(n - 1) + ref_fib(n - 2); }
+static ref_cell *ref_app(ref_cell *a, ref_cell *l) { if (!a) return l; return ref_cons(a->head, ref_app(a->tail, l)); }
+static ref_cell *ref_nrev(ref_cell *l) { if (!l) return NULL; return ref_app(ref_nrev(l->tail), ref_cons(l->head, NULL)); }
+static ref_cell *ref_numlist(long lo, long hi) { ref_cell *r = NULL; for (long i = hi; i >= lo; i--) r = ref_cons(i, r); return r; }
+static ref_cell *ref_doubles(ref_cell *l) { if (!l) return NULL; return ref_cons(2 * l->head, ref_doubles(l->tail)); }
+static long ref_total(ref_cell *l) { long s = 0; for (; l; l = l->tail) s += l->head; return s; }
+static int ref_no_attack(long q, const long *qs, int n, long d) { for (int i = 0; i < n; i++, d++) if (q == qs[i] + d || q == qs[i] - d) return 0; return 1; }
+static int ref_safe(const long *qs, int n) { for (int i = 0; i < n; i++) if (!ref_no_attack(qs[i], qs + i + 1, n - i - 1, 1)) return 0; return 1; }
+static long ref_sols; static long ref_solbuf[64][16];
+static void ref_perm(long *rest, int nrest, long *out, int k, int n) {
+  if (nrest == 0) { if (ref_safe(out, n)) { for (int i = 0; i < n; i++) ref_solbuf[ref_sols & 63][i] = out[i]; ref_sols++; } return; }
+  for (int i = 0; i < nrest; i++) { long x = rest[i], tmp[16]; int m = 0; for (int j = 0; j < nrest; j++) if (j != i) tmp[m++] = rest[j]; out[k] = x; ref_perm(tmp, m, out, k + 1, n); }
+}
+static long ref_queens(int n) { long ns[16], out[16]; for (int i = 0; i < n; i++) ns[i] = i + 1; ref_sols = 0; ref_perm(ns, n, out, 0, n); return ref_sols; }
+static long ref_pin(void) { long n = 0, acc = 0; for (long a = 0; a <= 9; a++) for (long b = 0; b <= 9; b++) for (long c = 0; c <= 9; c++) if (a + b + c == 25) { n++; acc += a * 100 + b * 10 + c; } ref_sink = acc; return n; }
+static const int ref_par[][2] = { {0, 1}, {1, 2}, {2, 3} };
+static int ref_ancs[16], ref_nanc;
+static int ref_anc_bb(int z, int y) { int n = 0; for (int i = 0; i < 3; i++) if (ref_par[i][0] == z && ref_par[i][1] == y) n++; for (int i = 0; i < 3; i++) if (ref_par[i][0] == z) n += ref_anc_bb(ref_par[i][1], y); return n; }
+static void ref_anc(int y) { for (int i = 0; i < 3; i++) if (ref_par[i][1] == y) ref_ancs[ref_nanc++] = ref_par[i][0]; for (int i = 0; i < 3; i++) for (int k = ref_anc_bb(ref_par[i][1], y); k > 0; k--) ref_ancs[ref_nanc++] = ref_par[i][0]; }
+/* ms per run of a batch loop: batches grow until one takes 20 ms; then the median of 3 batches */
+static double ref_ms(void (*run)(long)) {
+  long n = 1; double t;
+  for (;;) { double t0 = now_ms(); run(n); t = now_ms() - t0; if (t >= 20 || n >= (1L << 30)) break; n = t < 1 ? n * 16 : (long)(n * 24 / t) + 1; }
+  double ts[3]; for (int b = 0; b < 3; b++) { double t0 = now_ms(); run(n); ts[b] = (now_ms() - t0) / n; }
+  if (ts[0] > ts[1]) { double x = ts[0]; ts[0] = ts[1]; ts[1] = x; } if (ts[1] > ts[2]) { double x = ts[1]; ts[1] = ts[2]; ts[2] = x; } if (ts[0] > ts[1]) { double x = ts[0]; ts[0] = ts[1]; ts[1] = x; }
+  return ts[1];
+}
+`;
+  // one run of the hand-written algorithm, and the heap cells it needs
+  const refBody = r => ({
+    fib: ['ref_sink = ref_fib(' + r.n + ');', 0],
+    nrev: ['ref_sink = ref_nrev(ref_numlist(1, ' + r.n + '))->head;', r.n * 2 + r.n * (r.n + 1) / 2 + 16],
+    doubles: ['ref_sink = ref_total(ref_doubles(ref_numlist(1, ' + r.n + ')));', r.n * 2 + 16],
+    queens: ['ref_sink = ref_queens(' + r.n + ');', 0],
+    pin: ['ref_sink = ref_pin();', 0],
+    anc: ['ref_nanc = 0; ref_anc(3); ref_sink = ref_nanc;', 0],
+  })[r.alg];
   function toC(detlogText, opts) {
     opts = opts || {};
     const prog = P.loadProgram(detlogText);
@@ -347,18 +394,42 @@ static void nmt_put(NMT *t, long long k, int st, long long iv, Term *tv) {
     }
     // main
     const qs = (opts.queries || []).filter(q => q.pred && prog.preds.has(q.pred + '__cp/' + (q.vars.length + 1)));
-    let main = 'int main(int argc, char **argv) {\n  int reps = 1; if (argc > 2 && !strcmp(argv[1], "-r")) reps = atoi(argv[2]); if (reps < 1) reps = 1;\n  rt_init(); init_tables();\n';
+    // queries that run a benchmark algorithm, checked by the hand-written version giving exactly their answers
+    const refs = new Map(), refFns = [];
+    if (opts.cReference !== false && P.cRefPattern && P.runDetlogFast) {
+      let rp = null;
+      qs.forEach((q, i) => {
+        if (!P.cRefPattern(q.text)) return;
+        try {
+          rp = rp || P.loadProgram(detlogText);
+          const r = P.runDetlogFast(rp, q.pred, q.vars, { stepLimit: 2e7 });
+          const ref = !r.error && P.cRefMatch(q.text, r.events);
+          if (!ref) return;
+          const [body, cells] = refBody(ref);
+          refs.set(i, { fn: 'ref_q' + i, alg: ref.alg, cells });
+          refFns.push('static void ref_q' + i + '(long reps) { for (long i = 0; i < reps; i++) { ref_hp = 0; ' + body + ' } }');
+        } catch (e) { /* no reference for this query */ }
+      });
+    }
+    let main = 'int main(int argc, char **argv) {\n  int reps = 1; if (argc > 2 && !strcmp(argv[1], "-r")) reps = atoi(argv[2]); if (reps < 1) reps = 1;\n  rt_init(); init_tables(); long lim0 = dl_step_limit;\n';
     qs.forEach(q => {
       const k = q.pred + '__cp/' + (q.vars.length + 1);
       main += '  {\n    const char *nm[] = {' + (q.vars.length ? q.vars.map(cstrBytes).join(', ') : '""') + '};\n';
       main += '    Term *qv[' + (q.vars.length + 1) + ']; int ok = 0; long s0 = dl_steps, d0 = dl_decisions; double t0 = now_ms();\n';
       // every repetition but the last runs on memory that is released afterwards (the last one is printed)
       main += '    ArenaMark am = arena_mark(); size_t tm = TR_TOP;\n';
-      main += '    for (int rep = 0; rep < reps; rep++) { if (rep) { undo(tm); arena_release(am); } for (int i = 0; i < ' + (q.vars.length + 1) + '; i++) qv[i] = mk_var(); memo_clear(); ok = ' + pfn(k) + '(qv); }\n';
+      main += '    for (int rep = 0; rep < reps; rep++) { if (rep) { undo(tm); arena_release(am); } dl_step_limit = dl_steps + lim0; /* the step limit is per run */ for (int i = 0; i < ' + (q.vars.length + 1) + '; i++) qv[i] = mk_var(); memo_clear(); ok = ' + pfn(k) + '(qv); }\n';
       main += '    double t1 = now_ms();\n';
       main += '    printf("?- %s.\\n", ' + cstrBytes(q.text) + ');\n';
       main += '    if (!ok) puts("% query failed (a packet predicate must succeed)"); else print_packet(qv[' + q.vars.length + '], nm, ' + q.vars.length + ');\n';
-      main += '    printf("%% steps %ld, decisions %ld, %.4f ms per run\\n", (dl_steps - s0) / reps, (dl_decisions - d0) / reps, (t1 - t0) / reps);\n  }\n';
+      main += '    printf("%% steps %ld, decisions %ld, %.4f ms per run\\n", (dl_steps - s0) / reps, (dl_decisions - d0) / reps, (t1 - t0) / reps);\n';
+      const ref = refs.get(qs.indexOf(q));
+      if (ref) {
+        // the same algorithm written by hand in C, timed in this process: this program's speed as a % of C's
+        main += '    if (ok) { ref_need(' + Math.max(16, Math.ceil(ref.cells)) + '); double rc = ref_ms(' + ref.fn + '), me = (t1 - t0) / reps;\n';
+        main += '      printf("%% hand-written C (' + ref.alg + '): %.6f ms per run; this program runs at %.3g%% of C\'s speed%s\\n", rc, 100 * rc / me, reps < 10 ? " (one timing run: use -r N for a steady figure)" : ""); }\n';
+      }
+      main += '  }\n';
     });
     main += '  return 0;\n}\n';
     const atomInit = [...atoms.keys()].map((n, i) => '  AT[' + i + '] = mk_atom(' + cstrBytes(n) + ');').join('\n');
@@ -371,11 +442,11 @@ static void nmt_put(NMT *t, long long k, int st, long long iv, Term *tv) {
     const tables = 'static Term *AT[' + Math.max(1, atoms.size) + '];\nstatic const char *FN[' + Math.max(1, fns.size) + '];\nstatic Term *KC[' + Math.max(1, kcs.length) + '];\n' +
       'static Term *mk_list(int n, Term **xs, Term *tail) { Term *r = tail; for (int i = n; i-- > 0;) r = mk_cons(xs[i], r); return r; }\n' +
       'static void init_tables(void) {\n' + atomInit + '\n' + fnInit + '\n' + kcInit + '\n}\n';
-    const natProtos = [...sigs.values()].map(x => x + ';').join('\n');
+    const natProtos = [...sigs.values()].map(x => x + ';').join('\n') + (refs.size ? REF_C + refFns.join('\n') + '\n' : '');
     const code = header + lib + '\n/* ---------- program ---------- */\n' + tables + natLib + protos.join('\n') + '\n' + natProtos + '\n\n' +
       (nDefs.length ? '/* native tier: DET predicates in the modes the queries use */\n' + nDefs.join('\n') + '\n' + natEntries.join('\n') + '\n' : '') +
       defs.join('\n') + '\n' + main;
-    return { code, warnings };
+    return { refs: [...refs.keys()].map(i => qs[i].text), code, warnings };
   }
   P.toC = toC;
 })(typeof module !== 'undefined' && module.exports ? (globalThis.PL2D = globalThis.PL2D || {}) : (window.PL2D = window.PL2D || {}));

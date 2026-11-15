@@ -27,7 +27,7 @@ for (const ex of P.EXAMPLES) {
       fs.writeFileSync(cf, code);
       try { cp.execSync('cc -O1 -w -o ' + bin + ' ' + cf + ' -lm', { stdio: 'pipe' }); } catch (e) { fail(label, 'C compile: ' + e.stderr.toString().split('\n')[0]); continue; }
       let got = ''; try { got = cp.execSync(bin, { timeout: 60000 }).toString(); } catch (e) { got = (e.stdout || '').toString(); }
-      got = got.split('\n').filter(l => !l.startsWith('% steps')).join('\n');
+      got = got.split('\n').filter(l => !l.startsWith('% steps') && !l.startsWith('% hand-written')).join('\n');
       let exp = ''; for (const q of conv.queries) { const ref = r.runs.find(x => x.query === q.text); if (ref.prolog.error) { exp = null; break; } exp += '?- ' + q.text + '.\n' + render(ref.prolog.events); }
       if (exp !== null && got.trim() !== exp.trim()) fail(label, 'C output differs');
     }

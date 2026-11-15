@@ -12,7 +12,7 @@
   const { deref, Cmp, Var, list, listToArray, show, termVars } = P;
   const D = deref;
   const FORBIDDEN = new Set(['!/0', ';/2', '->/2', '*->/2', '\\+/1', 'not/1', 'findall/3', 'findall/4', 'bagof/3', 'setof/3', 'aggregate_all/3', 'aggregate_all/4', 'forall/2', 'once/1', 'ignore/1', 'call/1', 'catch/3']);
-  const RULES = new Set(['CUT', 'SPEC', 'PRED', 'FACTS', 'CLAUSE', 'S2A', 'MEMO', 'UNSUPPORTED', 'true', 'fail', 'det', 'effect', 'call', 'member_cp', 'between_cp', 'builtin_rows', 'seq', 'det_prefix', 'effect_prefix', 'disj', 'ite', 'ite_det', 'neg', 'neg_det', 'findall', 'aggregate', 'splice', 'cut_mark']);
+  const RULES = new Set(['CUT', 'SPEC', 'PRED', 'FACTS', 'CLAUSE', 'S2A', 'MEMO', 'UNSUPPORTED', 'true', 'fail', 'det', 'effect', 'call', 'member_cp', 'between_cp', 'builtin_rows', 'seq', 'det_prefix', 'effect_prefix', 'disj', 'ite', 'ite_det', 'ite_scan', 'neg', 'neg_det', 'neg_scan', 'findall', 'aggregate', 'splice', 'cut_mark']);
   const RUNTIME_PREDS = () => new Set(Object.keys(P.DETLOG_RUNTIME).concat(['if_commit/3']));
 
   function checkShape(detlogText) {
@@ -128,6 +128,18 @@
           add('Side conditions', 'FACTS ' + k + ': rows are the source facts in order', same, rows.length + ' facts');
         }
       }
+      // first-match scans: the generator is member/2 and every filter is a deterministic builtin
+      const scanSteps = conv.steps.filter(s => s.rule === 'ite_scan' || s.rule === 'neg_scan');
+      if (scanSteps.length) {
+        const badScan = [];
+        for (const s of scanSteps) {
+          try {
+            const gk = P.key(P.readTerm(s.info.gen).term); if (gk !== 'member/2') badScan.push(s.info.gen);
+            for (const f of s.info.filters) { const fk = P.key(P.readTerm(f).term); const b = P.builtins[fk]; if (fk !== 'true/0' && (!b || b.nondet || b.call || P.EFFECT.has(fk))) badScan.push(f); }
+          } catch (e) { badScan.push(s.src); }
+        }
+        add('Side conditions', label + ': first-match scans run member/2 with deterministic builtin filters', badScan.length === 0, scanSteps.length + ' scan(s)' + (badScan.length ? '; not allowed: ' + badScan.join(', ') : ''));
+      }
       const detSteps = conv.steps.filter(s => s.rule === 'det' || s.rule === 'det_prefix' || s.rule === 'ite_det' || s.rule === 'neg_det');
       let badDet = [];
       for (const s of detSteps) { if (s.rule !== 'det') continue; try { const g = P.readTerm(s.src).term; const gk = P.key(g); const b = P.builtins[gk]; if (!b || b.nondet || b.call || P.EFFECT.has(gk)) badDet.push(gk); } catch (e) { } }
@@ -192,6 +204,8 @@
     ['disj', 'packet of (A ; B) = packet of A ++ packet of B'],
     ['ite', '(C -> T ; F): output of C up to its first answer, then T on that answer; F if C has none'],
     ['neg', '\\+ G = (G -> fail ; true)'],
+    ['ite_scan', '(Pre, member(X, Xs), Post -> T ; F), Pre and Post deterministic builtins: scan Xs in place and stop at the first element that passes'],
+    ['neg_scan', '\\+ (Pre, member(X, Xs), Post): the same scan, with T = fail and F = true'],
     ['findall', 'all of G\'s output, then one answer binding the list of template instances (no findall/3)'],
     ['aggregate', 'aggregate_all over the packet of G (count, sum, max, min, bag, set)'],
     ['det', 'a deterministic builtin has at most one answer: if_commit(B, [Env], [])'],

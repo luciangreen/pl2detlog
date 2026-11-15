@@ -59,12 +59,18 @@
   }
 
   // run fn repeatedly to time it: returns mean ms per run
+  // time fn: warm up (so every engine is measured after JIT compilation), then the median of 5 batches
   function timeIt(fn, budgetMs, maxReps, setup) {
-    budgetMs = budgetMs || 25; maxReps = maxReps || 200;
-    let total = 0, reps = 0, last; const wall = P.now();
-    do { const s = setup ? setup() : undefined; const t = P.now(); last = fn(s); total += P.now() - t; reps++; }
-    while (total < budgetMs && reps < maxReps && P.now() - wall < budgetMs * 4 && !(last && last.error));
-    return { ms: total / reps, reps, last };
+    budgetMs = budgetMs || 30; maxReps = maxReps || 2000;
+    const one = () => { const s = setup ? setup() : undefined; const t = P.now(); const r = fn(s); return { dt: P.now() - t, r }; };
+    let last = one(); if (last.r && last.r.error) return { ms: last.dt, reps: 1, last: last.r };
+    const wall = P.now(); let w = 0; while (P.now() - wall < budgetMs / 6 && w < 50) { one(); w++; } // warm-up
+    const est = Math.max(1e-4, (P.now() - wall) / Math.max(1, w));
+    const per = Math.max(1, Math.min(maxReps, Math.floor((budgetMs / 6) / est)));
+    const batches = [];
+    for (let b = 0; b < 5; b++) { let tot = 0; for (let i = 0; i < per; i++) { const x = one(); tot += x.dt; last = x; } batches.push(tot / per); }
+    batches.sort((a, b) => a - b);
+    return { ms: batches[2], reps: per * 5, last: last.r };
   }
 
   // growth class from (n, steps) points
@@ -119,24 +125,27 @@
       const r = { query: q.text };
       const fresh = () => P.loadProgram(src); // assert/retract must not leak between runs
       r.prolog = P.runQuery(fresh(), q.text, { stepLimit: lim, maxAnswers: 1000 });
-      r.plain = P.runDetlog(progPlain, q.pred, q.vars, { stepLimit: lim * 20 });
-      r.mnn = P.runDetlog(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 });
+      r.interp = P.runDetlogInterp(res.plain, q.pred, q.vars, { stepLimit: lim * 20 });
+      r.plain = P.runDetlogFast(progPlain, q.pred, q.vars, { stepLimit: lim * 20 });
+      r.mnn = P.runDetlogFast(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 });
       if (backProg) r.back = P.runQuery(safeLoad(res.backPlain.text), q.text, { stepLimit: lim, maxAnswers: 1000 });
       if (backMnnProg) r.backMnn = P.runQuery(safeLoad(res.backMnn.text), q.text, { stepLimit: lim, maxAnswers: 1000 });
-      r.same = JSON.stringify(r.prolog.events) === JSON.stringify(r.plain.events) && JSON.stringify(r.prolog.events) === JSON.stringify(r.mnn.events);
+      const ev = JSON.stringify(r.prolog.events);
+      r.same = ev === JSON.stringify(r.plain.events) && ev === JSON.stringify(r.mnn.events) && ev === JSON.stringify(r.interp.events);
       if (opts.timing !== false) {
         const parsedQ = P.readTerm(q.text);
         r.prolog.ms = timeIt(pr => P.runQuery(pr, parsedQ, { stepLimit: lim, maxAnswers: 1000 }), 25, 200, dynamic ? fresh : () => sharedProg).ms;
-        r.plain.ms = timeIt(() => P.runDetlog(progPlain, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
-        r.mnn.ms = timeIt(() => P.runDetlog(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 })).ms;
+        r.interp.ms = timeIt(() => P.runDetlogInterp(res.plain, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
+        r.plain.ms = timeIt(() => P.runDetlogFast(progPlain, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
+        r.mnn.ms = timeIt(() => P.runDetlogFast(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 })).ms;
       }
       return r;
     };
     res.runs = queries.map((_, i) => runOne(i));
     if (sweepVals.length) {
-      const pts = sweepVals.map((v, j) => { const r = runOne(queries.length + j); return { n: v, query: sweepQs[j], prolog: r.prolog, plain: r.plain, mnn: r.mnn, same: r.same }; });
+      const pts = sweepVals.map((v, j) => { const r = runOne(queries.length + j); return { n: v, query: sweepQs[j], prolog: r.prolog, interp: r.interp, plain: r.plain, mnn: r.mnn, same: r.same }; });
       const fit = key => fitGrowth(pts.filter(p => !p[key].error).map(p => ({ x: p.n, y: p[key].steps })));
-      res.sweep = { template: opts.sweep.template, points: pts, fit: { prolog: fit('prolog'), plain: fit('plain'), mnn: fit('mnn') } };
+      res.sweep = { template: opts.sweep.template, points: pts, fit: { prolog: fit('prolog'), interp: fit('interp'), plain: fit('plain'), mnn: fit('mnn') } };
     }
     res.metrics = { prolog: prologMetrics(src), plain: detlogMetrics(res.plain.text), mnn: detlogMetrics(res.mnn.text) };
     res.proof = P.prove({ src, plain: res.plain, mnn: res.mnn, backPlain: res.backPlain, backMnn: res.backMnn, runs: res.runs });

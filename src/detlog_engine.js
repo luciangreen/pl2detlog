@@ -110,7 +110,13 @@
   R('rows_cut_concat/2', (a, e) => { const ls = items(a[0]); let all = []; for (const l of ls) { const x = items(l); e.tick(x.length); all = all.concat(x.filter(y => !isCut(y))); if (hasCut(x)) break; } return e.unify(a[1], list(all)); });
   R('strip_cut/2', (a, e) => { const x = items(a[0]); e.tick(x.length); return e.unify(a[1], list(x.filter(y => !isCut(y)))); });
   R('cut_in/2', (a, e) => { if (!isRow(a[0])) return false; const x = items(a[1]); e.tick(); return hasCut(x); });
-  R('rows_concat/2', (a, e) => { const ls = items(a[0]); let all = []; for (const l of ls) { const x = items(l); e.tick(x.length); all = all.concat(x); } e.rowsBuilt += all.length; if (all.length > e.maxRows) e.maxRows = all.length; return e.unify(a[1], list(all)); });
+  R('rows_concat/2', (a, e) => {
+    // like append/3: every list but the last is copied, the last is shared
+    const ls = items(a[0]); if (!ls.length) return e.unify(a[1], NIL);
+    const all = []; for (let i = 0; i < ls.length - 1; i++) { const x = items(ls[i]); e.tick(x.length); for (const y of x) all.push(y); }
+    e.rowsBuilt += all.length;
+    return e.unify(a[1], list(all, ls[ls.length - 1]));
+  });
   // splice_extend(Packet, Pattern, e(Env), Out)
   R('splice_extend/4', (a, e) => {
     const res = [];
@@ -287,6 +293,10 @@
     const t0 = P.now(); let ok = false, error = null;
     try { ok = eng.solve(goal); } catch (e) { error = e.message; if (opts.debug) console.error(e); }
     const t1 = P.now();
+    const dec = decodePacket(ok, error, Rv, varNames); const { answers, events, output } = dec; error = dec.error;
+    return { ok: !error, answers, events, output, steps: eng.steps, decisions: eng.decisions, violations: eng.violations.length, violationPreds: [...new Set(eng.violations)], cps: 0, maxCP: 0, timeMs: t1 - t0, error, memoHits: eng.memoHits, memoStores: eng.memoStores, rowsBuilt: eng.rowsBuilt, maxRows: eng.maxRows };
+  }
+  function decodePacket(ok, error, Rv, varNames) {
     const events = [], answers = []; let output = '';
     if (ok) {
       for (const it of listToArray(Rv) || []) {
@@ -298,7 +308,8 @@
         answers.push({ text }); events.push({ k: 'row', text });
       }
     } else if (!error) error = 'Detlog query failed (a packet predicate must always succeed)';
-    return { ok: !error, answers, events, output, steps: eng.steps, decisions: eng.decisions, violations: eng.violations.length, violationPreds: [...new Set(eng.violations)], cps: 0, maxCP: 0, timeMs: t1 - t0, error, memoHits: eng.memoHits, memoStores: eng.memoStores, rowsBuilt: eng.rowsBuilt, maxRows: eng.maxRows };
+    return { ok: !error, answers, events, output, error };
   }
+  P.decodePacket = decodePacket;
   P.DetEngine = DetEngine; P.runDetlog = runDetlog;
 })(typeof module !== 'undefined' && module.exports ? (globalThis.PL2D = globalThis.PL2D || {}) : (window.PL2D = window.PL2D || {}));

@@ -40,7 +40,8 @@
   function convert(src, opts) {
     opts = Object.assign({ mnn: false, s2aMax: 1000 }, opts || {});
     const mnn = !!opts.mnn;
-    const feat = { fuse: mnn && opts.fuse !== false, splice: mnn && opts.splice !== false, s2a: mnn && opts.s2a !== false, memo: mnn && opts.memo !== false };
+    const feat = { fuse: opts.fuse !== false, // det_prefix, effect_prefix, ite_det, neg_det are detlog2's standard goal rules (plain and MNN)
+      splice: mnn && opts.splice !== false, s2a: mnn && opts.s2a !== false, memo: mnn && opts.memo !== false };
     const prog = typeof src === 'string' ? P.loadProgram(src) : src;
     const out = { mode: mnn ? 'mnn' : 'plain', preds: [], clauses: [], steps: [], warnings: [], errors: [], report: [], feat, specs: [], queries: [] };
     // queries become predicates '$query<i>'(V1..Vk) so that they are converted like any clause body
@@ -321,10 +322,18 @@
     function restoreNames(a, b) { /* copy keeps names already */ }
 
     const s2aDone = new Map();
+    out.ir = new Map(); // the cut-free source the Detlog interpreter runs: normalised clauses, rule CUT applied
     for (const k of order) {
       const cls = srcPreds.get(k).filter(Boolean);
       const [f, nStr] = splitKey(k); const n = +nStr;
       const inf = info.get(k);
+      {
+        const err = cls.find(c => c.error);
+        const topCut = cls.some(c => flatConj(c.body).some(g => D(g).t === 'a' && D(g).n === '!'));
+        let irc = cls;
+        if (!err && topCut) { const IA = []; for (let i = 0; i < n; i++) IA.push(Var('A__' + (i + 1))); irc = [cutElim(f, n, cls, IA)]; }
+        out.ir.set(k, { clauses: err ? [] : irc.map(c => ({ head: c.head, body: c.body })), error: err ? err.error : null, dynamic: !!(inf && inf.dyn) });
+      }
       const A = []; for (let i = 0; i < n; i++) A.push(Var('A__' + (i + 1)));
       const Rows = Var('R__0');
       const headCp = Cmp(cpName(f), A.concat([Rows]));

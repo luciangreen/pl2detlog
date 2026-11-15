@@ -32,34 +32,54 @@
   function args(t) { t = deref(t); return t.t === 'c' ? t.a : []; }
 
   // full dereferenced copy with fresh variables (sharing preserved)
+  // copy with fresh variables; ground subterms are shared, not copied (they are immutable)
   function copy(t, map) {
     map = map || new Map();
     t = deref(t);
+    if (t.gr) return t;
     if (t.t === 'v') { let v = map.get(t); if (!v) { v = Var(t.name); map.set(t, v); } return v; }
     if (t.t === 'c') {
       if (t.f === '.' && t.a.length === 2) { // iterate along list spines
-        const heads = []; let x = t;
-        while (x.t === 'c' && x.f === '.' && x.a.length === 2) { heads.push(copy(x.a[0], map)); x = deref(x.a[1]); }
+        const heads = [], cells = []; let x = t;
+        while (x.t === 'c' && x.f === '.' && x.a.length === 2 && !x.gr) { cells.push(x); heads.push(copy(x.a[0], map)); x = deref(x.a[1]); }
         let r = copy(x, map);
-        for (let i = heads.length - 1; i >= 0; i--) r = { t: 'c', f: '.', a: [heads[i], r] };
+        for (let i = heads.length - 1; i >= 0; i--) {
+          const c = cells[i];
+          if (r === c.a[1] && heads[i] === c.a[0]) { c.gr = true; r = c; } // unchanged suffix: share (deref'd tail identical)
+          else r = { t: 'c', f: '.', a: [heads[i], r] };
+        }
         return r;
       }
-      const a = new Array(t.a.length); for (let i = 0; i < a.length; i++) a[i] = copy(t.a[i], map); return { t: 'c', f: t.f, a };
+      const a = new Array(t.a.length); let same = true;
+      for (let i = 0; i < a.length; i++) { a[i] = copy(t.a[i], map); if (a[i] !== t.a[i]) same = false; }
+      if (same) { t.gr = true; return t; }
+      return { t: 'c', f: t.f, a };
     }
     return t;
   }
   // resolve all bindings (no fresh vars)
+  // resolve bindings; ground subterms are shared and marked ground (t.gr), so later copies are O(1)
   function resolve(t) {
     t = deref(t);
-    if (t.t === 'c' && t.f === '.' && t.a.length === 2) {
-      const heads = []; let x = t;
-      while (x.t === 'c' && x.f === '.' && x.a.length === 2) { heads.push(resolve(x.a[0])); x = deref(x.a[1]); }
+    if (t.t !== 'c' || t.gr) return t;
+    if (t.f === '.' && t.a.length === 2) {
+      const heads = [], cells = []; let x = t;
+      while (x.t === 'c' && x.f === '.' && x.a.length === 2 && !x.gr) { cells.push(x); heads.push(resolve(x.a[0])); x = deref(x.a[1]); }
       let r = resolve(x);
-      for (let i = heads.length - 1; i >= 0; i--) r = { t: 'c', f: '.', a: [heads[i], r] };
+      let g = r.t !== 'v' && (r.t !== 'c' || r.gr === true);
+      for (let i = heads.length - 1; i >= 0; i--) {
+        const h = heads[i], c = cells[i];
+        g = g && h.t !== 'v' && (h.t !== 'c' || h.gr === true);
+        if (h === c.a[0] && r === c.a[1]) { if (g) c.gr = true; r = c; }
+        else { r = { t: 'c', f: '.', a: [h, r] }; if (g) r.gr = true; }
+      }
       return r;
     }
-    if (t.t === 'c') { const a = new Array(t.a.length); let ch = false; for (let i = 0; i < a.length; i++) { a[i] = resolve(t.a[i]); if (a[i] !== t.a[i]) ch = true; } return ch ? { t: 'c', f: t.f, a } : t; }
-    return t;
+    const a = new Array(t.a.length); let ch = false, g = true;
+    for (let i = 0; i < a.length; i++) { const x = resolve(t.a[i]); a[i] = x; if (x !== t.a[i]) ch = true; if (x.t === 'v' || (x.t === 'c' && !x.gr)) g = false; }
+    const r = ch ? { t: 'c', f: t.f, a } : t;
+    if (g) r.gr = true;
+    return r;
   }
   function termVars(t, acc, seen) {
     acc = acc || []; seen = seen || new Set();

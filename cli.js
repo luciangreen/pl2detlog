@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // pl2detlog command line:  node cli.js prog.pl -q "fib(10, F)" [-q ...] [--plain] [--detlog out.pl] [--c out.c] [--back out.pl] [--proof proof.txt] [--stats]
 const fs = require('fs'); const path = require('path');
-for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'backconv', 'cgen', 'proof', 'stats']) require('./src/' + f + '.js');
+for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'cgen', 'proof', 'stats']) require('./src/' + f + '.js');
 const P = globalThis.PL2D;
 P.C_RUNTIME = fs.readFileSync(path.join(__dirname, 'src/runtime.c'), 'utf8');
 const args = process.argv.slice(2); const qs = []; const o = {};

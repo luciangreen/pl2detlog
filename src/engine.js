@@ -564,6 +564,7 @@
       });
     } catch (e) { error = e.limit ? e.message : e.prolog ? (e.term ? errText(e.term) : e.message) : e.message; limit = !!e.limit; if (!e.prolog && !e.limit && opts.debug) console.error(e); }
     const t1 = now();
+    eng.undo(0); // leave the (possibly reused) query term unbound
     if (eng.out.length > lastOut) events.push({ k: 'out', text: eng.out.slice(lastOut) });
     return { ok: !error, answers, events, output: eng.out, steps: eng.steps, cps: eng.cpCreated, maxCP: eng.maxCP, timeMs: t1 - t0, error, limit, truncated: answers.length >= maxAnswers };
   }

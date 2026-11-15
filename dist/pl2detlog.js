@@ -33,34 +33,54 @@
   function args(t) { t = deref(t); return t.t === 'c' ? t.a : []; }
 
   // full dereferenced copy with fresh variables (sharing preserved)
+  // copy with fresh variables; ground subterms are shared, not copied (they are immutable)
   function copy(t, map) {
     map = map || new Map();
     t = deref(t);
+    if (t.gr) return t;
     if (t.t === 'v') { let v = map.get(t); if (!v) { v = Var(t.name); map.set(t, v); } return v; }
     if (t.t === 'c') {
       if (t.f === '.' && t.a.length === 2) { // iterate along list spines
-        const heads = []; let x = t;
-        while (x.t === 'c' && x.f === '.' && x.a.length === 2) { heads.push(copy(x.a[0], map)); x = deref(x.a[1]); }
+        const heads = [], cells = []; let x = t;
+        while (x.t === 'c' && x.f === '.' && x.a.length === 2 && !x.gr) { cells.push(x); heads.push(copy(x.a[0], map)); x = deref(x.a[1]); }
         let r = copy(x, map);
-        for (let i = heads.length - 1; i >= 0; i--) r = { t: 'c', f: '.', a: [heads[i], r] };
+        for (let i = heads.length - 1; i >= 0; i--) {
+          const c = cells[i];
+          if (r === c.a[1] && heads[i] === c.a[0]) { c.gr = true; r = c; } // unchanged suffix: share (deref'd tail identical)
+          else r = { t: 'c', f: '.', a: [heads[i], r] };
+        }
         return r;
       }
-      const a = new Array(t.a.length); for (let i = 0; i < a.length; i++) a[i] = copy(t.a[i], map); return { t: 'c', f: t.f, a };
+      const a = new Array(t.a.length); let same = true;
+      for (let i = 0; i < a.length; i++) { a[i] = copy(t.a[i], map); if (a[i] !== t.a[i]) same = false; }
+      if (same) { t.gr = true; return t; }
+      return { t: 'c', f: t.f, a };
     }
     return t;
   }
   // resolve all bindings (no fresh vars)
+  // resolve bindings; ground subterms are shared and marked ground (t.gr), so later copies are O(1)
   function resolve(t) {
     t = deref(t);
-    if (t.t === 'c' && t.f === '.' && t.a.length === 2) {
-      const heads = []; let x = t;
-      while (x.t === 'c' && x.f === '.' && x.a.length === 2) { heads.push(resolve(x.a[0])); x = deref(x.a[1]); }
+    if (t.t !== 'c' || t.gr) return t;
+    if (t.f === '.' && t.a.length === 2) {
+      const heads = [], cells = []; let x = t;
+      while (x.t === 'c' && x.f === '.' && x.a.length === 2 && !x.gr) { cells.push(x); heads.push(resolve(x.a[0])); x = deref(x.a[1]); }
       let r = resolve(x);
-      for (let i = heads.length - 1; i >= 0; i--) r = { t: 'c', f: '.', a: [heads[i], r] };
+      let g = r.t !== 'v' && (r.t !== 'c' || r.gr === true);
+      for (let i = heads.length - 1; i >= 0; i--) {
+        const h = heads[i], c = cells[i];
+        g = g && h.t !== 'v' && (h.t !== 'c' || h.gr === true);
+        if (h === c.a[0] && r === c.a[1]) { if (g) c.gr = true; r = c; }
+        else { r = { t: 'c', f: '.', a: [h, r] }; if (g) r.gr = true; }
+      }
       return r;
     }
-    if (t.t === 'c') { const a = new Array(t.a.length); let ch = false; for (let i = 0; i < a.length; i++) { a[i] = resolve(t.a[i]); if (a[i] !== t.a[i]) ch = true; } return ch ? { t: 'c', f: t.f, a } : t; }
-    return t;
+    const a = new Array(t.a.length); let ch = false, g = true;
+    for (let i = 0; i < a.length; i++) { const x = resolve(t.a[i]); a[i] = x; if (x !== t.a[i]) ch = true; if (x.t === 'v' || (x.t === 'c' && !x.gr)) g = false; }
+    const r = ch ? { t: 'c', f: t.f, a } : t;
+    if (g) r.gr = true;
+    return r;
   }
   function termVars(t, acc, seen) {
     acc = acc || []; seen = seen || new Set();
@@ -1057,6 +1077,7 @@
       });
     } catch (e) { error = e.limit ? e.message : e.prolog ? (e.term ? errText(e.term) : e.message) : e.message; limit = !!e.limit; if (!e.prolog && !e.limit && opts.debug) console.error(e); }
     const t1 = now();
+    eng.undo(0); // leave the (possibly reused) query term unbound
     if (eng.out.length > lastOut) events.push({ k: 'out', text: eng.out.slice(lastOut) });
     return { ok: !error, answers, events, output: eng.out, steps: eng.steps, cps: eng.cpCreated, maxCP: eng.maxCP, timeMs: t1 - t0, error, limit, truncated: answers.length >= maxAnswers };
   }
@@ -1497,7 +1518,8 @@
   function convert(src, opts) {
     opts = Object.assign({ mnn: false, s2aMax: 1000 }, opts || {});
     const mnn = !!opts.mnn;
-    const feat = { fuse: mnn && opts.fuse !== false, splice: mnn && opts.splice !== false, s2a: mnn && opts.s2a !== false, memo: mnn && opts.memo !== false };
+    const feat = { fuse: opts.fuse !== false, // det_prefix, effect_prefix, ite_det, neg_det are detlog2's standard goal rules (plain and MNN)
+      splice: mnn && opts.splice !== false, s2a: mnn && opts.s2a !== false, memo: mnn && opts.memo !== false };
     const prog = typeof src === 'string' ? P.loadProgram(src) : src;
     const out = { mode: mnn ? 'mnn' : 'plain', preds: [], clauses: [], steps: [], warnings: [], errors: [], report: [], feat, specs: [], queries: [] };
     // queries become predicates '$query<i>'(V1..Vk) so that they are converted like any clause body
@@ -1778,10 +1800,18 @@
     function restoreNames(a, b) { /* copy keeps names already */ }
 
     const s2aDone = new Map();
+    out.ir = new Map(); // the cut-free source the Detlog interpreter runs: normalised clauses, rule CUT applied
     for (const k of order) {
       const cls = srcPreds.get(k).filter(Boolean);
       const [f, nStr] = splitKey(k); const n = +nStr;
       const inf = info.get(k);
+      {
+        const err = cls.find(c => c.error);
+        const topCut = cls.some(c => flatConj(c.body).some(g => D(g).t === 'a' && D(g).n === '!'));
+        let irc = cls;
+        if (!err && topCut) { const IA = []; for (let i = 0; i < n; i++) IA.push(Var('A__' + (i + 1))); irc = [cutElim(f, n, cls, IA)]; }
+        out.ir.set(k, { clauses: err ? [] : irc.map(c => ({ head: c.head, body: c.body })), error: err ? err.error : null, dynamic: !!(inf && inf.dyn) });
+      }
       const A = []; for (let i = 0; i < n; i++) A.push(Var('A__' + (i + 1)));
       const Rows = Var('R__0');
       const headCp = Cmp(cpName(f), A.concat([Rows]));
@@ -2292,7 +2322,13 @@
   R('rows_cut_concat/2', (a, e) => { const ls = items(a[0]); let all = []; for (const l of ls) { const x = items(l); e.tick(x.length); all = all.concat(x.filter(y => !isCut(y))); if (hasCut(x)) break; } return e.unify(a[1], list(all)); });
   R('strip_cut/2', (a, e) => { const x = items(a[0]); e.tick(x.length); return e.unify(a[1], list(x.filter(y => !isCut(y)))); });
   R('cut_in/2', (a, e) => { if (!isRow(a[0])) return false; const x = items(a[1]); e.tick(); return hasCut(x); });
-  R('rows_concat/2', (a, e) => { const ls = items(a[0]); let all = []; for (const l of ls) { const x = items(l); e.tick(x.length); all = all.concat(x); } e.rowsBuilt += all.length; if (all.length > e.maxRows) e.maxRows = all.length; return e.unify(a[1], list(all)); });
+  R('rows_concat/2', (a, e) => {
+    // like append/3: every list but the last is copied, the last is shared
+    const ls = items(a[0]); if (!ls.length) return e.unify(a[1], NIL);
+    const all = []; for (let i = 0; i < ls.length - 1; i++) { const x = items(ls[i]); e.tick(x.length); for (const y of x) all.push(y); }
+    e.rowsBuilt += all.length;
+    return e.unify(a[1], list(all, ls[ls.length - 1]));
+  });
   // splice_extend(Packet, Pattern, e(Env), Out)
   R('splice_extend/4', (a, e) => {
     const res = [];
@@ -2469,6 +2505,10 @@
     const t0 = P.now(); let ok = false, error = null;
     try { ok = eng.solve(goal); } catch (e) { error = e.message; if (opts.debug) console.error(e); }
     const t1 = P.now();
+    const dec = decodePacket(ok, error, Rv, varNames); const { answers, events, output } = dec; error = dec.error;
+    return { ok: !error, answers, events, output, steps: eng.steps, decisions: eng.decisions, violations: eng.violations.length, violationPreds: [...new Set(eng.violations)], cps: 0, maxCP: 0, timeMs: t1 - t0, error, memoHits: eng.memoHits, memoStores: eng.memoStores, rowsBuilt: eng.rowsBuilt, maxRows: eng.maxRows };
+  }
+  function decodePacket(ok, error, Rv, varNames) {
     const events = [], answers = []; let output = '';
     if (ok) {
       for (const it of listToArray(Rv) || []) {
@@ -2480,9 +2520,482 @@
         answers.push({ text }); events.push({ k: 'row', text });
       }
     } else if (!error) error = 'Detlog query failed (a packet predicate must always succeed)';
-    return { ok: !error, answers, events, output, steps: eng.steps, decisions: eng.decisions, violations: eng.violations.length, violationPreds: [...new Set(eng.violations)], cps: 0, maxCP: 0, timeMs: t1 - t0, error, memoHits: eng.memoHits, memoStores: eng.memoStores, rowsBuilt: eng.rowsBuilt, maxRows: eng.maxRows };
+    return { ok: !error, answers, events, output, error };
   }
+  P.decodePacket = decodePacket;
   P.DetEngine = DetEngine; P.runDetlog = runDetlog;
+})(typeof module !== 'undefined' && module.exports ? (globalThis.PL2D = globalThis.PL2D || {}) : (window.PL2D = window.PL2D || {}));
+
+/* pl2detlog fast Detlog engine: a closure-compiled deterministic interpreter.
+   Determinism is what makes it fast:
+   - each clause is compiled once into closures (no copying of clause bodies at call time);
+   - heads are matched WAM-style: a first-occurrence head variable takes the argument itself,
+     so nothing is copied or bound to enter a clause;
+   - a call selects its clause by first argument and commits: no choicepoint, no retry, and the
+     trail is only consulted by if_commit/3 conditions;
+   - the generated packet loops ( nm([],[]).  nm([I|Is],O) :- nmr(I,O1), nm(Is,O2), rows_concat([O1,O2],O). )
+     run as native loops in linear time.
+   Its answers are those of the reference Detlog engine (detlog_engine.js); a run that exhausts the JS
+   stack falls back to it. */
+(function (P) {
+  'use strict';
+  const { Var, Cmp, NIL, list, deref, listToArray, termVars } = P;
+  const D = deref;
+
+  function FastDetlog(prog, opts) {
+    this.prog = prog; this.opts = opts || {};
+    this.preds = new Map();      // key -> {fn}
+    const self = this;
+    for (const [k, cls] of prog.preds) this.ref(k).fn = this.compilePred(k, cls);
+  }
+  FastDetlog.prototype.ref = function (k) { let r = this.preds.get(k); if (!r) { r = { fn: null, k }; this.preds.set(k, r); } return r; };
+
+  // the machine state lives on a DetEngine (trail, unify, steps, memo, output), so runtime builtins are shared
+  FastDetlog.prototype.compilePred = function (k, cls) {
+    const self = this;
+    const loop = this.loopIdiom(k, cls);
+    if (loop) return loop;
+    const cc = cls.map(cl => this.compileClause(cl));
+    const n = cls[0] && D(cls[0].head).t === 'c' ? D(cls[0].head).a.length : 0;
+    // first-argument index: key -> clause list (clauses with a variable first argument go everywhere, in order)
+    const keyOf = t => { t = D(t); return t.t === 'c' ? 'c' + t.f + '/' + t.a.length : t.t === 'a' ? 'a' + t.n : t.t === 'n' ? 'n' + t.v + (t.f ? 'f' : '') : t.t === 's' ? 's' + t.v : null; };
+    const heads = cls.map(cl => n ? keyOf(D(cl.head).a[0]) : null);
+    const index = new Map(); const varIdx = [];
+    heads.forEach((h, i) => { if (h === null) varIdx.push(i); });
+    for (const h of new Set(heads.filter(x => x !== null))) index.set(h, heads.map((x, i) => (x === h || x === null) ? i : -1).filter(i => i >= 0));
+    const all = cc.map((_, i) => i);
+    const single = cc.length === 1 ? cc[0] : null;
+    return function (args, E) {
+      E.tick();
+      let cand;
+      if (single) cand = null;
+      else if (!n) cand = all;
+      else {
+        const a0 = D(args[0]);
+        if (a0.t === 'v') cand = all;
+        else cand = index.get(keyOf(a0)) || varIdx;
+        if (cand.length > 1 && E.violations.length < 1000) E.violations.push(k);
+      }
+      if (single) {
+        const env = new Array(single.nslots); const m = E.trail.length;
+        if (single.head(args, env, E)) return single.body(env, E);
+        E.undo(m); return false;
+      }
+      for (let j = 0; j < cand.length; j++) {
+        const c = cc[cand[j]];
+        const env = new Array(c.nslots); const m = E.trail.length;
+        if (c.head(args, env, E)) return c.body(env, E);
+        E.undo(m);
+      }
+      return false;
+    };
+  };
+
+  FastDetlog.prototype.compileClause = function (cl) {
+    const head = D(cl.head); const hargs = head.t === 'c' ? head.a : [];
+    const vars = termVars(Cmp('-', [cl.head, cl.body]));
+    const slot = new Map(); vars.forEach((v, i) => slot.set(v, i));
+    const seen = new Set();
+    const matchers = hargs.map(h => this.compileMatch(h, slot, seen));
+    const nh = matchers.length;
+    const headFn = nh === 0 ? () => true : function (args, env, E) { for (let i = 0; i < nh; i++) if (!matchers[i](args[i], env, E)) return false; return true; };
+    const body = this.compileGoal(cl.body, slot);
+    return { head: headFn, body, nslots: vars.length };
+  };
+
+  function isGroundTerm(t) { return P.isGround(t); }
+  function markGround(t) { t = D(t); if (t.t === 'c' && !t.gr) { t.gr = true; t.a.forEach(markGround); } }
+  FastDetlog.prototype.compileBuild = function (t, slot) {
+    t = D(t);
+    if (t.t === 'v') { const i = slot.get(t); const nm = t.name; return env => env[i] || (env[i] = Var(nm)); }
+    if (t.t !== 'c' || isGroundTerm(t)) { if (t.t === 'c') markGround(t); return () => t; }
+    const f = t.f, bs = t.a.map(x => this.compileBuild(x, slot)), n = bs.length;
+    if (n === 2) { const b0 = bs[0], b1 = bs[1]; return env => ({ t: 'c', f, a: [b0(env), b1(env)] }); }
+    return env => { const a = new Array(n); for (let i = 0; i < n; i++) a[i] = bs[i](env); return { t: 'c', f, a }; };
+  };
+  FastDetlog.prototype.compileMatch = function (h, slot, seen) {
+    h = D(h);
+    if (h.t === 'v') {
+      const i = slot.get(h);
+      if (!seen.has(h)) { seen.add(h); return (a, env) => { env[i] = a; return true; }; }
+      return (a, env, E) => E.unify(env[i], a);
+    }
+    if (h.t === 'a') return (a, env, E) => { a = D(a); if (a.t === 'v') { E.bind(a, h); return true; } return a === h || (a.t === 'a' && a.n === h.n); };
+    if (h.t === 'n') return (a, env, E) => { a = D(a); if (a.t === 'v') { E.bind(a, h); return true; } return a.t === 'n' && a.v === h.v && a.f === h.f; };
+    if (h.t === 's') return (a, env, E) => { a = D(a); if (a.t === 'v') { E.bind(a, h); return true; } return a.t === 's' && a.v === h.v; };
+    // compound: build it when the argument is a variable, otherwise match argument by argument
+    const build = this.compileBuild(h, slot);
+    const subs = h.a.map(x => this.compileMatch(x, slot, seen));
+    const f = h.f, n = h.a.length;
+    return (a, env, E) => {
+      a = D(a);
+      if (a.t === 'v') { E.bind(a, build(env)); return true; }
+      if (a.t !== 'c' || a.f !== f || a.a.length !== n) return false;
+      for (let i = 0; i < n; i++) if (!subs[i](a.a[i], env, E)) return false;
+      return true;
+    };
+  };
+
+  FastDetlog.prototype.compileGoal = function (g, slot) {
+    g = D(g);
+    const self = this;
+    const k = P.key(g);
+    if (k === ',/2') {
+      const gs = P.flatConj(g).map(x => this.compileGoal(x, slot)); const n = gs.length;
+      return (env, E) => { for (let i = 0; i < n; i++) if (!gs[i](env, E)) return false; return true; };
+    }
+    if (k === 'true/0') return (env, E) => { E.tick(); return true; };
+    if (k === 'fail/0' || k === 'false/0') return (env, E) => { E.tick(); return false; };
+    if (k === 'if_commit/3') {
+      const C = this.compileGoal(g.a[0], slot), T = this.compileGoal(g.a[1], slot), F = this.compileGoal(g.a[2], slot);
+      return (env, E) => { E.tick(); E.decisions++; const m = E.trail.length; if (C(env, E)) return T(env, E); E.undo(m); return F(env, E); };
+    }
+    if (k === '=/2') { // inline unification
+      const a = this.compileBuild(g.a[0], slot), b = this.compileBuild(g.a[1], slot);
+      return (env, E) => { E.tick(); const m = E.trail.length; if (E.unify(a(env), b(env))) return true; E.undo(m); return false; };
+    }
+    const as = g.t === 'c' ? g.a.map(x => this.compileBuild(x, slot)) : []; const n = as.length;
+    const build = env => { const a = new Array(n); for (let i = 0; i < n; i++) a[i] = as[i](env); return a; };
+    if (this.prog.preds.has(k)) {
+      const r = this.ref(k);
+      return (env, E) => r.fn(build(env), E);
+    }
+    const rb = P.DETLOG_RUNTIME[k] || (P.builtins[k] && !P.builtins[k].nondet && !P.builtins[k].call ? P.builtins[k].fn : null);
+    if (rb) return (env, E) => { E.tick(); const a = build(env); const m = E.trail.length; if (rb(a, E)) return true; E.undo(m); return false; };
+    return () => { throw new Error('Detlog engine: unknown procedure ' + k); };
+  };
+
+  // the generated packet loop, run as a native loop
+  FastDetlog.prototype.loopIdiom = function (k, cls) {
+    if (cls.length !== 2 || !/\/2$/.test(k)) return null;
+    const [c1, c2] = cls.map(c => ({ h: D(c.head), b: P.flatConj(c.body).map(D) }));
+    const nm = c1.h.f;
+    if (!(P.isNil(D(c1.h.a[0])) && P.isNil(D(c1.h.a[1])) && c1.b.length === 1 && P.key(c1.b[0]) === 'true/0')) return null;
+    const h0 = D(c2.h.a[0]); if (!(P.isCons(h0) && D(h0.a[0]).t === 'v' && D(h0.a[1]).t === 'v')) return null;
+    const I = D(h0.a[0]), Is = D(h0.a[1]), O = D(c2.h.a[1]); if (O.t !== 'v') return null;
+    const b = c2.b; if (b.length < 2) return null;
+    const call = b[0]; if (call.t !== 'c' || call.a.length !== 2 || D(call.a[0]) !== I || D(call.a[1]).t !== 'v') return null;
+    const O1 = D(call.a[1]);
+    const isRec = (g, O2) => g.t === 'c' && g.f === nm && g.a.length === 2 && D(g.a[0]) === Is && D(g.a[1]) === O2;
+    const isCat = (g, O2, Out) => { if (P.key(g) !== 'rows_concat/2') return false; const l = listToArray(g.a[0]); return l && l.length === 2 && D(l[0]) === O1 && D(l[1]) === O2 && D(g.a[1]) === Out; };
+    let cutVariant = false;
+    if (b.length === 3) { const O2 = D(b[1].a && b[1].a[1]); if (!(isRec(b[1], O2) && isCat(b[2], O2, O))) return null; }
+    else if (b.length === 2 && P.key(b[1]) === 'if_commit/3') {
+      const ic = b[1]; const cnd = D(ic.a[0]), t = D(ic.a[1]), e = P.flatConj(ic.a[2]).map(D);
+      if (!(P.key(cnd) === 'cut_in/2' && D(cnd.a[0]) === I && D(cnd.a[1]) === O1 && P.key(t) === '=/2' && D(t.a[0]) === O && D(t.a[1]) === O1 && e.length === 2)) return null;
+      const O2 = D(e[0].a && e[0].a[1]); if (!(isRec(e[0], O2) && isCat(e[1], O2, O))) return null;
+      cutVariant = true;
+    } else return null;
+    const r = this.ref(P.key(call));
+    return function (args, E) {
+      E.tick();
+      const items = listToArray(args[0]);
+      if (!items) return false;
+      const out = [];
+      for (let i = 0; i < items.length; i++) {
+        E.tick(2);
+        const Ov = Var();
+        if (!r.fn([items[i], Ov], E)) return false;
+        const o1 = listToArray(Ov); E.tick(o1.length);
+        let hasCut = false;
+        for (const x of o1) { out.push(x); if (cutVariant && D(x).t === 'a' && D(x).n === 'cut') hasCut = true; }
+        if (cutVariant && hasCut) { const it = D(items[i]); if (it.t === 'c' && it.f === 'e') break; }
+      }
+      return E.unify(args[1], list(out));
+    };
+  };
+
+  const cache = new WeakMap();
+  function compiled(prog) { let f = cache.get(prog); if (!f) { f = new FastDetlog(prog); cache.set(prog, f); } return f; }
+
+  // same interface and result shape as runDetlog
+  function runDetlogFast(prog, qpred, varNames, opts) {
+    opts = opts || {};
+    let F;
+    try { F = compiled(prog); } catch (e) { return Object.assign(P.runDetlog(prog, qpred, varNames, opts), { engine: 'reference (compile failed: ' + e.message + ')' }); }
+    const E = new P.DetEngine(prog, opts);
+    const vs = varNames.map(n => Var(n)); const Rv = Var('R');
+    const k = qpred + '__cp/' + (varNames.length + 1);
+    const t0 = P.now(); let ok = false, error = null;
+    try {
+      const r = F.preds.get(k); if (!r || !r.fn) throw new Error('no query predicate ' + k);
+      ok = r.fn(vs.concat([Rv]), E);
+    } catch (e) {
+      if (e instanceof RangeError) return Object.assign(P.runDetlog(prog, qpred, varNames, opts), { engine: 'reference (JS stack exhausted)' });
+      error = e.message;
+    }
+    const t1 = P.now();
+    const res = P.decodePacket(ok, error, Rv, varNames);
+    return Object.assign(res, { steps: E.steps, decisions: E.decisions, violations: E.violations.length, violationPreds: [...new Set(E.violations)], cps: 0, maxCP: 0, timeMs: t1 - t0, memoHits: E.memoHits, memoStores: E.memoStores, rowsBuilt: E.rowsBuilt, maxRows: E.maxRows, engine: 'fast' });
+  }
+  P.FastDetlog = FastDetlog; P.runDetlogFast = runDetlogFast;
+})(typeof module !== 'undefined' && module.exports ? (globalThis.PL2D = globalThis.PL2D || {}) : (window.PL2D = window.PL2D || {}));
+
+/* pl2detlog Detlog interpreter: the choicepointless, cutless interpreter of detlog2 (part 1).
+   It runs the cut-free program (rule CUT applied, higher-order calls specialised) as answer packets:
+   - a predicate call computes the callee's packet (its answers and output, in Prolog order) and splices
+     it into the conjunction: one row at a time, bindings undone between rows - no choicepoint is ever
+     created, so there is no choicepoint stack and nothing to backtrack into;
+   - clauses are compiled once into closures, and heads are matched WAM-style without copying;
+   - commitment ((C -> T ; E), \+, once) takes the first row of C and never demands the rest;
+   - a cut inside a branch (a cut marker in the converted code) is a status that stops the remaining
+     rows and clauses of its clause's predicate.
+   Its answers are checked against Prolog and against the converted Detlog code by the proof checker. */
+(function (P) {
+  'use strict';
+  const { Var, Cmp, NIL, list, deref, listToArray, termVars, Int, Str, Atom } = P;
+  const D = deref;
+  const OK = 0, STOP = 1, CUT = 2;
+
+  function Machine(opts) {
+    opts = opts || {};
+    this.trail = []; this.steps = 0; this.stepLimit = opts.stepLimit || 5e7; this.items = null; this.calls = 0; this.rows = 0; this.globals = new Map(); this.out = '';
+  }
+  Machine.prototype.bind = function (v, t) { v.ref = t; this.trail.push(v); };
+  Machine.prototype.undo = function (m) { const tr = this.trail; while (tr.length > m) tr.pop().ref = null; };
+  Machine.prototype.unify = P.Engine.prototype.unify;
+  Machine.prototype.tick = function (n) { this.steps += n || 1; if (this.steps > this.stepLimit) throw new P.LimitError('step limit (' + this.stepLimit + ') exceeded'); };
+  // output goes into the packet being built, in the order it is written
+  Machine.prototype.write = function (s) { if (!s) return; const it = this.items; const l = it[it.length - 1]; if (l && l.out !== undefined) l.out += s; else it.push({ out: s }); };
+
+  function Interp(conv) {
+    this.ir = conv.ir; this.preds = new Map(); this.prog = conv.prog;
+    for (const [k, p] of conv.ir) this.ref(k).p = p;
+    for (const [k, p] of conv.ir) this.ref(k).fn = this.compilePred(k, p);
+  }
+  Interp.prototype.ref = function (k) { let r = this.preds.get(k); if (!r) { r = { k, fn: null }; this.preds.set(k, r); } return r; };
+
+  // packet of k(args): array of {row: [instances of args]} and {out: text}
+  Interp.prototype.compilePred = function (k, p) {
+    if (p.error) return () => { throw new Error('not converted: ' + k + ': ' + p.error); };
+    const cc = p.clauses.map(cl => this.compileClause(cl));
+    const n = +k.slice(k.lastIndexOf('/') + 1);
+    const keyOf = t => { t = D(t); return t.t === 'c' ? 'c' + t.f + '/' + t.a.length : t.t === 'a' ? 'a' + t.n : t.t === 'n' ? 'n' + t.v + (t.f ? 'f' : '') : t.t === 's' ? 's' + t.v : null; };
+    const heads = p.clauses.map(cl => n ? keyOf(D(cl.head).a[0]) : null);
+    const index = new Map(); const varIdx = [];
+    heads.forEach((h, i) => { if (h === null) varIdx.push(i); });
+    for (const h of new Set(heads.filter(x => x !== null))) index.set(h, heads.map((x, i) => (x === h || x === null) ? i : -1).filter(i => i >= 0));
+    const all = cc.map((_, i) => i);
+    return function (args, M) {
+      M.tick(); M.calls++;
+      let cand = all;
+      if (n && cc.length > 1) { const a0 = D(args[0]); if (a0.t !== 'v') cand = index.get(keyOf(a0)) || varIdx; }
+      const save = M.items; const items = []; M.items = items;
+      try {
+        for (let j = 0; j < cand.length; j++) {
+          const c = cc[cand[j]];
+          const env = new Array(c.nslots); const m = M.trail.length;
+          let st = OK;
+          if (c.head(args, env, M)) st = c.body(env, M, () => { const row = new Array(n); for (let i = 0; i < n; i++) row[i] = P.resolve(args[i]); items.push({ row }); M.rows++; return OK; });
+          M.undo(m);
+          if (st === CUT) break; // a cut stops the remaining clauses
+        }
+      } finally { M.items = save; }
+      return items;
+    };
+  };
+  Interp.prototype.compileClause = function (cl) {
+    const head = D(cl.head); const hargs = head.t === 'c' ? head.a : [];
+    const vars = termVars(Cmp('-', [cl.head, cl.body]));
+    const slot = new Map(); vars.forEach((v, i) => slot.set(v, i));
+    const seen = new Set();
+    const ms = hargs.map(h => P.FastDetlog.prototype.compileMatch.call(this, h, slot, seen));
+    const nh = ms.length;
+    return { nslots: vars.length, head: nh ? (args, env, M) => { for (let i = 0; i < nh; i++) if (!ms[i](args[i], env, M)) return false; return true; } : () => true, body: this.compileGoal(cl.body, slot) };
+  };
+  Interp.prototype.compileBuild = P.FastDetlog.prototype.compileBuild;
+  Interp.prototype.compileMatch = P.FastDetlog.prototype.compileMatch;
+
+  // a goal is compiled to g(env, M, k): it calls k() once per answer (bindings in place) and returns
+  // OK, or STOP (a consumer wants no more answers), or CUT (a cut was reached: drop the remaining alternatives)
+  Interp.prototype.compileGoal = function (g, slot) {
+    g = D(g); const k = P.key(g);
+    const self = this;
+    switch (k) {
+      case ',/2': {
+        // runs of deterministic goals become one in-place test (no continuation closures)
+        const flat = P.flatConj(g); const parts = [];
+        for (let i = 0; i < flat.length;) {
+          if (this.isDet(flat[i])) { let j = i; while (j < flat.length && this.isDet(flat[j])) j++; parts.push({ test: this.compileTest(flat.slice(i, j), slot) }); i = j; }
+          else { parts.push({ goal: this.compileGoal(flat[i], slot) }); i++; }
+        }
+        let c = null;
+        for (let i = parts.length - 1; i >= 0; i--) {
+          const p = parts[i], next = c;
+          if (p.test) {
+            const t = p.test;
+            c = next ? (env, M, kk) => { const m = M.trail.length; if (!t(env, M)) { M.undo(m); return OK; } const s = next(env, M, kk); M.undo(m); return s; }
+                     : (env, M, kk) => { const m = M.trail.length; if (!t(env, M)) { M.undo(m); return OK; } const s = kk(); M.undo(m); return s; };
+          } else {
+            const gi = p.goal;
+            c = next ? (env, M, kk) => gi(env, M, () => next(env, M, kk)) : gi;
+          }
+        }
+        return c;
+      }
+      case 'true/0': return (env, M, kk) => { M.tick(); return kk(); };
+      case 'fail/0': case 'false/0': return (env, M) => { M.tick(); return OK; };
+      case '!/0': return (env, M, kk) => { M.tick(); const s = kk(); return s === STOP ? STOP : CUT; };
+      case ';/2': {
+        const l = D(g.a[0]);
+        if (l.t === 'c' && l.f === '->' && l.a.length === 2) return this.ite(l.a[0], l.a[1], g.a[1], slot);
+        const A = this.compileGoal(g.a[0], slot), B = this.compileGoal(g.a[1], slot);
+        return (env, M, kk) => { M.tick(); const s = A(env, M, kk); if (s !== OK) return s; return B(env, M, kk); };
+      }
+      case '->/2': return this.ite(g.a[0], g.a[1], P.FAIL, slot);
+      case '\\+/1': {
+        if (P.flatConj(g.a[0]).every(x => this.isDet(x))) {
+          const t = this.compileTest(P.flatConj(g.a[0]), slot);
+          return (env, M, kk) => { M.tick(); const m = M.trail.length; const r = t(env, M); M.undo(m); return r ? OK : kk(); };
+        }
+        const G = this.compileGoal(g.a[0], slot);
+        return (env, M, kk) => { M.tick(); let found = false; const m = M.trail.length; G(env, M, () => { found = true; return STOP; }); M.undo(m); return found ? OK : kk(); };
+      }
+      case 'findall/3': {
+        const T = this.compileBuild(g.a[0], slot), G = this.compileGoal(g.a[1], slot), L = this.compileBuild(g.a[2], slot);
+        return (env, M, kk) => {
+          M.tick(); const res = []; const m = M.trail.length;
+          G(env, M, () => { res.push(P.resolve(T(env))); return OK; });
+          M.undo(m);
+          const m2 = M.trail.length;
+          if (!M.unify(L(env), list(res))) { M.undo(m2); return OK; }
+          const s = kk(); M.undo(m2); return s;
+        };
+      }
+      case 'aggregate_all/3': {
+        const spec = D(g.a[0]); const sp = spec.t === 'a' ? spec.n : spec.f;
+        const T = spec.t === 'c' ? this.compileBuild(spec.a[0], slot) : () => P.TRUE;
+        const G = this.compileGoal(g.a[1], slot), R = this.compileBuild(g.a[2], slot);
+        return (env, M, kk) => {
+          M.tick(); const res = []; const m = M.trail.length;
+          G(env, M, () => { res.push(P.resolve(T(env))); return OK; });
+          M.undo(m);
+          const v = aggregate(sp, res); if (v === null) return OK;
+          const m2 = M.trail.length;
+          if (!M.unify(R(env), v)) { M.undo(m2); return OK; }
+          const s = kk(); M.undo(m2); return s;
+        };
+      }
+    }
+    const as = g.t === 'c' ? g.a.map(x => this.compileBuild(x, slot)) : []; const n = as.length;
+    const build = env => { const a = new Array(n); for (let i = 0; i < n; i++) a[i] = as[i](env); return a; };
+    if (this.ir.has(k)) {
+      // splice the callee's packet into the conjunction
+      const r = this.ref(k);
+      return (env, M, kk) => {
+        const args = build(env);
+        const pk = r.fn(args, M);
+        for (let i = 0; i < pk.length; i++) {
+          const it = pk[i];
+          if (it.out !== undefined) { M.write(it.out); continue; }
+          M.tick();
+          const m = M.trail.length; const row = it.row; let ok = true;
+          for (let j = 0; j < n; j++) if (!M.unify(args[j], row[j])) { ok = false; break; }
+          if (ok) { const s = kk(); M.undo(m); if (s !== OK) return s; } else M.undo(m);
+        }
+        return OK;
+      };
+    }
+    if (k === '=/2') { const a = as[0], b = as[1]; return (env, M, kk) => { M.tick(); const m = M.trail.length; if (!M.unify(a(env), b(env))) { M.undo(m); return OK; } const s = kk(); M.undo(m); return s; }; }
+    const bi = P.builtins[k];
+    if (bi && bi.nondet) {
+      return (env, M, kk) => {
+        M.tick(); const a = build(env); const m = M.trail.length; const it = bi.fn(a, M, null);
+        for (;;) {
+          const r = it.next(); if (r.done) break;
+          M.tick();
+          const s = kk();
+          if (s !== OK) { M.undo(m); return s; }
+          if (r.value === 'last') break;
+        }
+        M.undo(m); return OK;
+      };
+    }
+    if (bi && bi.call) {
+      // higher-order builtins that the converter did not specialise (maplist on a variable closure, phrase, ...)
+      return (env, M, kk) => { M.tick(); const ng = bi.fn(build(env), M, null); if (ng === null) return OK; return self.dynamicGoal(ng, M, kk); };
+    }
+    if (bi) return (env, M, kk) => { M.tick(); const a = build(env); const m = M.trail.length; if (!bi.fn(a, M, null)) { M.undo(m); return OK; } const s = kk(); M.undo(m); return s; };
+    return () => { throw new Error('Detlog interpreter: unknown procedure ' + k); };
+  };
+  // deterministic goals: builtins that are neither nondeterministic nor higher-order (their packet has at most one row)
+  Interp.prototype.isDet = function (g) {
+    g = D(g); const k = P.key(g);
+    if (k === 'true/0' || k === 'fail/0' || k === 'false/0' || k === '=/2') return true;
+    if (!k || this.ir.has(k)) return false;
+    const b = P.builtins[k]; return !!(b && !b.nondet && !b.call);
+  };
+  // a run of deterministic goals as one boolean test; bindings stay in place (the caller undoes them)
+  Interp.prototype.compileTest = function (gs, slot) {
+    const ts = gs.map(g => {
+      g = D(g); const k = P.key(g);
+      if (k === 'true/0') return (env, M) => { M.tick(); return true; };
+      if (k === 'fail/0' || k === 'false/0') return (env, M) => { M.tick(); return false; };
+      const as = g.t === 'c' ? g.a.map(x => this.compileBuild(x, slot)) : []; const n = as.length;
+      if (k === '=/2') { const a = as[0], b = as[1]; return (env, M) => { M.tick(); return M.unify(a(env), b(env)); }; }
+      const fn = P.builtins[k].fn;
+      if (n === 2) { const a0 = as[0], a1 = as[1]; return (env, M) => { M.tick(); return fn([a0(env), a1(env)], M, null); }; }
+      return (env, M) => { M.tick(); const a = new Array(n); for (let i = 0; i < n; i++) a[i] = as[i](env); return fn(a, M, null); };
+    });
+    if (ts.length === 1) return ts[0];
+    const n = ts.length;
+    return (env, M) => { for (let i = 0; i < n; i++) if (!ts[i](env, M)) return false; return true; };
+  };
+  Interp.prototype.ite = function (C, T, F, slot) {
+    const Tg = this.compileGoal(T, slot), Fg = this.compileGoal(F, slot);
+    if (P.flatConj(C).every(x => this.isDet(x))) {
+      const t = this.compileTest(P.flatConj(C), slot);
+      return (env, M, kk) => { M.tick(); const m = M.trail.length; if (t(env, M)) { const s = Tg(env, M, kk); M.undo(m); return s; } M.undo(m); return Fg(env, M, kk); };
+    }
+    const Cg = this.compileGoal(C, slot);
+    return (env, M, kk) => {
+      M.tick();
+      let found = false, ts = OK; const m = M.trail.length;
+      Cg(env, M, () => { found = true; ts = Tg(env, M, kk); return STOP; });
+      M.undo(m);
+      return found ? ts : Fg(env, M, kk);
+    };
+  };
+  // a goal built at run time (rare): compiled on the fly with no clause variables
+  Interp.prototype.dynamicGoal = function (g, M, kk) {
+    const vars = termVars(g); const slot = new Map(); const env = vars.slice(); vars.forEach((v, i) => slot.set(v, i));
+    return this.compileGoal(g, slot)(env, M, kk);
+  };
+  function aggregate(sp, ts) {
+    switch (sp) {
+      case 'count': return Int(ts.length);
+      case 'sum': { let s = Int(0); for (const x of ts) s = P.evalArith(Cmp('+', [s, x])); return s; }
+      case 'max': if (!ts.length) return null; return ts.map(P.evalArith).reduce((m, x) => x.v > m.v ? x : m);
+      case 'min': if (!ts.length) return null; return ts.map(P.evalArith).reduce((m, x) => x.v < m.v ? x : m);
+      case 'bag': return list(ts);
+      case 'set': return list(P.sortUnique(ts));
+    }
+    throw new Error('aggregate_all: unknown spec ' + sp);
+  }
+
+  const cache = new WeakMap();
+  function runDetlogInterp(conv, qpred, varNames, opts) {
+    opts = opts || {};
+    let I = cache.get(conv); if (!I) { I = new Interp(conv); cache.set(conv, I); }
+    const M = new Machine(opts);
+    const vs = varNames.map(n => Var(n)); const k = qpred + '/' + varNames.length;
+    const t0 = P.now(); let items = null, error = null, limit = false;
+    try { const r = I.preds.get(k); if (!r) throw new Error('no query predicate ' + k); M.items = []; items = r.fn(vs, M); }
+    catch (e) {
+      if (e instanceof RangeError) return Object.assign(runFallback(conv, qpred, varNames, opts), { engine: 'Detlog engine (interpreter ran out of JS stack)' });
+      error = e.limit ? e.message : e.prolog ? (e.term ? P.errText(e.term) : e.message) : e.message; limit = !!e.limit;
+    }
+    const t1 = P.now();
+    const events = [], answers = []; let output = '';
+    if (items) for (const it of items) {
+      if (it.out !== undefined) { output += it.out; const l = events[events.length - 1]; if (l && l.k === 'out') l.text += it.out; else events.push({ k: 'out', text: it.out }); continue; }
+      const nm = P.namer(); const text = varNames.length ? varNames.map((n, i) => n + ' = ' + P.show(it.row[i], { varName: nm })).join(', ') : 'true';
+      answers.push({ text }); events.push({ k: 'row', text });
+    }
+    return { ok: !error, answers, events, output, steps: M.steps, cps: 0, maxCP: 0, calls: M.calls, packetRows: M.rows, timeMs: t1 - t0, error, limit, engine: 'interpreter', violations: 0, violationPreds: [] };
+  }
+  function runFallback(conv, qpred, varNames, opts) { return P.runDetlogFast(P.loadProgram(conv.text), qpred, varNames, opts); }
+  P.DetlogInterp = Interp; P.runDetlogInterp = runDetlogInterp;
 })(typeof module !== 'undefined' && module.exports ? (globalThis.PL2D = globalThis.PL2D || {}) : (window.PL2D = window.PL2D || {}));
 
 /* pl2detlog back-converter: Detlog -> Prolog.
@@ -3294,12 +3807,12 @@
       const ref = JSON.stringify(r.prolog.events);
       const parts = [];
       let ok = true; let limitOnly = false;
-      for (const [nm, x] of [['Detlog', r.plain], ['MNN', r.mnn], ['back-converted Prolog', r.back], ['back-converted (MNN) Prolog', r.backMnn]]) {
+      for (const [nm, x] of [['Detlog interpreter', r.interp], ['Detlog code', r.plain], ['MNN Detlog code', r.mnn], ['back-converted Prolog', r.back], ['back-converted (MNN) Prolog', r.backMnn]]) {
         if (!x) continue;
         const same = JSON.stringify(x.events) === ref && !x.error === !r.prolog.error;
         if (!same) { ok = false; if (r.prolog.truncated || r.prolog.limit || (x.error && /infinite|no finite packet|step limit/.test(x.error))) limitOnly = true; parts.push(nm + ' differs' + (x.error ? ' (' + x.error + ')' : '')); }
       }
-      add('Evaluation', '?- ' + r.query, ok ? true : limitOnly ? 'warn' : false, ok ? r.prolog.answers.length + ' answer(s)' + (r.prolog.output ? ' + output' : '') + ', same order, duplicates and output in all programs' : parts.join('; ') + (limitOnly ? ' — infinite generator: no finite packet (documented limit)' : ''));
+      add('Evaluation', '?- ' + r.query, ok ? true : limitOnly ? 'warn' : false, ok ? r.prolog.answers.length + ' answer(s)' + (r.prolog.output ? ' + output' : '') + ', same order, duplicates and output in Prolog, the Detlog interpreter, both Detlog programs and both back-conversions' : parts.join('; ') + (limitOnly ? ' — infinite generator: no finite packet (documented limit)' : ''));
       for (const [nm, x] of [['Detlog', r.plain], ['MNN', r.mnn]]) if (x && x.violations) add('Determinism', nm + ' ?- ' + r.query, false, x.violations + ' call(s) with more than one candidate clause: ' + x.violationPreds.join(', '));
     }
     if (runs && runs.length) {
@@ -3414,12 +3927,18 @@
   }
 
   // run fn repeatedly to time it: returns mean ms per run
+  // time fn: warm up (so every engine is measured after JIT compilation), then the median of 5 batches
   function timeIt(fn, budgetMs, maxReps, setup) {
-    budgetMs = budgetMs || 25; maxReps = maxReps || 200;
-    let total = 0, reps = 0, last; const wall = P.now();
-    do { const s = setup ? setup() : undefined; const t = P.now(); last = fn(s); total += P.now() - t; reps++; }
-    while (total < budgetMs && reps < maxReps && P.now() - wall < budgetMs * 4 && !(last && last.error));
-    return { ms: total / reps, reps, last };
+    budgetMs = budgetMs || 30; maxReps = maxReps || 2000;
+    const one = () => { const s = setup ? setup() : undefined; const t = P.now(); const r = fn(s); return { dt: P.now() - t, r }; };
+    let last = one(); if (last.r && last.r.error) return { ms: last.dt, reps: 1, last: last.r };
+    const wall = P.now(); let w = 0; while (P.now() - wall < budgetMs / 6 && w < 50) { one(); w++; } // warm-up
+    const est = Math.max(1e-4, (P.now() - wall) / Math.max(1, w));
+    const per = Math.max(1, Math.min(maxReps, Math.floor((budgetMs / 6) / est)));
+    const batches = [];
+    for (let b = 0; b < 5; b++) { let tot = 0; for (let i = 0; i < per; i++) { const x = one(); tot += x.dt; last = x; } batches.push(tot / per); }
+    batches.sort((a, b) => a - b);
+    return { ms: batches[2], reps: per * 5, last: last.r };
   }
 
   // growth class from (n, steps) points
@@ -3474,24 +3993,27 @@
       const r = { query: q.text };
       const fresh = () => P.loadProgram(src); // assert/retract must not leak between runs
       r.prolog = P.runQuery(fresh(), q.text, { stepLimit: lim, maxAnswers: 1000 });
-      r.plain = P.runDetlog(progPlain, q.pred, q.vars, { stepLimit: lim * 20 });
-      r.mnn = P.runDetlog(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 });
+      r.interp = P.runDetlogInterp(res.plain, q.pred, q.vars, { stepLimit: lim * 20 });
+      r.plain = P.runDetlogFast(progPlain, q.pred, q.vars, { stepLimit: lim * 20 });
+      r.mnn = P.runDetlogFast(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 });
       if (backProg) r.back = P.runQuery(safeLoad(res.backPlain.text), q.text, { stepLimit: lim, maxAnswers: 1000 });
       if (backMnnProg) r.backMnn = P.runQuery(safeLoad(res.backMnn.text), q.text, { stepLimit: lim, maxAnswers: 1000 });
-      r.same = JSON.stringify(r.prolog.events) === JSON.stringify(r.plain.events) && JSON.stringify(r.prolog.events) === JSON.stringify(r.mnn.events);
+      const ev = JSON.stringify(r.prolog.events);
+      r.same = ev === JSON.stringify(r.plain.events) && ev === JSON.stringify(r.mnn.events) && ev === JSON.stringify(r.interp.events);
       if (opts.timing !== false) {
         const parsedQ = P.readTerm(q.text);
         r.prolog.ms = timeIt(pr => P.runQuery(pr, parsedQ, { stepLimit: lim, maxAnswers: 1000 }), 25, 200, dynamic ? fresh : () => sharedProg).ms;
-        r.plain.ms = timeIt(() => P.runDetlog(progPlain, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
-        r.mnn.ms = timeIt(() => P.runDetlog(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 })).ms;
+        r.interp.ms = timeIt(() => P.runDetlogInterp(res.plain, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
+        r.plain.ms = timeIt(() => P.runDetlogFast(progPlain, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
+        r.mnn.ms = timeIt(() => P.runDetlogFast(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 })).ms;
       }
       return r;
     };
     res.runs = queries.map((_, i) => runOne(i));
     if (sweepVals.length) {
-      const pts = sweepVals.map((v, j) => { const r = runOne(queries.length + j); return { n: v, query: sweepQs[j], prolog: r.prolog, plain: r.plain, mnn: r.mnn, same: r.same }; });
+      const pts = sweepVals.map((v, j) => { const r = runOne(queries.length + j); return { n: v, query: sweepQs[j], prolog: r.prolog, interp: r.interp, plain: r.plain, mnn: r.mnn, same: r.same }; });
       const fit = key => fitGrowth(pts.filter(p => !p[key].error).map(p => ({ x: p.n, y: p[key].steps })));
-      res.sweep = { template: opts.sweep.template, points: pts, fit: { prolog: fit('prolog'), plain: fit('plain'), mnn: fit('mnn') } };
+      res.sweep = { template: opts.sweep.template, points: pts, fit: { prolog: fit('prolog'), interp: fit('interp'), plain: fit('plain'), mnn: fit('mnn') } };
     }
     res.metrics = { prolog: prologMetrics(src), plain: detlogMetrics(res.plain.text), mnn: detlogMetrics(res.mnn.text) };
     res.proof = P.prove({ src, plain: res.plain, mnn: res.mnn, backPlain: res.backPlain, backMnn: res.backMnn, runs: res.runs });

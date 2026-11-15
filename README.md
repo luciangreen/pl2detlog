@@ -23,9 +23,9 @@ Open `index.html` (or `dist/index.html`) in a browser. No server or install is n
    - *Shape*: there are no forbidden constructs, and calls are deterministic by first argument.
    - *Justification*: every clause carries a proof step with a known rule.
    - *Side conditions*: these are re-derived. S2A tables are re-run on the source, purity is re-derived for MEMO, independence and no-output for splice, and facts are compared.
-   - *Evaluation*: for every query, the answers, their order, duplicates and output are the same in the source, both Detlog programs and both back-converted programs.
+   - *Evaluation*: for every query, the answers, their order, duplicates and output are the same in the source, the Detlog interpreter, both Detlog programs and both back-converted programs.
    - *Run-time determinism*: no call had more than one candidate clause.
-5. **Shows stats.** For each query it shows steps, time and choicepoints (or Detlog decisions) for Prolog, Detlog and MNN Detlog. It also compares static complexity: predicates, goals, choicepoint sites and cyclomatic complexity. A **complexity sweep** runs a query template for N = a..b and fits a growth class, such as O(n), O(n²) or O(c^n).
+5. **Shows stats.** For each query it shows steps, time and choicepoints (or Detlog decisions) for Prolog, the Detlog interpreter, Detlog code and MNN Detlog. It also compares static complexity: predicates, goals, choicepoint sites and cyclomatic complexity. A **complexity sweep** runs a query template for N = a..b and fits a growth class, such as O(n), O(n²) or O(c^n).
 6. **Exports:**
    - HTML: a self-contained page that runs the Detlog.
    - Detlog `.pl` with `detlog_runtime.pl` included: consult it in SWI-Prolog and run `?- detlog_run_all.`
@@ -33,25 +33,41 @@ Open `index.html` (or `dist/index.html`) in a browser. No server or install is n
    - Back-converted Prolog, with the change warnings as comments.
    - The proof report.
 
-## Example: Fibonacci
+## Engines and speed
 
-```prolog
-fib(0, 0).
-fib(1, 1).
-fib(N, F) :- N > 1, N1 is N - 1, N2 is N - 2, fib(N1, F1), fib(N2, F2), F is F1 + F2.
-```
+The app runs every query on four engines and checks that they all give the same answer packet.
 
-| `?- fib(15, F).` | steps | time (browser) |
-| --- | ---: | ---: |
-| Prolog | 6,904 | 7.6 ms |
-| Detlog | 90,742 | 71 ms |
-| MNN Detlog | 712 | 0.9 ms |
+- **Prolog** runs on the reference engine: ordinary cut and backtracking semantics. It is the oracle every conversion is checked against.
+- **The Detlog interpreter** (`src/detlog_interp.js`) is detlog2's choicepointless, cutless interpreter. It runs the cut-free program (rule CUT applied, closures specialised) as answer packets:
+  - Clauses are compiled once into closures.
+  - Heads are matched WAM-style, without copying.
+  - A call computes the callee's packet and splices it into the conjunction row by row, undoing bindings between rows. No choicepoint is ever created.
+  - Runs of deterministic goals execute in place.
+  - `(C -> T ; E)`, `\+` and `once/1` take the first row of `C` and never demand the rest.
+  - A cut inside a branch is a status that stops the remaining rows and clauses.
+- **Detlog code** is the converted `p__cp` program, run on the deterministic engine (`src/detlog_fast.js`). That engine compiles clauses to closures, selects each clause by its first argument and runs packet loops natively. The C export compiles the same code.
+- **MNN Detlog** is the MNN-optimised code on the same engine.
 
-The sweep `fib(N, F)` for N = 2..18 fits **O(1.64ⁿ)** for Prolog and plain Detlog, which is the golden ratio. MNN Detlog fits **O(n)**.
+Times are the median of 5 batches after a warm-up, in Node 22. All four engines are written in JavaScript in this app.
 
-The C export of `fib(20, F)` takes 425 ms as plain Detlog and 1.4 ms as MNN Detlog.
+| query | Prolog ms | Detlog interpreter ms | interpreter vs Prolog | Detlog code ms | MNN Detlog ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fib(18, F)` | 50.7 | 12.6 | 4.0× faster | 161 | 0.45 |
+| `numlist(1, 60, L), nrev(L, R)` | 5.89 | 2.31 | 2.5× faster | 27.0 | 24.8 |
+| `queens(6, Qs)` | 12.5 | 4.89 | 2.6× faster | 57.0 | 38.3 |
+| `pin(A, B, C)` (three spliced generators) | 1.12 | 0.99 | 1.1× faster | 9.55 | 0.073 |
+| `anc(X, dee)` | 0.046 | 0.033 | 1.4× faster | 0.18 | 0.035 |
+| `classify(0, C)` (cuts) | 0.011 | 0.006 | 1.8× faster | 0.031 | 0.019 |
 
-Plain Detlog is slower than Prolog: it copies every environment row and computes complete packets. MNN optimisation is what makes it competitive, and on small list programs Prolog is still faster. The app reports this as it is.
+On the eight examples (52 queries), the interpreter is faster than Prolog on every query in steady state. In the app's own per-run timing, 50 of the 52 come out faster: the other two take microseconds and fall within timer noise.
+
+The converted code is slower than Prolog because it materialises every row as a Prolog list and copies environments. MNN rewrites remove most of that cost where they apply:
+- MEMO makes `fib` O(n) instead of O(1.64ⁿ).
+- S2A and splice turn data and independent generators into loops.
+
+The sweep `fib(N, F)` for N = 2..18 fits O(1.64ⁿ) for Prolog, the interpreter and Detlog code, which is the golden ratio. MNN Detlog fits O(n).
+
+In the C export, `fib(20, F)` takes 425 ms as plain Detlog code and 1.4 ms as MNN Detlog.
 
 ## How Prolog becomes Detlog
 
@@ -88,7 +104,9 @@ Detlog2 rejects a cut inside an if-then-else branch. pl2detlog converts it with 
 | `src/core.js` | terms, reader, printer |
 | `src/engine.js`, `src/builtins.js` | reference Prolog engine (the oracle, with step and choicepoint counts) |
 | `src/convert.js` | Prolog → Detlog, plain and MNN, with proof steps |
-| `src/detlog_engine.js` | deterministic Detlog engine and runtime |
+| `src/detlog_interp.js` | the Detlog interpreter: the cut-free program run as answer packets, without choicepoints |
+| `src/detlog_fast.js` | the deterministic engine for converted Detlog code (closure-compiled, native packet loops) |
+| `src/detlog_engine.js` | the reference Detlog engine and the Detlog runtime |
 | `src/backconv.js` | Detlog → Prolog and change warnings |
 | `src/proof.js` | the independent proof checker |
 | `src/stats.js` | metrics, timing, complexity sweeps, the analysis pipeline |

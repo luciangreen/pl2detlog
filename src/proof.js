@@ -147,12 +147,12 @@
       const ref = JSON.stringify(r.prolog.events);
       const parts = [];
       let ok = true; let limitOnly = false;
-      for (const [nm, x] of [['Detlog', r.plain], ['MNN', r.mnn], ['back-converted Prolog', r.back], ['back-converted (MNN) Prolog', r.backMnn]]) {
+      for (const [nm, x] of [['Detlog interpreter', r.interp], ['Detlog code', r.plain], ['MNN Detlog code', r.mnn], ['back-converted Prolog', r.back], ['back-converted (MNN) Prolog', r.backMnn]]) {
         if (!x) continue;
         const same = JSON.stringify(x.events) === ref && !x.error === !r.prolog.error;
         if (!same) { ok = false; if (r.prolog.truncated || r.prolog.limit || (x.error && /infinite|no finite packet|step limit/.test(x.error))) limitOnly = true; parts.push(nm + ' differs' + (x.error ? ' (' + x.error + ')' : '')); }
       }
-      add('Evaluation', '?- ' + r.query, ok ? true : limitOnly ? 'warn' : false, ok ? r.prolog.answers.length + ' answer(s)' + (r.prolog.output ? ' + output' : '') + ', same order, duplicates and output in all programs' : parts.join('; ') + (limitOnly ? ' — infinite generator: no finite packet (documented limit)' : ''));
+      add('Evaluation', '?- ' + r.query, ok ? true : limitOnly ? 'warn' : false, ok ? r.prolog.answers.length + ' answer(s)' + (r.prolog.output ? ' + output' : '') + ', same order, duplicates and output in Prolog, the Detlog interpreter, both Detlog programs and both back-conversions' : parts.join('; ') + (limitOnly ? ' — infinite generator: no finite packet (documented limit)' : ''));
       for (const [nm, x] of [['Detlog', r.plain], ['MNN', r.mnn]]) if (x && x.violations) add('Determinism', nm + ' ?- ' + r.query, false, x.violations + ' call(s) with more than one candidate clause: ' + x.violationPreds.join(', '));
     }
     if (runs && runs.length) {

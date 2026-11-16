@@ -41,6 +41,12 @@
   const NATIVE_C = `
 /* ---------- native tier ---------- */
 #include <setjmp.h>
+/* an input the native function may take: any bound term when unchecked (the contract says it is ground) */
+#ifdef DL_CHECKED
+#define DL_GROUND(t) is_ground(t)
+#else
+#define DL_GROUND(t) 1
+#endif
 /* GCC and Clang have a light setjmp (frame, stack and resume address only); otherwise the standard one */
 #if defined(__GNUC__)
 typedef void *nat_jmp[5];
@@ -54,7 +60,12 @@ typedef jmp_buf nat_jmp;
 static nat_jmp *nat_jb; static long nat_epoch = 0;
 static void nat_bail(void) __attribute__((noinline));
 static void nat_bail(void) { NAT_LONGJMP(*nat_jb); }
+#ifdef DL_CHECKED
 static long long n_iv(Term *x) { x = deref(x); if (x->tag != T_INT) nat_bail(); return x->iv; }
+#else
+/* unchecked (the default): the type contract is assumed, so no tag test */
+static inline long long n_iv(Term *x) { return deref(x)->iv; }
+#endif
 static int n_isv(Term *x, long long v) { x = deref(x); return x->tag == T_INT && x->iv == v; }
 static int n_eq(Term *a, Term *b) {
   a = deref(a); b = deref(b); if (a == b) return 1; if (a->tag != b->tag) return 0;
@@ -65,12 +76,36 @@ static int n_eq(Term *a, Term *b) {
   }
   return 0;
 }
+#ifdef DL_CHECKED
 static long long n_idiv(long long a, long long b) { if (b == 0) nat_bail(); return a / b; }
+#else
+static inline long long n_idiv(long long a, long long b) { return a / b; } /* unchecked: no zero test */
+#endif
+#ifdef DL_CHECKED
 static long long n_iadd(long long a, long long b) { long long r; if (__builtin_add_overflow(a, b, &r)) nat_bail(); return r; }
+#else
+#define n_iadd(a, b) ((a) + (b)) /* unchecked: no overflow test */
+#endif
+#ifdef DL_CHECKED
 static long long n_isub(long long a, long long b) { long long r; if (__builtin_sub_overflow(a, b, &r)) nat_bail(); return r; }
+#else
+#define n_isub(a, b) ((a) - (b)) /* unchecked: no overflow test */
+#endif
+#ifdef DL_CHECKED
 static long long n_imul(long long a, long long b) { long long r; if (__builtin_mul_overflow(a, b, &r)) nat_bail(); return r; }
+#else
+#define n_imul(a, b) ((a) * (b)) /* unchecked: no overflow test */
+#endif
+#ifdef DL_CHECKED
 static long long n_imod(long long a, long long b) { if (b == 0) nat_bail(); long long m = a % b; if (m != 0 && ((m < 0) != (b < 0))) m += b; return m; }
+#else
+static inline long long n_imod(long long a, long long b) { long long m = a % b; if (m != 0 && ((m < 0) != (b < 0))) m += b; return m; }
+#endif
+#ifdef DL_CHECKED
 static long long n_irem(long long a, long long b) { if (b == 0) nat_bail(); return a % b; }
+#else
+static inline long long n_irem(long long a, long long b) { return a % b; } /* unchecked: no zero test */
+#endif
 static long long n_min(long long a, long long b) { return a <= b ? a : b; }
 static long long n_max(long long a, long long b) { return a >= b ? a : b; }
 typedef struct { long long key; long ep; int st; long long iv; Term *tv; } NMS;
@@ -214,7 +249,26 @@ static double ref_ms(void (*run)(long)) {
         '{ Term *Ov = mk_var(); if (!' + pfn(pl.rowKey) + '((Term*[]){ ev' + n + ', Ov })) ok' + n + ' = 0; else { TV o1 = { 0 }; list_to_tv(Ov, &o1); for (size_t j = 0; j < o1.n; j++) tv_push(&res' + n + ', copy_term(o1.v[j])); free(o1.v); } }\n' +
         '} undo(m);';
       let loop;
-      if (pl.gk === 'member/2') loop = 'for (size_t i = 0; i < xs' + n + '.n && ok' + n + '; i++) { ' + body('xs' + n + '.v[i]') + ' }\n';
+      // permutation(Xs, Ys) tested by a native DET predicate on Ys alone, with no outputs: each permutation
+      // is written into the same k list cells (the test is pure and keeps nothing), the native function is
+      // called directly in its 'i' mode, and only a kept permutation is built as a new list and copied.
+      const md = pl.filt && pl.gk === 'permutation/2' && pl.filt.args.length === 1 && D(pl.filt.args[0]) === D(x) && (natModes.get(pl.filt.k) || []).find(m => m.mode === 'i');
+      if (md) {
+        const keep = 'Term *y = tv_list(&cur); size_t m = TR_TOP; if (unify(x' + n + ', y)) tv_push(&res' + n + ', copy_term(ev' + n + ')); undo(m);';
+        loop = '{ size_t k = xs' + n + '.n; size_t *idx = (size_t *)calloc(k + 1, sizeof(size_t)); int *used = (int *)calloc(k + 1, sizeof(int)); long d = 0; TV cur = { 0 };\n' +
+          '  Term **cell = (Term **)malloc(sizeof(Term *) * (k + 1)); for (size_t i = 0; i < k; i++) cell[i] = mk_cons(NIL, NIL); for (size_t i = 0; i + 1 < k; i++) cell[i]->args[1] = cell[i + 1]; cell[k] = NIL;\n' +
+          '  for (; ok' + n + ';) {\n' +
+          '    if ((size_t)d == k) {\n' +
+          '      for (size_t i = 0; i < k; i++) cell[i]->args[0] = cur.v[i];\n' +
+          '      if (++nrow' + n + ' > 1000000) dl_die("builtin_rows: infinite generator", NULL);\n' +
+          '      int r; { nat_jmp jb; nat_jmp *sv = nat_jb; nat_jb = &jb; nat_epoch++; if (NAT_SETJMP(jb)) { nat_jb = sv; r = 2; } else { r = ' + md.name + '(cell[0]); nat_jb = sv; } }\n' +
+          '      if (r == 1) { ' + keep + ' }\n' +
+          '      else if (r == 2) { Term *y = tv_list(&cur); { ' + body('y') + ' } }\n' +
+          '      d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
+          '    while (idx[d] < k && used[idx[d]]) idx[d]++;\n' +
+          '    if (idx[d] >= k) { d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
+          '    used[idx[d]] = 1; tv_push(&cur, xs' + n + '.v[idx[d]]); d++; idx[d] = 0;\n  }\n  free(idx); free(used); free(cur.v); free(cell); }\n';
+      } else if (pl.gk === 'member/2') loop = 'for (size_t i = 0; i < xs' + n + '.n && ok' + n + '; i++) { ' + body('xs' + n + '.v[i]') + ' }\n';
       else loop = '{ size_t k = xs' + n + '.n; size_t *idx = (size_t *)calloc(k + 1, sizeof(size_t)); int *used = (int *)calloc(k + 1, sizeof(int)); long d = 0; TV cur = { 0 };\n' +
         '  for (; ok' + n + ';) {\n' +
         '    if ((size_t)d == k) { Term *y = tv_list(&cur); { ' + body('y') + ' } d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
@@ -351,7 +405,7 @@ static double ref_ms(void (*run)(long)) {
     for (const [k, ms] of natModes) {
       const n = +k.slice(k.lastIndexOf('/') + 1) - 1;
       let c = 'static int ' + natEntryFn(k) + '(Term **a) {\n  Term *x[' + Math.max(1, n) + ']; char m[' + (n + 1) + '];\n';
-      c += '  for (int i = 0; i < ' + n + '; i++) { x[i] = deref(a[i]); if (x[i]->tag == T_VAR) { for (int j = 0; j < i; j++) if (x[j] == x[i]) return 0; m[i] = \'o\'; } else if (x[i]->tag == T_INT) m[i] = \'n\'; else if (is_ground(x[i])) m[i] = \'i\'; else return 0; }\n';
+      c += '  for (int i = 0; i < ' + n + '; i++) { x[i] = deref(a[i]); if (x[i]->tag == T_VAR) { for (int j = 0; j < i; j++) if (x[j] == x[i]) return 0; m[i] = \'o\'; } else if (x[i]->tag == T_INT) m[i] = \'n\'; else if (DL_GROUND(x[i])) m[i] = \'i\'; else return 0; }\n';
       c += '  m[' + n + '] = 0; Term *S = deref(a[' + n + ']); if (S->tag != T_VAR) return 0; for (int i = 0; i < ' + n + '; i++) if (x[i] == S) return 0;\n';
       for (const md of ms) {
         const outs = [...md.mode].map((ch, i) => ch === 'o' ? i : -1).filter(i => i >= 0);
@@ -414,7 +468,7 @@ static double ref_ms(void (*run)(long)) {
         } catch (e) { /* no reference for this query */ }
       });
     }
-    let main = 'int main(int argc, char **argv) {\n  int reps = 1; if (argc > 2 && !strcmp(argv[1], "-r")) reps = atoi(argv[2]); if (reps < 1) reps = 1;\n  rt_init(); init_tables(); long lim0 = dl_step_limit;\n';
+    let main = 'int main(int argc, char **argv) {\n  int reps = 1; if (argc > 2 && !strcmp(argv[1], "-r")) reps = atoi(argv[2]); if (reps < 1) reps = 1;\n  int refs = !(argc > 1 && !strcmp(argv[argc - 1], "--no-ref")); (void)refs; /* --no-ref: skip timing the hand-written C */\n  double st0 = now_ms(); rt_init(); init_tables(); long lim0 = dl_step_limit;\n  printf("%% startup %.4f ms\\n", now_ms() - st0);\n';
     qs.forEach(q => {
       const k = q.pred + '__cp/' + (q.vars.length + 1);
       main += '  {\n    const char *nm[] = {' + (q.vars.length ? q.vars.map(cstrBytes).join(', ') : '""') + '};\n';
@@ -429,7 +483,7 @@ static double ref_ms(void (*run)(long)) {
       const ref = refs.get(qs.indexOf(q));
       if (ref) {
         // the same algorithm written by hand in C, timed in this process: this program's speed as a % of C's
-        main += '    if (ok) { ref_need(' + Math.max(16, Math.ceil(ref.cells)) + '); double rc = ref_ms(' + ref.fn + '), me = (t1 - t0) / reps;\n';
+        main += '    if (ok && refs) { ref_need(' + Math.max(16, Math.ceil(ref.cells)) + '); double rc = ref_ms(' + ref.fn + '), me = (t1 - t0) / reps;\n';
         main += '      printf("%% hand-written C (' + ref.alg + '): %.6f ms per run; this program runs at %.3g%% of C\'s speed%s\\n", rc, 100 * rc / me, reps < 10 ? " (one timing run: use -r N for a steady figure)" : ""); }\n';
       }
       main += '  }\n';
@@ -446,7 +500,10 @@ static double ref_ms(void (*run)(long)) {
       'static Term *mk_list(int n, Term **xs, Term *tail) { Term *r = tail; for (int i = n; i-- > 0;) r = mk_cons(xs[i], r); return r; }\n' +
       'static void init_tables(void) {\n' + atomInit + '\n' + fnInit + '\n' + kcInit + '\n}\n';
     const natProtos = [...sigs.values()].map(x => x + ';').join('\n') + (refs.size ? REF_C + refFns.join('\n') + '\n' : '');
-    const code = header + lib + '\n/* ---------- program ---------- */\n' + tables + natLib + protos.join('\n') + '\n' + natProtos + '\n\n' +
+    // unchecked by default: no step limit, type tests, overflow or zero-divisor tests in native code;
+    // opts.checked keeps them (and the step limit) for programs whose calls may break the contract
+    const mode = opts.checked ? '#define DL_CHECKED 1 /* checked: step limit, type, overflow and zero tests */\n' : '/* unchecked (the default): calls are assumed to meet the type contract; build with -DDL_CHECKED for the checks */\n';
+    const code = header + mode + lib + '\n/* ---------- program ---------- */\n' + tables + natLib + protos.join('\n') + '\n' + natProtos + '\n\n' +
       (nDefs.length ? '/* native tier: DET predicates in the modes the queries use */\n' + nDefs.join('\n') + '\n' + natEntries.join('\n') + '\n' : '') +
       defs.join('\n') + '\n' + main;
     return { refs: [...refs.keys()].map(i => qs[i].text), code, warnings };

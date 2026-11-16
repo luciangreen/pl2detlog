@@ -7,6 +7,7 @@ const test = require('node:test'), assert = require('node:assert');
 const path = require('path');
 for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'cgen', 'proof', 'stats', 'cref', 'examples']) require(path.join(__dirname, '..', 'src', f + '.js'));
 const P = globalThis.PL2D;
+P.DETLOG_CHECKED = true; // these tests exercise the native tier's bail-outs, which only the checked tier has
 const EXTRA = {
   lists: ['app([1,2], [3], R)', 'app([1,2], Y, [1,2,3])', 'total([1,a], S)', 'doubles([1,2.5], D)', 'nrev([A,B], R)', 'numlist(1, 120, L), nrev(L, R)'],
   cuts: ['classify(a, C)', 'max(1, 1.0, Z)'],
@@ -67,16 +68,37 @@ test('C export: native tier on and off print the same answers', (t) => {
     const conv = P.convert(ex.src, { mnn: true, queries: qs });
     const outs = [];
     for (const native of [false, true]) {
-      const { code } = P.toC(conv.text, { queries: conv.queries, native });
+      const { code } = P.toC(conv.text, { queries: conv.queries, native, checked: true });
       if (native) natives += (code.match(/^static int nat\d+\(/gm) || []).length;
       const f = path.join(dir, ex.id + (native ? '_n' : '_g'));
       fs.writeFileSync(f + '.c', code);
       cp.execSync('cc -O2 -w -o ' + f + ' ' + f + '.c -lm');
-      outs.push(cp.execFileSync(f).toString().split('\n').filter(l => !l.startsWith('% steps') && !l.startsWith('% hand-written')).join('\n'));
+      outs.push(cp.execFileSync(f).toString().split('\n').filter(l => !l.startsWith('% steps') && !l.startsWith('% hand-written') && !l.startsWith('% startup')).join('\n'));
     }
     assert.strictEqual(outs[1], outs[0], ex.id);
   }
   assert.ok(natives >= 10, natives + ' native C functions');
+});
+
+// Unchecked (the default) assumes every call meets the type contract: on the examples' own queries, which do,
+// it prints what the checked program prints. (Outside the contract it may not: doubles([1,2.5], D) is one.)
+test('C export: unchecked and checked print the same answers on queries that meet the contract', (t) => {
+  const cp = require('child_process'), fs = require('fs'), os = require('os');
+  try { cp.execSync('cc --version', { stdio: 'ignore' }); } catch (e) { t.skip('no C compiler'); return; }
+  P.C_RUNTIME = fs.readFileSync(path.join(__dirname, '..', 'src', 'runtime.c'), 'utf8');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pl2d-cunc-'));
+  for (const ex of P.EXAMPLES) {
+    const qs = ex.queries.filter(q => !P.runQuery(P.loadProgram(ex.src), P.readTerm(q), { stepLimit: 3e6, maxAnswers: 1000 }).error);
+    const conv = P.convert(ex.src, { mnn: true, queries: qs });
+    const outs = [];
+    for (const checked of [true, false]) {
+      const f = path.join(dir, ex.id + (checked ? '_c' : '_u'));
+      fs.writeFileSync(f + '.c', P.toC(conv.text, { queries: conv.queries, checked }).code);
+      cp.execSync('cc -O2 -w -o ' + f + ' ' + f + '.c -lm');
+      outs.push(cp.execFileSync(f).toString().split('\n').filter(l => !l.startsWith('% steps') && !l.startsWith('% hand-written') && !l.startsWith('% startup')).join('\n'));
+    }
+    assert.strictEqual(outs[1], outs[0], ex.id);
+  }
 });
 
 // The C export's own reading: for a query that runs a benchmark algorithm, the program includes the hand-written

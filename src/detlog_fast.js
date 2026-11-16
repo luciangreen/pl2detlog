@@ -502,14 +502,24 @@
     // run-time entry from packet code: decide the mode, run the native function, bind the outputs
     const NH = {
       YES: { native: 'yes' }, NO: { native: 'no' }, MAYBE: { native: 'maybe' }, BAIL: { native: 'bail' }, OUTS: [], N: { s: 0, l: 0 },
-      IV: x => (x.t === 'n' && !x.f && typeof x.v === 'number') ? x.v : bailN(),
-      // + - * on raw integers: a result beyond the safe integers bails to the generic code (unbounded integers)
-      IADD: (a, b) => { const r = a + b; return Number.isSafeInteger(r) ? r : bailN(); },
-      ISUB: (a, b) => { const r = a - b; return Number.isSafeInteger(r) ? r : bailN(); },
-      IMUL: (a, b) => { const r = a * b; return Number.isSafeInteger(r) ? r : bailN(); },
-      IDIV: (a, b) => b === 0 ? bailN() : Math.trunc(a / b),
-      IMOD: (a, b) => { if (b === 0) return bailN(); const m = a % b; return m !== 0 && (m < 0) !== (b < 0) ? m + b : m; },
-      IREM: (a, b) => b === 0 ? bailN() : a % b,
+      // checked (P.DETLOG_CHECKED): a non-integer, a result beyond the safe integers or a zero divisor bails
+      // out to the generic code. Unchecked (the default): the type contract is assumed and nothing is tested.
+      ...(P.DETLOG_CHECKED ? {
+        IV: x => (x.t === 'n' && !x.f && typeof x.v === 'number') ? x.v : bailN(),
+        // + - * on raw integers: a result beyond the safe integers bails to the generic code (unbounded integers)
+        IADD: (a, b) => { const r = a + b; return Number.isSafeInteger(r) ? r : bailN(); },
+        ISUB: (a, b) => { const r = a - b; return Number.isSafeInteger(r) ? r : bailN(); },
+        IMUL: (a, b) => { const r = a * b; return Number.isSafeInteger(r) ? r : bailN(); },
+        IDIV: (a, b) => b === 0 ? bailN() : Math.trunc(a / b),
+        IMOD: (a, b) => { if (b === 0) return bailN(); const m = a % b; return m !== 0 && (m < 0) !== (b < 0) ? m + b : m; },
+        IREM: (a, b) => b === 0 ? bailN() : a % b,
+      } : {
+        IV: x => x.v,
+        IADD: (a, b) => a + b, ISUB: (a, b) => a - b, IMUL: (a, b) => a * b,
+        IDIV: (a, b) => Math.trunc(a / b),
+        IMOD: (a, b) => { const m = a % b; return m !== 0 && (m < 0) !== (b < 0) ? m + b : m; },
+        IREM: (a, b) => a % b,
+      }),
       INT: v => ({ t: 'n', v, f: false }),
       ISV: (x, v) => x.t === 'n' && !x.f && x.v === v,
       // a native integer result boxed as a term: a safe integer always (the operations bail otherwise)
@@ -561,7 +571,7 @@
       let r;
       NH.N.s = E.steps; NH.N.l = E.stepLimit; if (NH.T.size) NH.T.clear();
       try { r = fn.apply(null, ins); }
-      catch (e) { E.steps = NH.N.s; if (e === NH.BAIL || e instanceof RangeError) return undefined; throw e; }
+      catch (e) { E.steps = NH.N.s; if (e === NH.BAIL || e instanceof RangeError || e instanceof TypeError) return undefined; throw e; }
       E.steps = NH.N.s; E.nativeCalls = (E.nativeCalls || 0) + 1;
       if (r === NH.MAYBE) return undefined;
       if (r === NH.NO) { E.bind(S, ATOMS.no); return true; }
@@ -594,6 +604,7 @@
   // the (predicate, mode) pairs the native tier compiled for a program (the C export compiles the same)
   P.nativeModesOf = prog => { const F = cache.get(prog); return F && F.nat ? [...F.nat.done].filter(([, f]) => f).map(([k]) => k) : []; };
   if (P.DETLOG_NATIVE === undefined) P.DETLOG_NATIVE = true;
+  if (P.DETLOG_CHECKED === undefined) P.DETLOG_CHECKED = false; // the native tier assumes its type contract
 
   // same interface and result shape as runDetlog
   function runDetlogFast(prog, qpred, varNames, opts) {

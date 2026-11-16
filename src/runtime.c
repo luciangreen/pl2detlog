@@ -12,13 +12,26 @@
 
 enum { T_VAR, T_ATOM, T_INT, T_FLT, T_STR, T_CMP };
 typedef struct Term Term;
+/* 40 bytes: the fields a term of each kind uses share their space (a variable: ref, cp, id; an atom,
+   string or compound: name, args; a number: iv or fv). cpe is the copy epoch of a variable and the
+   ground mark of a compound. A compound's arguments follow it in the same allocation. */
 struct Term {
-  int tag; int arity; const char *name; long long iv; double fv;
-  Term *ref; Term **args; long id; Term *cp; long cpe;
+  int tag; int arity; long cpe;
+  union {
+    struct { const char *name; Term **args; };
+    struct { Term *ref; Term *cp; };
+    long long iv;
+    double fv;
+  };
+  long id;
 };
 static long dl_steps = 0, dl_step_limit = 200000000L, dl_decisions = 0, dl_var_id = 0, dl_memo_hits = 0;
 static void dl_die(const char *m, const char *x) { fprintf(stderr, "Detlog runtime error: %s%s%s\n", m, x ? " " : "", x ? x : ""); exit(2); }
+#ifdef DL_CHECKED
 #define STEP() do { if (++dl_steps > dl_step_limit) dl_die("step limit exceeded", NULL); } while (0)
+#else
+#define STEP() ((void)0) /* unchecked (the default): no step limit, no step count */
+#endif
 
 /* ---------- memory ---------- */
 static char *arena = NULL; static size_t arena_left = 0;
@@ -54,7 +67,14 @@ static Term *mk_atom(const char *s) {
 }
 static const char *intern(const char *s) { return mk_atom(s)->name; }
 static Term *NIL, *A_TRUE, *A_E, *A_OUT, *A_FOUND, *A_NONE, *A_MINUS, *A_DOT;
-static Term *mk_int(long long v) { Term *t = new_term(T_INT); t->iv = v; return t; }
+/* small integers are shared: integers are never changed, so one term serves every use */
+#define ICACHE_LO (-1024)
+#define ICACHE_HI 65535
+static Term icache[ICACHE_HI - ICACHE_LO + 1];
+static Term *mk_int(long long v) {
+  if (v >= ICACHE_LO && v <= ICACHE_HI) { Term *t = &icache[v - ICACHE_LO]; if (!t->tag) { t->tag = T_INT; t->iv = v; } return t; }
+  Term *t = new_term(T_INT); t->iv = v; return t;
+}
 static Term *mk_flt(double v) { Term *t = new_term(T_FLT); t->fv = v; return t; }
 static Term *mk_str(const char *s) { Term *t = new_term(T_STR); char *c = (char *)alloc(strlen(s) + 1); strcpy(c, s); t->name = c; return t; }
 static Term *mk_var(void) { Term *t = new_term(T_VAR); t->id = ++dl_var_id; return t; }
@@ -385,7 +405,7 @@ static int sum_list(Term *l, Term **out) { TV v = { 0 }; if (!list_to_tv(l, &v))
 
 static int bi_call(const char *k, Term **a) {
   STEP();
-#define K(s) (!strcmp(k, s))
+#define K(s) (k[0] == (s)[0] && k[1] == (s)[1] && !strcmp(k, s))
   if (K("=/2")) return unify(a[0], a[1]);
   if (K("\\=/2")) { size_t m = TR_TOP; int r = unify(a[0], a[1]); undo(m); return !r; }
   if (K("==/2")) return compare(a[0], a[1]) == 0;

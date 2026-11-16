@@ -9,7 +9,8 @@
   const callb = (k, fn) => { B[k] = { fn, call: true }; };
   const D = deref;
   const arr = (t) => { const a = listToArray(t); if (!a) { if (D(t).t === 'v') throw instErr(); throw typeError('list', t); } return a; };
-  const numCmp = (a, b) => { const x = evalArith(a), y = evalArith(b); return x.v - y.v; };
+  const add = (x, k) => evalArith(Cmp('+', [x, Int(k)]));
+  const numCmp = (a, b) => { const x = evalArith(a), y = evalArith(b); return x.v < y.v ? -1 : x.v > y.v ? 1 : 0; };
 
   // type checks
   det('var/1', a => D(a[0]).t === 'v');
@@ -45,8 +46,8 @@
   det('>/2', a => numCmp(a[0], a[1]) > 0);
   det('=</2', a => numCmp(a[0], a[1]) <= 0);
   det('>=/2', a => numCmp(a[0], a[1]) >= 0);
-  det('succ/2', (a, e) => { const x = D(a[0]); if (x.t === 'n') return e.unify(a[1], Int(x.v + 1)); const y = D(a[1]); if (y.t === 'v') throw instErr(); if (y.v <= 0) return false; return e.unify(a[0], Int(y.v - 1)); });
-  det('plus/3', (a, e) => { const x = D(a[0]), y = D(a[1]), z = D(a[2]); if (x.t === 'n' && y.t === 'n') return e.unify(z, Int(x.v + y.v)); if (x.t === 'n' && z.t === 'n') return e.unify(y, Int(z.v - x.v)); if (y.t === 'n' && z.t === 'n') return e.unify(x, Int(z.v - y.v)); throw instErr(); });
+  det('succ/2', (a, e) => { const x = D(a[0]); if (x.t === 'n') return e.unify(a[1], add(x, 1)); const y = D(a[1]); if (y.t === 'v') throw instErr(); if (y.v <= 0) return false; return e.unify(a[0], add(y, -1)); });
+  det('plus/3', (a, e) => { const x = D(a[0]), y = D(a[1]), z = D(a[2]); const ar = (f, p, q) => evalArith(Cmp(f, [p, q])); if (x.t === 'n' && y.t === 'n') return e.unify(z, ar('+', x, y)); if (x.t === 'n' && z.t === 'n') return e.unify(y, ar('-', z, x)); if (y.t === 'n' && z.t === 'n') return e.unify(x, ar('-', z, y)); throw instErr(); });
 
   // terms
   det('functor/3', (a, e) => {
@@ -247,7 +248,7 @@
   nondet('nth1/3', function* (a, e) { yield* nth(a, e, 1); });
   function* nth(a, e, base) {
     const i = D(a[0]); const l = arr(a[1]);
-    if (i.t === 'n') { const k = i.v - base; if (k >= 0 && k < l.length && e.unify(a[2], l[k])) yield 'last'; return; }
+    if (i.t === 'n') { if (typeof i.v !== 'number') return; const k = i.v - base; if (k >= 0 && k < l.length && e.unify(a[2], l[k])) yield 'last'; return; }
     for (let k = 0; k < l.length; k++) { const m = e.trail.length; if (e.unify(i, Int(k + base)) && e.unify(a[2], l[k])) yield; e.undo(m); }
   }
   nondet('last/2', function* (a, e) { const l = arr(a[0]); if (l.length && e.unify(a[1], l[l.length - 1])) yield 'last'; });

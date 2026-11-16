@@ -248,13 +248,15 @@
     const ARITH2 = { '+': '+', '-': '-', '*': '*' };
     const CMP = { '=:=/2': '===', '=\\=/2': '!==', '</2': '<', '>/2': '>', '=</2': '<=', '>=/2': '>=' };
     // an integer expression compiled to JS: leaves are integers or variables, operators + - * and unary -;
-    // a leaf that is not an integer sets bad, and the generic builtin runs instead (errors, floats)
+    // a leaf that is not a safe integer, or a result that is not, sets bad, and the generic builtin runs
+    // instead (errors, floats, integers beyond 2^53)
     function arith(t, slot) {
       t = D(t);
       if (t.t === 'n') return t.f || !Number.isSafeInteger(t.v) ? null : '(' + t.v + ')';
-      if (t.t === 'v') { const i = slot.get(t); return '((q = D(v' + i + ' || BADV)).t === "n" && !q.f ? q.v : (bad = true, 0))'; }
+      if (t.t === 'v') { const i = slot.get(t); return '((q = D(v' + i + ' || BADV)).t === "n" && !q.f && typeof q.v === "number" ? q.v : (bad = true, 0))'; }
       if (t.t !== 'c') return null;
-      if (t.a.length === 2 && ARITH2[t.f]) { const a = arith(t.a[0], slot), b = arith(t.a[1], slot); return a && b ? '(' + a + ' ' + ARITH2[t.f] + ' ' + b + ')' : null; }
+      // each result must stay a safe integer, or the generic builtin (unbounded integers) runs instead
+      if (t.a.length === 2 && ARITH2[t.f]) { const a = arith(t.a[0], slot), b = arith(t.a[1], slot); return a && b ? '(Number.isSafeInteger(q2 = ' + a + ' ' + ARITH2[t.f] + ' ' + b + ') ? q2 : (bad = true, 0))' : null; }
       if (t.a.length === 1 && t.f === '-') { const a = arith(t.a[0], slot); return a ? '(-' + a + ')' : null; }
       return null;
     }
@@ -363,10 +365,10 @@
         const generic = '{ const m = E.trail.length; if (!' + rb + '([' + g.a.map(x => build(x, slot)).join(', ') + '], E)) { E.undo(m); ' + FAIL + ' } }';
         if (k === 'is/2') {
           const ex = arith(g.a[1], slot);
-          if (ex) return TICK + '\n{ let bad = false, q; const r = ' + ex + ';\nif (bad) ' + generic + '\nelse { const m = E.trail.length; if (!E.unify(' + build(g.a[0], slot) + ', INT(r))) { E.undo(m); ' + FAIL + ' } } }\n';
+          if (ex) return TICK + '\n{ let bad = false, q, q2; const r = ' + ex + ';\nif (bad) ' + generic + '\nelse { const m = E.trail.length; if (!E.unify(' + build(g.a[0], slot) + ', INT(r))) { E.undo(m); ' + FAIL + ' } } }\n';
         } else {
           const ea = arith(g.a[0], slot), eb = arith(g.a[1], slot);
-          if (ea && eb) return TICK + '\n{ let bad = false, q; const x = ' + ea + ', y = ' + eb + ';\nif (bad) ' + generic + '\nelse if (!(x ' + CMP[k] + ' y)) ' + FAIL + ' }\n';
+          if (ea && eb) return TICK + '\n{ let bad = false, q, q2; const x = ' + ea + ', y = ' + eb + ';\nif (bad) ' + generic + '\nelse if (!(x ' + CMP[k] + ' y)) ' + FAIL + ' }\n';
         }
       }
       if (k === 'copy_term/2') {
@@ -500,12 +502,17 @@
     // run-time entry from packet code: decide the mode, run the native function, bind the outputs
     const NH = {
       YES: { native: 'yes' }, NO: { native: 'no' }, MAYBE: { native: 'maybe' }, BAIL: { native: 'bail' }, OUTS: [], N: { s: 0, l: 0 },
-      IV: x => (x.t === 'n' && !x.f) ? x.v : bailN(),
+      IV: x => (x.t === 'n' && !x.f && typeof x.v === 'number') ? x.v : bailN(),
+      // + - * on raw integers: a result beyond the safe integers bails to the generic code (unbounded integers)
+      IADD: (a, b) => { const r = a + b; return Number.isSafeInteger(r) ? r : bailN(); },
+      ISUB: (a, b) => { const r = a - b; return Number.isSafeInteger(r) ? r : bailN(); },
+      IMUL: (a, b) => { const r = a * b; return Number.isSafeInteger(r) ? r : bailN(); },
       IDIV: (a, b) => b === 0 ? bailN() : Math.trunc(a / b),
       IMOD: (a, b) => { if (b === 0) return bailN(); const m = a % b; return m !== 0 && (m < 0) !== (b < 0) ? m + b : m; },
       IREM: (a, b) => b === 0 ? bailN() : a % b,
       INT: v => ({ t: 'n', v, f: false }),
       ISV: (x, v) => x.t === 'n' && !x.f && x.v === v,
+      // a native integer result boxed as a term: a safe integer always (the operations bail otherwise)
       EQ: eqG, OVER: () => { throw new P.LimitError('step limit exceeded'); },
       // tables for memoised native calls: one per callee and mode, emptied at each entry from packet code
       T: new Map(),
@@ -541,7 +548,7 @@
       for (let i = 0; i < n; i++) {
         const x = D(args[i]);
         if (x.t === 'v') { if (outv.includes(x)) return undefined; mode += 'o'; outv.push(x); continue; }
-        if (x.t === 'n' && !x.f) { mode += 'n'; ins.push(x.v); continue; }
+        if (x.t === 'n' && !x.f && typeof x.v === 'number') { mode += 'n'; ins.push(x.v); continue; }
         const r = P.resolve(x);
         if (r.t === 'c' && !r.gr) return undefined;
         mode += 'i'; ins.push(r);

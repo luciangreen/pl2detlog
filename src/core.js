@@ -7,8 +7,10 @@
   let varCounter = 0;
   const atomTable = new Map();
   function Atom(n) { let a = atomTable.get(n); if (!a) { a = { t: 'a', n }; atomTable.set(n, a); } return a; }
-  function Num(v, f) { return { t: 'n', v, f: !!f || !Number.isInteger(v) }; }
-  function Int(v) { return { t: 'n', v, f: false }; }
+  // Integers are unbounded, as in SWI-Prolog: a JS number while it is a safe integer, a BigInt beyond
+  // (always the one or the other for a given value, so === compares them). Floats are JS numbers.
+  function Num(v, f) { if (typeof v === 'bigint') return Int(v); return { t: 'n', v, f: !!f || !Number.isInteger(v) }; }
+  function Int(v) { if (typeof v === 'bigint') { if (v >= -9007199254740991n && v <= 9007199254740991n) v = Number(v); } else if (!Number.isSafeInteger(v) && Number.isInteger(v)) v = BigInt(v); return { t: 'n', v, f: false }; }
   function Str(v) { return { t: 's', v }; }
   function Var(name) { return { t: 'v', name: name || null, ref: null, id: ++varCounter }; }
   function Cmp(f, a) { return a.length === 0 ? Atom(f) : { t: 'c', f, a }; }
@@ -179,7 +181,7 @@
         if (c === '0' && /[xob]/.test(src[i + 1] || '') ) {
           const base = { x: 16, o: 8, b: 2 }[src[i + 1]]; const re = base === 16 ? /[0-9a-fA-F]/ : base === 8 ? /[0-7]/ : /[01]/;
           let j = i + 2; while (j < n && re.test(src[j])) j++;
-          if (j > i + 2) { toks.push({ k: 'num', v: parseInt(src.slice(i + 2, j), base), pos: start, lb }); i = j; continue; }
+          if (j > i + 2) { toks.push({ k: 'num', v: bigOrNum(BigInt((base === 16 ? '0x' : base === 8 ? '0o' : '0b') + src.slice(i + 2, j))), pos: start, lb }); i = j; continue; }
         }
         let j = i; while (j < n && /[0-9_]/.test(src[j])) j++;
         let isF = false;
@@ -189,7 +191,7 @@
           if (/[0-9]/.test(src[k] || '')) { isF = true; j = k; while (j < n && /[0-9]/.test(src[j])) j++; }
         }
         const text = src.slice(i, j).replace(/_/g, '');
-        toks.push({ k: 'num', v: isF ? parseFloat(text) : parseInt(text, 10), f: isF, pos: start, lb }); i = j; continue;
+        toks.push({ k: 'num', v: isF ? parseFloat(text) : bigOrNum(BigInt(text)), f: isF, pos: start, lb }); i = j; continue;
       }
       if (c === '_' || /[A-Z]/.test(c)) { let j = i; while (j < n && isAlnum(src[j])) j++; toks.push({ k: 'var', v: src.slice(i, j), pos: start, lb }); i = j; continue; }
       if (/[a-z]/.test(c)) { let j = i; while (j < n && isAlnum(src[j])) j++; toks.push({ k: 'atom', v: src.slice(i, j), pos: start, lb }); i = j; continue; }
@@ -383,6 +385,7 @@
     return "'" + n.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\t/g, '\\t') + "'";
   }
   function fmtAtom(n, q) { return q && atomNeedsQuote(n) ? quoteAtom(n) : n; }
+  function bigOrNum(b) { return b >= -9007199254740991n && b <= 9007199254740991n ? Number(b) : b; }
   function fmtNum(t) {
     if (t.f) { let s = String(t.v); if (!/[.eE]/.test(s) && isFinite(t.v)) s += '.0'; if (s === 'Infinity') s = 'inf'; if (s === '-Infinity') s = '-inf'; if (s === 'NaN') s = 'nan'; return s; }
     return String(t.v);

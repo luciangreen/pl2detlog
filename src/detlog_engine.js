@@ -292,7 +292,7 @@
       const c = dec[j], x = D(args[j]);
       if (c.k === 'newton' && x.t === 'n' && !x.f) {
         const ds = c.ds;
-        if (ds.length === 2 && ds[1] !== 0) { const q = (x.v - ds[0]) / ds[1]; only = Number.isInteger(q) && q >= 0 && q < K ? [q] : []; break; }
+        if (ds.length === 2 && ds[1] !== 0) { const q = typeof x.v === 'number' ? (x.v - ds[0]) / ds[1] : NaN; only = Number.isInteger(q) && q >= 0 && q < K ? [q] : []; break; }
       }
     }
     const res = []; const al = a[1]; const n = only ? only.length : K;

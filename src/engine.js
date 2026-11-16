@@ -98,54 +98,63 @@
         const xs = t.a.map(evalArith);
         const a = xs[0], b = xs[1];
         const fl = xs.some(x => x.f);
-        const mk = v => fl ? Num(v, true) : Int(v);
+        // integers are unbounded (BigInt beyond the safe range); fa, fb: the values as JS numbers, for floats
+        const fa = a && typeof a.v === 'bigint' ? Number(a.v) : a && a.v, fb = b && typeof b.v === 'bigint' ? Number(b.v) : b && b.v;
+        const big = x => BigInt(x.v);
+        // an exact integer result: JS numbers while the result is safe, BigInt otherwise
+        const iop = (f, g) => { if (typeof a.v === 'number' && (!b || typeof b.v === 'number')) { const r = f(a.v, b && b.v); if (Number.isSafeInteger(r)) return Int(r); } return Int(g(big(a), b && big(b))); };
         const needInt = () => { for (const x of xs) if (x.f) throw typeError('integer', x); };
+        const isZero = x => x.v === 0 || x.v === 0n;
+        const small = typeof a.v === 'number' && b && typeof b.v === 'number';
+        const neg = x => x.v < 0;
         if (t.a.length === 1) switch (t.f) {
           case '-': return a.f ? Num(-a.v, true) : Int(-a.v);
           case '+': return a;
-          case 'abs': return a.f ? Num(Math.abs(a.v), true) : Int(Math.abs(a.v));
-          case 'sign': return a.f ? Num(Math.sign(a.v), true) : Int(Math.sign(a.v));
+          case 'abs': return a.f ? Num(Math.abs(a.v), true) : neg(a) ? Int(-a.v) : a;
+          case 'sign': return a.f ? Num(Math.sign(a.v), true) : Int(neg(a) ? -1 : isZero(a) ? 0 : 1);
           case 'min': case 'max': break;
-          case 'sqrt': return Num(Math.sqrt(a.v), true);
-          case 'sin': return Num(Math.sin(a.v), true); case 'cos': return Num(Math.cos(a.v), true); case 'tan': return Num(Math.tan(a.v), true);
-          case 'asin': return Num(Math.asin(a.v), true); case 'acos': return Num(Math.acos(a.v), true); case 'atan': return Num(Math.atan(a.v), true);
-          case 'exp': return Num(Math.exp(a.v), true);
-          case 'log': if (a.v <= 0) throw evalErr('undefined'); return Num(Math.log(a.v), true);
-          case 'log2': return Num(Math.log2(a.v), true);
-          case 'float': return Num(a.v, true);
-          case 'integer': return Int(Math.round(a.v));
-          case 'float_integer_part': return Num(Math.trunc(a.v), true);
-          case 'float_fractional_part': return Num(a.v - Math.trunc(a.v), true);
-          case 'truncate': return Int(Math.trunc(a.v)); case 'round': return Int(Math.round(a.v));
-          case 'ceiling': return Int(Math.ceil(a.v)); case 'floor': return Int(Math.floor(a.v));
-          case '\\': needInt(); return Int(~a.v);
-          case 'msb': needInt(); return Int(Math.floor(Math.log2(a.v)));
-          case 'succ': return Int(a.v + 1);
-          case 'random': needInt(); return Int(Math.floor(Math.random() * a.v));
+          case 'sqrt': return Num(Math.sqrt(fa), true);
+          case 'sin': return Num(Math.sin(fa), true); case 'cos': return Num(Math.cos(fa), true); case 'tan': return Num(Math.tan(fa), true);
+          case 'asin': return Num(Math.asin(fa), true); case 'acos': return Num(Math.acos(fa), true); case 'atan': return Num(Math.atan(fa), true);
+          case 'exp': return Num(Math.exp(fa), true);
+          case 'log': if (fa <= 0) throw evalErr('undefined'); return Num(Math.log(fa), true);
+          case 'log2': return Num(Math.log2(fa), true);
+          case 'float': return Num(fa, true);
+          case 'integer': return a.f ? Int(roundBig(a.v)) : a;
+          case 'float_integer_part': return Num(Math.trunc(fa), true);
+          case 'float_fractional_part': return Num(fa - Math.trunc(fa), true);
+          case 'truncate': return a.f ? Int(toBig(Math.trunc(a.v))) : a;
+          case 'round': return a.f ? Int(roundBig(a.v)) : a;
+          case 'ceiling': return a.f ? Int(toBig(Math.ceil(a.v))) : a;
+          case 'floor': return a.f ? Int(toBig(Math.floor(a.v))) : a;
+          case '\\': needInt(); return Int(~big(a));
+          case 'msb': needInt(); return Int(big(a).toString(2).length - 1);
+          case 'succ': needInt(); return iop(x => x + 1, x => x + 1n);
+          case 'random': needInt(); return Int(Math.floor(Math.random() * fa));
           case 'random_float': return Num(Math.random(), true);
         }
         if (t.a.length === 2) switch (t.f) {
-          case '+': return mk(a.v + b.v);
-          case '-': return mk(a.v - b.v);
-          case '*': return mk(a.v * b.v);
-          case '/': if (!fl) { if (b.v === 0) throw evalErr('zero_divisor'); return a.v % b.v === 0 ? Int(a.v / b.v) : Num(a.v / b.v, true); } if (b.v === 0) throw evalErr('zero_divisor'); return Num(a.v / b.v, true);
-          case '//': needInt(); if (b.v === 0) throw evalErr('zero_divisor'); return Int(Math.trunc(a.v / b.v));
-          case 'div': needInt(); if (b.v === 0) throw evalErr('zero_divisor'); return Int(Math.floor(a.v / b.v));
-          case 'mod': needInt(); if (b.v === 0) throw evalErr('zero_divisor'); { const m = a.v % b.v; return Int(m !== 0 && (m < 0) !== (b.v < 0) ? m + b.v : m); }
-          case 'rem': needInt(); if (b.v === 0) throw evalErr('zero_divisor'); return Int(a.v % b.v);
+          case '+': return fl ? Num(fa + fb, true) : iop((x, y) => x + y, (x, y) => x + y);
+          case '-': return fl ? Num(fa - fb, true) : iop((x, y) => x - y, (x, y) => x - y);
+          case '*': return fl ? Num(fa * fb, true) : iop((x, y) => x * y, (x, y) => x * y);
+          case '/': if (isZero(b) && !fl) throw evalErr('zero_divisor'); if (!fl) { if (small) return a.v % b.v === 0 ? Int(a.v / b.v) : Num(a.v / b.v, true); if (big(a) % big(b) === 0n) return Int(big(a) / big(b)); return Num(fa / fb, true); } if (fb === 0) throw evalErr('zero_divisor'); return Num(fa / fb, true);
+          case '//': needInt(); if (isZero(b)) throw evalErr('zero_divisor'); return iop((x, y) => Math.trunc(x / y), (x, y) => x / y);
+          case 'div': needInt(); if (isZero(b)) throw evalErr('zero_divisor'); return small ? Int(Math.floor(a.v / b.v)) : Int(floorDiv(big(a), big(b)));
+          case 'mod': needInt(); if (isZero(b)) throw evalErr('zero_divisor'); if (small) { const m = a.v % b.v; return Int(m !== 0 && (m < 0) !== (b.v < 0) ? m + b.v : m); } { const m = big(a) % big(b); return Int(m !== 0n && (m < 0n) !== (big(b) < 0n) ? m + big(b) : m); }
+          case 'rem': needInt(); if (isZero(b)) throw evalErr('zero_divisor'); return small ? Int(a.v % b.v) : Int(big(a) % big(b));
           case 'min': return compareNum(a, b) <= 0 ? a : b;
           case 'max': return compareNum(a, b) >= 0 ? a : b;
-          case '**': if (!fl && b.v >= 0) return Int(Math.pow(a.v, b.v)); return Num(Math.pow(a.v, b.v), true);
-          case '^': if (!fl) { if (b.v < 0) { if (a.v === 1) return Int(1); if (a.v === -1) return Int(b.v % 2 ? -1 : 1); throw evalErr('undefined'); } return Int(Math.pow(a.v, b.v)); } return Num(Math.pow(a.v, b.v), true);
-          case 'atan2': case 'atan': return Num(Math.atan2(a.v, b.v), true);
-          case 'log': return Num(Math.log(b.v) / Math.log(a.v), true);
-          case '>>': needInt(); return Int(Math.floor(a.v / Math.pow(2, b.v)));
-          case '<<': needInt(); return Int(a.v * Math.pow(2, b.v));
-          case '/\\': needInt(); return Int(a.v & b.v);
-          case '\\/': needInt(); return Int(a.v | b.v);
-          case 'xor': needInt(); return Int(a.v ^ b.v);
-          case 'gcd': { needInt(); let x = Math.abs(a.v), y = Math.abs(b.v); while (y) { [x, y] = [y, x % y]; } return Int(x); }
-          case 'copysign': return Num(Math.sign(b.v) * Math.abs(a.v), true);
+          case '**': if (!fl && !neg(b)) return Int(big(a) ** big(b)); return Num(Math.pow(fa, fb), true);
+          case '^': if (!fl) { if (neg(b)) { if (a.v === 1) return Int(1); if (a.v === -1) return Int(big(b) % 2n ? -1 : 1); throw evalErr('undefined'); } return Int(big(a) ** big(b)); } return Num(Math.pow(fa, fb), true);
+          case 'atan2': case 'atan': return Num(Math.atan2(fa, fb), true);
+          case 'log': return Num(Math.log(fb) / Math.log(fa), true);
+          case '>>': needInt(); return Int(big(a) >> big(b));
+          case '<<': needInt(); return Int(big(a) << big(b));
+          case '/\\': needInt(); return Int(big(a) & big(b));
+          case '\\/': needInt(); return Int(big(a) | big(b));
+          case 'xor': needInt(); return Int(big(a) ^ big(b));
+          case 'gcd': { needInt(); let x = big(a), y = big(b); if (x < 0n) x = -x; if (y < 0n) y = -y; while (y) { [x, y] = [y, x % y]; } return Int(x); }
+          case 'copysign': return Num(Math.sign(fb) * Math.abs(fa), true);
           case 'truncate': break;
           case 'cot': break;
           case 'random_between': break;
@@ -155,7 +164,10 @@
     }
     throw typeError('evaluable', t);
   }
-  function compareNum(a, b) { return a.v < b.v ? -1 : a.v > b.v ? 1 : 0; }
+  function compareNum(a, b) { return a.v < b.v ? -1 : a.v > b.v ? 1 : 0; } // < and > compare a BigInt and a number exactly
+  const toBig = x => { if (!isFinite(x)) throw evalErr('undefined'); return BigInt(x); };
+  const roundBig = x => toBig(x < 0 ? -Math.round(-x) : Math.round(x));
+  const floorDiv = (x, y) => { const q = x / y; return (x % y !== 0n) && ((x < 0n) !== (y < 0n)) ? q - 1n : q; };
   const now = (typeof performance !== 'undefined' && performance.now) ? () => performance.now() : () => Date.now();
 
   // ---------- text helpers ----------
@@ -204,7 +216,7 @@
         case 'p': out += show(nextArg(), { quoted: false }); break;
         case 'q': out += show(nextArg(), { quoted: true }); break;
         case 'a': out += textOf(nextArg()); break;
-        case 'd': { const x = deref(nextArg()); if (x.t !== 'n' || x.f) throw typeError('integer', x); if (n) { const s = String(Math.abs(x.v)).padStart(n + 1, '0'); out += (x.v < 0 ? '-' : '') + s.slice(0, s.length - n) + '.' + s.slice(s.length - n); } else out += String(x.v); break; }
+        case 'd': { const x = deref(nextArg()); if (x.t !== 'n' || x.f) throw typeError('integer', x); if (n) { const s = String(x.v < 0 ? -x.v : x.v).padStart(n + 1, '0'); out += (x.v < 0 ? '-' : '') + s.slice(0, s.length - n) + '.' + s.slice(s.length - n); } else out += String(x.v); break; }
         case 'D': { const x = deref(nextArg()); out += String(x.v).replace(/\B(?=(\d{3})+(?!\d))/g, ','); break; }
         case 'f': case 'e': case 'g': { const x = evalArith(nextArg()); out += d === 'f' ? x.v.toFixed(n === null ? 6 : n) : d === 'e' ? x.v.toExponential(n === null ? 6 : n) : String(x.v); break; }
         case 's': out += textOf(nextArg()); break;

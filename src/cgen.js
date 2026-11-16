@@ -66,6 +66,9 @@ static int n_eq(Term *a, Term *b) {
   return 0;
 }
 static long long n_idiv(long long a, long long b) { if (b == 0) nat_bail(); return a / b; }
+static long long n_iadd(long long a, long long b) { long long r; if (__builtin_add_overflow(a, b, &r)) nat_bail(); return r; }
+static long long n_isub(long long a, long long b) { long long r; if (__builtin_sub_overflow(a, b, &r)) nat_bail(); return r; }
+static long long n_imul(long long a, long long b) { long long r; if (__builtin_mul_overflow(a, b, &r)) nat_bail(); return r; }
 static long long n_imod(long long a, long long b) { if (b == 0) nat_bail(); long long m = a % b; if (m != 0 && ((m < 0) != (b < 0))) m += b; return m; }
 static long long n_irem(long long a, long long b) { if (b == 0) nat_bail(); return a % b; }
 static long long n_min(long long a, long long b) { return a <= b ? a : b; }
@@ -300,7 +303,7 @@ static double ref_ms(void (*run)(long)) {
         if (pat.t === 's') return t + '->tag == T_STR && !strcmp(' + t + '->name, ' + cstrBytes(pat.v) + ')';
         return '0';
       },
-      fn: (name, args) => ({ IDIV: 'n_idiv', IMOD: 'n_imod', IREM: 'n_irem', MIN: 'n_min', MAX: 'n_max', ABS: 'llabs' })[name] + '(' + args.join(', ') + ')',
+      fn: (name, args) => ({ IDIV: 'n_idiv', IMOD: 'n_imod', IREM: 'n_irem', MIN: 'n_min', MAX: 'n_max', ABS: 'llabs', IADD: 'n_iadd', ISUB: 'n_isub', IMUL: 'n_imul' })[name] + '(' + args.join(', ') + ')',
       assign: (lhs, rhs) => lhs + ' = ' + rhs + ';\n',
       fail: L => 'goto ' + L + ';',
       blockNoThen: (L, rc, re) => '{\n' + rc + '}\n' + L + ': ;\n' + re,

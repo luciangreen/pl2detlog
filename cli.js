@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // pl2detlog command line:  node cli.js prog.pl -q "fib(10, F)" [-q ...] [--plain] [--detlog out.pl] [--c out.c [--best] [--checked] [--run [REPS]]] [--back out.pl] [--proof proof.txt] [--stats]
 const fs = require('fs'); const path = require('path');
-for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'cgen', 'proof', 'stats', 'cref']) require('./src/' + f + '.js');
+for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref']) require('./src/' + f + '.js');
 const P = globalThis.PL2D;
 P.C_RUNTIME = fs.readFileSync(path.join(__dirname, 'src/runtime.c'), 'utf8');
 const args = process.argv.slice(2); const qs = []; const o = {};
@@ -24,7 +24,7 @@ else if (!o.c && !o.back && !o.proof && !o.stats) process.stdout.write(conv.text
 let chosen = conv;
 if (o.c && o.best) {
   const cp = require('child_process');
-  const build = (c, tag) => { const f = o.c.replace(/\.c$/, '') + '.' + tag; fs.writeFileSync(f + '.c', P.toC(c.text, { queries: c.queries, checked: !!o.checked }).code); cp.execFileSync(process.env.CC || 'cc', ['-O2', '-w', '-o', f, f + '.c', '-lm']); return f; };
+  const build = (c, tag) => { const f = o.c.replace(/\.c$/, '') + '.' + tag; fs.writeFileSync(f + '.c', P.toC(c.text, { queries: c.queries, source: c.source, checked: !!o.checked }).code); cp.execFileSync(process.env.CC || 'cc', ['-O2', '-w', '-o', f, f + '.c', '-lm']); return f; };
   const wall = (exe, args) => { const ts = []; for (let i = 0; i < 7; i++) { const t = process.hrtime.bigint(); cp.execFileSync(exe, args); ts.push(Number(process.hrtime.bigint() - t) / 1e6); } return ts.sort((a, b) => a - b)[3]; };
   const perRun = exe => { const out = cp.execFileSync(exe, ['-r', '200', '--no-ref']).toString(); return [...out.matchAll(/ ([0-9.]+) ms per run$/gm)].reduce((s, m) => s + +m[1], 0); };
   const cands = [['MNN', r.mnn], ['plain', r.plain]].map(([name, c]) => { const exe = build(c, name.toLowerCase()); return { name, c, exe, process: wall(exe, ['--no-ref']), run: perRun(exe) }; });
@@ -33,7 +33,7 @@ if (o.c && o.best) {
   console.error('kept ' + best.name + ' (faster as a process, startup included)');
   chosen = best.c;
 }
-if (o.c) fs.writeFileSync(o.c, P.toC(chosen.text, { queries: chosen.queries, checked: !!o.checked }).code); // --checked: step limit and type tests
+if (o.c) fs.writeFileSync(o.c, P.toC(chosen.text, { queries: chosen.queries, source: chosen.source, checked: !!o.checked }).code); // --checked: step limit and type tests
 // --run: build the C with cc -O2 and run it.  Without REPS, one run sets the repetitions (about 0.3 s for
 // the slowest query).  For a query that runs a benchmark algorithm the program also times the hand-written
 // C and prints its own speed as a % of C's.

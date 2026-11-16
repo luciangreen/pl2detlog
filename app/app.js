@@ -315,7 +315,7 @@
   }
 
   // ---------- C ----------
-  function cFor(conv) { return P.toC(exportDetlogText(conv, false), { queries: conv.queries.slice(0, R.queries.length), mode: conv.mode === 'mnn' ? 'MNN-optimised Detlog' : 'Detlog' }); }
+  function cFor(conv) { return P.toC(exportDetlogText(conv, false), { queries: conv.queries.slice(0, R.queries.length), source: conv.source, mode: conv.mode === 'mnn' ? 'MNN-optimised Detlog' : 'Detlog' }); }
   function renderC() {
     const which = renderC.which || 'mnn';
     const conv = which === 'mnn' ? R.mnn : R.plain;

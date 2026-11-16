@@ -336,7 +336,14 @@
           }
         } }
       if (filt) {
-        const each = gk === 'member/2' ? '(fn) => { for (let i = 0; i < xs.length; i++) fn(xs[i]); }' : '(fn) => PERMS(xs, fn)';
+        // permutation(Xs, Ys) filtered by a pairwise test on Ys (when the program's source is known, as
+        // prog.pairwiseSource): failing prefixes are dropped (src/algebra.js has the derivation)
+        let pwEach = null;
+        if (gk === 'permutation/2' && prog.pairwiseSource && P.pairwise && filt.args.length === 1 && D(filt.args[0]) === D(G.a[1]) && /__d\/\d+$/.test(filt.k)) {
+          const pw = P.pairwise(prog.pairwiseSource, filt.k.replace(/__d\/(\d+)$/, (_, a) => '/' + (+a - 1)));
+          if (pw) pwEach = '(fn) => PERMSPW(xs, (p, yv, dist) => ' + pw.code('p', 'yv', 'dist', true) + ', ' + pw.c0 + ', fn)';
+        }
+        const each = gk === 'member/2' ? '(fn) => { for (let i = 0; i < xs.length; i++) fn(xs[i]); }' : pwEach || '(fn) => PERMS(xs, fn)';
         const argsCode = filt.args.map(a => build(a, slot)).join(', ');
         return '{ const xs = LA(' + build(G.a[1 - (gk === 'member/2' ? 0 : 1)], slot) + ');\nif (xs === null) {\n' + generic + '} else {\n' +
           TICK + ' ' + TICK + ' ' + TICK + '\nconst x = ' + build(G.a[gk === 'member/2' ? 0 : 1], slot) + ', ev = ' + build(env, slot) + ', res = []; let ok = true, nrow = 0;\n' +
@@ -541,6 +548,23 @@
         for (let i = 0; i < n; i++) if (!used[i]) { used[i] = true; cur[k] = xr[i]; rec(k + 1); used[i] = false; }
       })(0);
     }
+    // permutation/2 under a pairwise test (src/algebra.js): a prefix whose newest element fails the test
+    // against an earlier one is not extended; the permutations kept are those perms keeps, in its order
+    function permsPW(xs, test, c0, fn) {
+      const n = xs.length, xr = xs.map(D);
+      const val = xr.map(x => (x.t === 'n' && !x.f && Number.isSafeInteger(x.v) ? x.v : null));
+      if (val.includes(null)) return perms(xs, fn);
+      const cur = new Array(n), pl = new Array(n), used = new Array(n).fill(false);
+      (function rec(k) {
+        if (k === n) { let l = P.NIL; for (let i = n - 1; i >= 0; i--) l = { t: 'c', f: '.', a: [cur[i], l], gr: true }; fn(l); return; }
+        for (let i = 0; i < n; i++) if (!used[i]) {
+          const y = val[i]; let ok = true;
+          for (let j = k - 1; j >= 0; j--) if (!test(pl[j], y, c0 + (k - 1 - j))) { ok = false; break; }
+          if (!ok) continue;
+          used[i] = true; cur[k] = xr[i]; pl[k] = y; rec(k + 1); used[i] = false;
+        }
+      })(0);
+    }
     function eqG(a, b) {
       if (a === b) return true;
       if (a.t !== b.t) return false;
@@ -583,7 +607,7 @@
     const src = '"use strict";\n' + out.join('\n') + '\nreturn {' + [...fname].map(([k, f]) => JSON.stringify(k) + ': ' + f).join(', ') + '};';
     const OVER = E => { throw new P.LimitError('step limit (' + E.stepLimit + ') exceeded'); };
     const BADV = { t: 'v', ref: null }; // stands for a variable that was never created (an unbound leaf)
-    const fns = new Function('K', 'RB', 'D', 'V', 'LA', 'LIST', 'OVER', 'INT', 'COPY', 'BADV', 'NATE', 'PERMS', 'LIMIT', src)(consts, rbs, D, Var, listToArray, list, OVER, P.Int, P.copy, BADV, natEntry, perms, P.LimitError);
+    const fns = new Function('K', 'RB', 'D', 'V', 'LA', 'LIST', 'OVER', 'INT', 'COPY', 'BADV', 'NATE', 'PERMS', 'LIMIT', 'PERMSPW', src)(consts, rbs, D, Var, listToArray, list, OVER, P.Int, P.copy, BADV, natEntry, perms, P.LimitError, permsPW);
     const preds = new Map();
     for (const [k, f] of Object.entries(fns)) preds.set(k, { k, fn: (args, E) => f(...args, E), pos: f });
     return { preds, src, jit: true, nat: NAT };

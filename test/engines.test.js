@@ -5,7 +5,7 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert');
 const path = require('path');
-for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'cgen', 'proof', 'stats', 'cref', 'examples']) require(path.join(__dirname, '..', 'src', f + '.js'));
+for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref', 'examples']) require(path.join(__dirname, '..', 'src', f + '.js'));
 const P = globalThis.PL2D;
 P.DETLOG_CHECKED = true; // these tests exercise the native tier's bail-outs, which only the checked tier has
 const EXTRA = {
@@ -68,7 +68,7 @@ test('C export: native tier on and off print the same answers', (t) => {
     const conv = P.convert(ex.src, { mnn: true, queries: qs });
     const outs = [];
     for (const native of [false, true]) {
-      const { code } = P.toC(conv.text, { queries: conv.queries, native, checked: true });
+      const { code } = P.toC(conv.text, { queries: conv.queries, source: conv.source, native, checked: true });
       if (native) natives += (code.match(/^static int nat\d+\(/gm) || []).length;
       const f = path.join(dir, ex.id + (native ? '_n' : '_g'));
       fs.writeFileSync(f + '.c', code);
@@ -93,7 +93,7 @@ test('C export: unchecked and checked print the same answers on queries that mee
     const outs = [];
     for (const checked of [true, false]) {
       const f = path.join(dir, ex.id + (checked ? '_c' : '_u'));
-      fs.writeFileSync(f + '.c', P.toC(conv.text, { queries: conv.queries, checked }).code);
+      fs.writeFileSync(f + '.c', P.toC(conv.text, { queries: conv.queries, source: conv.source, checked }).code);
       cp.execSync('cc -O2 -w -o ' + f + ' ' + f + '.c -lm');
       outs.push(cp.execFileSync(f).toString().split('\n').filter(l => !l.startsWith('% steps') && !l.startsWith('% hand-written') && !l.startsWith('% startup')).join('\n'));
     }
@@ -113,7 +113,7 @@ test('C export: % of C\'s speed for benchmark queries', (t) => {
   for (const [id, q, alg] of cases) {
     const ex = P.EXAMPLES.find(e => e.id === id);
     const conv = P.convert(ex.src, { mnn: true, queries: [q] });
-    const r = P.toC(conv.text, { queries: conv.queries });
+    const r = P.toC(conv.text, { queries: conv.queries, source: conv.source });
     assert.deepStrictEqual(r.refs, [q], id);
     const f = path.join(dir, alg); fs.writeFileSync(f + '.c', r.code); cp.execSync('cc -O2 -w -o ' + f + ' ' + f + '.c -lm');
     const out = cp.execFileSync(f, ['-r', '20']).toString();
@@ -122,5 +122,5 @@ test('C export: % of C\'s speed for benchmark queries', (t) => {
   }
   // no reference when the program's answers are not the algorithm's
   const other = P.convert('fib(N, F) :- F is N * 2.', { mnn: true, queries: ['fib(10, F)'] });
-  assert.deepStrictEqual(P.toC(other.text, { queries: other.queries }).refs, []);
+  assert.deepStrictEqual(P.toC(other.text, { queries: other.queries, source: other.source }).refs, []);
 });

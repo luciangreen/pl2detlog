@@ -8,7 +8,7 @@
 'use strict';
 const fs = require('fs'), cp = require('child_process'), path = require('path'), os = require('os');
 const root = path.resolve(__dirname, '..');
-for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'cgen', 'proof', 'stats', 'examples']) require(path.join(root, 'src', f + '.js'));
+for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'examples']) require(path.join(root, 'src', f + '.js'));
 const P = globalThis.PL2D;
 P.C_RUNTIME = fs.readFileSync(path.join(root, 'src', 'runtime.c'), 'utf8');
 const args = process.argv.slice(2);
@@ -32,7 +32,7 @@ const time = fn => { let n = 0; const w = performance.now(); while (performance.
 const median = xs => xs.slice().sort((a, b) => a - b)[xs.length >> 1];
 // the C export times itself in-process: ./p -r N repeats each query N times and prints ms per run
 function cExport(conv) {
-  const { code } = P.toC(conv.text, { queries: conv.queries });
+  const { code } = P.toC(conv.text, { queries: conv.queries, source: conv.source });
   fs.writeFileSync(tmp + '/p.c', code); cp.execSync('cc -O2 -w -o ' + tmp + '/p ' + tmp + '/p.c -lm');
   const per = reps => { const out = cp.execFileSync(tmp + '/p', ['-r', String(reps)], { stdio: 'pipe' }).toString(); const m = out.match(/([0-9.]+) ms per run/); return m ? +m[1] * 1000 : NaN; };
   const est = per(1);

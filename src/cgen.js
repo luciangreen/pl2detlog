@@ -41,6 +41,12 @@
   const NATIVE_C = `
 /* ---------- native tier ---------- */
 #include <setjmp.h>
+/* an input the native function may take: any bound term when unchecked (the contract says it is ground) */
+#ifdef DL_CHECKED
+#define DL_GROUND(t) is_ground(t)
+#else
+#define DL_GROUND(t) 1
+#endif
 /* GCC and Clang have a light setjmp (frame, stack and resume address only); otherwise the standard one */
 #if defined(__GNUC__)
 typedef void *nat_jmp[5];
@@ -54,7 +60,12 @@ typedef jmp_buf nat_jmp;
 static nat_jmp *nat_jb; static long nat_epoch = 0;
 static void nat_bail(void) __attribute__((noinline));
 static void nat_bail(void) { NAT_LONGJMP(*nat_jb); }
+#ifdef DL_CHECKED
 static long long n_iv(Term *x) { x = deref(x); if (x->tag != T_INT) nat_bail(); return x->iv; }
+#else
+/* unchecked (the default): the type contract is assumed, so no tag test */
+static inline long long n_iv(Term *x) { return deref(x)->iv; }
+#endif
 static int n_isv(Term *x, long long v) { x = deref(x); return x->tag == T_INT && x->iv == v; }
 static int n_eq(Term *a, Term *b) {
   a = deref(a); b = deref(b); if (a == b) return 1; if (a->tag != b->tag) return 0;
@@ -65,9 +76,36 @@ static int n_eq(Term *a, Term *b) {
   }
   return 0;
 }
+#ifdef DL_CHECKED
 static long long n_idiv(long long a, long long b) { if (b == 0) nat_bail(); return a / b; }
+#else
+static inline long long n_idiv(long long a, long long b) { return a / b; } /* unchecked: no zero test */
+#endif
+#ifdef DL_CHECKED
+static long long n_iadd(long long a, long long b) { long long r; if (__builtin_add_overflow(a, b, &r)) nat_bail(); return r; }
+#else
+#define n_iadd(a, b) ((a) + (b)) /* unchecked: no overflow test */
+#endif
+#ifdef DL_CHECKED
+static long long n_isub(long long a, long long b) { long long r; if (__builtin_sub_overflow(a, b, &r)) nat_bail(); return r; }
+#else
+#define n_isub(a, b) ((a) - (b)) /* unchecked: no overflow test */
+#endif
+#ifdef DL_CHECKED
+static long long n_imul(long long a, long long b) { long long r; if (__builtin_mul_overflow(a, b, &r)) nat_bail(); return r; }
+#else
+#define n_imul(a, b) ((a) * (b)) /* unchecked: no overflow test */
+#endif
+#ifdef DL_CHECKED
 static long long n_imod(long long a, long long b) { if (b == 0) nat_bail(); long long m = a % b; if (m != 0 && ((m < 0) != (b < 0))) m += b; return m; }
+#else
+static inline long long n_imod(long long a, long long b) { long long m = a % b; if (m != 0 && ((m < 0) != (b < 0))) m += b; return m; }
+#endif
+#ifdef DL_CHECKED
 static long long n_irem(long long a, long long b) { if (b == 0) nat_bail(); return a % b; }
+#else
+static inline long long n_irem(long long a, long long b) { return a % b; } /* unchecked: no zero test */
+#endif
 static long long n_min(long long a, long long b) { return a <= b ? a : b; }
 static long long n_max(long long a, long long b) { return a >= b ? a : b; }
 typedef struct { long long key; long ep; int st; long long iv; Term *tv; } NMS;
@@ -139,6 +177,9 @@ static double ref_ms(void (*run)(long)) {
   function toC(detlogText, opts) {
     opts = opts || {};
     const prog = P.loadProgram(detlogText);
+    // the original Prolog (opts.source), for the algebra that reads predicates as they were written
+    let srcProg = null; try { srcProg = opts.source ? P.loadProgram(opts.source) : null; } catch (e) { srcProg = null; }
+    const proofNotes = [];
     const warnings = []; const warned = new Set();
     const warn = m => { if (!warned.has(m)) { warned.add(m); warnings.push(m); } };
     const atoms = new Map(), fns = new Map();
@@ -148,8 +189,12 @@ static double ref_ms(void (*run)(long)) {
     let uid = 0;
     const defs = [], protos = [];
 
-    function termC(t, vm) {
+    // a ground compound term is built once, at startup (KC table), and shared: unification never
+    // writes into a term without variables, so every call may use the same cells
+    const groundT = t => { t = D(t); if (t.t === 'v') return false; if (t.t === 'c') { for (const a of t.a) if (!groundT(a)) return false; } return true; };
+    function termC(t, vm, top = true) {
       t = D(t);
+      if (top && t.t === 'c' && !opts.noHoist && groundT(t)) return KC(t);
       switch (t.t) {
         case 'v': { if (!t.name || t.name === '_') return 'mk_var()'; const v = vm.get(t); if (!v) throw new Error('unknown variable ' + t.name); return v; }
         case 'n': return t.f ? 'mk_flt(' + (Number.isFinite(t.v) ? String(t.v) + (/[.e]/i.test(String(t.v)) ? '' : '.0') : (t.v > 0 ? 'INFINITY' : t.v < 0 ? '-INFINITY' : 'NAN')) + ')' : 'mk_int(' + t.v + 'LL)';
@@ -158,10 +203,10 @@ static double ref_ms(void (*run)(long)) {
         case 'c': {
           if (t.f === '.' && t.a.length === 2) {
             const items = []; let x = t;
-            while (x.t === 'c' && x.f === '.' && x.a.length === 2) { items.push(termC(x.a[0], vm)); x = D(x.a[1]); }
+            while (x.t === 'c' && x.f === '.' && x.a.length === 2) { items.push(termC(x.a[0], vm, top)); x = D(x.a[1]); }
             return 'mk_list(' + items.length + ', (Term*[]){' + items.join(', ') + '}, ' + termC(x, vm) + ')';
           }
-          return 'mk_cmp(' + fnIx(t.f) + ', ' + t.a.length + ', (Term*[]){' + t.a.map(x => termC(x, vm)).join(', ') + '})';
+          return 'mk_cmp(' + fnIx(t.f) + ', ' + t.a.length + ', (Term*[]){' + t.a.map(x => termC(x, vm, top)).join(', ') + '})';
         }
       }
       throw new Error('bad term');
@@ -208,20 +253,58 @@ static double ref_ms(void (*run)(long)) {
       const n = ++uid, list = pl.gk === 'member/2' ? pl.G.a[1] : pl.G.a[0], x = pl.gk === 'member/2' ? pl.G.a[0] : pl.G.a[1];
       const body = y => 'size_t m = TR_TOP; if (unify(x' + n + ', ' + y + ')) { STEP(); STEP(); STEP(); STEP(); if (++nrow' + n + ' > 1000000) dl_die("builtin_rows: infinite generator", NULL);\n' +
         (pl.filt ? '  Term *Sv = mk_var(); Term **fa = (Term*[]){' + pl.filt.args.map(a => termC(a, vm)).concat(['Sv']).join(', ') + '};\n  if (' + natEntryFn(pl.filt.k) + '(fa)) { if (deref(Sv) == ' + atomIx('yes') + ') tv_push(&res' + n + ', copy_term(ev' + n + ')); }\n  else ' : '  ') +
-        '{ Term *Ov = mk_var(); if (!' + pfn(pl.rowKey) + '((Term*[]){ ev' + n + ', Ov })) ok' + n + ' = 0; else { TV o1 = { 0 }; list_to_tv(Ov, &o1); for (size_t j = 0; j < o1.n; j++) tv_push(&res' + n + ', copy_term(o1.v[j])); free(o1.v); } }\n' +
+        '{ Term *Ov = mk_var(); if (!' + pfn(pl.rowKey) + '((Term*[]){ ev' + n + ', Ov })) ok' + n + ' = 0; else { TV o1 = { 0 }; list_to_tv(Ov, &o1); for (size_t j = 0; j < o1.n; j++) tv_push(&res' + n + ', copy_term(o1.v[j])); tv_free(o1.v); } }\n' +
         '} undo(m);';
       let loop;
-      if (pl.gk === 'member/2') loop = 'for (size_t i = 0; i < xs' + n + '.n && ok' + n + '; i++) { ' + body('xs' + n + '.v[i]') + ' }\n';
+      // permutation(Xs, Ys) tested by a native DET predicate on Ys alone, with no outputs: each permutation
+      // is written into the same k list cells (the test is pure and keeps nothing), the native function is
+      // called directly in its 'i' mode, and only a kept permutation is built as a new list and copied.
+      // permutation(Xs, Ys) tested by a pairwise test (src/algebra.js): each element is tested against those
+      // already placed and a failing prefix is dropped; the lists kept are the same, in the same order.
+      const pw = pl.filt && pl.gk === 'permutation/2' && srcProg && pl.filt.args.length === 1 && D(pl.filt.args[0]) === D(x) && /__d\/\d+$/.test(pl.filt.k) ? P.pairwise(srcProg, pl.filt.k.replace(/__d\/(\d+)$/, (_, a) => '/' + (+a - 1))) : null;
+      if (pw) {
+        proofNotes.push(pw.proof);
+        const keep = 'Term *y = tv_list(&cur); size_t m = TR_TOP; if (unify(x' + n + ', y)) tv_push(&res' + n + ', copy_term(ev' + n + ')); undo(m);';
+        const test = pw.code('p', 'yv', 'dist', false);
+        loop = '{ size_t k = xs' + n + '.n; int allint = 1; for (size_t i = 0; i < k; i++) if (deref(xs' + n + '.v[i])->tag != T_INT) allint = 0;\n' +
+          '  if (!allint) dl_die("pairwise generate-and-test needs a list of integers", NULL);\n' +
+          '  long long *val = (long long *)malloc(sizeof(long long) * (k + 1)), *pl = (long long *)malloc(sizeof(long long) * (k + 1)); for (size_t i = 0; i < k; i++) val[i] = deref(xs' + n + '.v[i])->iv;\n' +
+          '  size_t *idx = (size_t *)calloc(k + 1, sizeof(size_t)); int *used = (int *)calloc(k + 1, sizeof(int)); long d = 0; TV cur = { 0 };\n' +
+          '  for (; ok' + n + ';) {\n' +
+          '    if ((size_t)d == k) { ' + keep + '\n      d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
+          '    while (idx[d] < k && used[idx[d]]) idx[d]++;\n' +
+          '    if (idx[d] >= k) { d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
+          '    { long long yv = val[idx[d]]; int okp = 1; for (long i = d - 1; i >= 0; i--) { long long p = pl[i], dist = ' + pw.c0 + ' + (d - 1 - i); if (!(' + test + ')) { okp = 0; break; } } if (!okp) { idx[d]++; continue; } }\n' +
+          '    used[idx[d]] = 1; pl[d] = val[idx[d]]; tv_push(&cur, xs' + n + '.v[idx[d]]); d++; idx[d] = 0;\n  }\n  free(idx); free(used); tv_free(cur.v); free(val); free(pl); }\n';
+      } else {
+      const md = pl.filt && pl.gk === 'permutation/2' && pl.filt.args.length === 1 && D(pl.filt.args[0]) === D(x) && (natModes.get(pl.filt.k) || []).find(m => m.mode === 'i');
+      if (md) {
+        const keep = 'Term *y = tv_list(&cur); size_t m = TR_TOP; if (unify(x' + n + ', y)) tv_push(&res' + n + ', copy_term(ev' + n + ')); undo(m);';
+        loop = '{ size_t k = xs' + n + '.n; size_t *idx = (size_t *)calloc(k + 1, sizeof(size_t)); int *used = (int *)calloc(k + 1, sizeof(int)); long d = 0; TV cur = { 0 };\n' +
+          '  Term **cell = (Term **)malloc(sizeof(Term *) * (k + 1)); for (size_t i = 0; i < k; i++) cell[i] = mk_cons(NIL, NIL), cell[i]->cpe = 0; /* the cells are reused: not ground-marked */ for (size_t i = 0; i + 1 < k; i++) cell[i]->args[1] = cell[i + 1]; cell[k] = NIL;\n' +
+          '  for (; ok' + n + ';) {\n' +
+          '    if ((size_t)d == k) {\n' +
+          '      for (size_t i = 0; i < k; i++) cell[i]->args[0] = cur.v[i];\n' +
+          '      if (++nrow' + n + ' > 1000000) dl_die("builtin_rows: infinite generator", NULL);\n' +
+          '      int r; { nat_jmp jb; nat_jmp *sv = nat_jb; nat_jb = &jb; nat_epoch++; if (NAT_SETJMP(jb)) { nat_jb = sv; r = 2; } else { r = ' + md.name + '(cell[0]); nat_jb = sv; } }\n' +
+          '      if (r == 1) { ' + keep + ' }\n' +
+          '      else if (r == 2) { Term *y = tv_list(&cur); { ' + body('y') + ' } }\n' +
+          '      d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
+          '    while (idx[d] < k && used[idx[d]]) idx[d]++;\n' +
+          '    if (idx[d] >= k) { d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
+          '    used[idx[d]] = 1; tv_push(&cur, xs' + n + '.v[idx[d]]); d++; idx[d] = 0;\n  }\n  free(idx); free(used); tv_free(cur.v); free(cell); }\n';
+      } else if (pl.gk === 'member/2') loop = 'for (size_t i = 0; i < xs' + n + '.n && ok' + n + '; i++) { ' + body('xs' + n + '.v[i]') + ' }\n';
       else loop = '{ size_t k = xs' + n + '.n; size_t *idx = (size_t *)calloc(k + 1, sizeof(size_t)); int *used = (int *)calloc(k + 1, sizeof(int)); long d = 0; TV cur = { 0 };\n' +
         '  for (; ok' + n + ';) {\n' +
         '    if ((size_t)d == k) { Term *y = tv_list(&cur); { ' + body('y') + ' } d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
         '    while (idx[d] < k && used[idx[d]]) idx[d]++;\n' +
         '    if (idx[d] >= k) { d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
-        '    used[idx[d]] = 1; tv_push(&cur, xs' + n + '.v[idx[d]]); d++; idx[d] = 0;\n  }\n  free(idx); free(used); free(cur.v); }\n';
-      return ind + '{ TV xs' + n + ' = { 0 };\n' + ind + 'if (!list_to_tv(' + termC(list, vm) + ', &xs' + n + ')) {\n' + ind + 'free(xs' + n + '.v);\n' + generic + ind + '} else {\n' +
+        '    used[idx[d]] = 1; tv_push(&cur, xs' + n + '.v[idx[d]]); d++; idx[d] = 0;\n  }\n  free(idx); free(used); tv_free(cur.v); }\n';
+      }
+      return ind + '{ TV xs' + n + ' = { 0 };\n' + ind + 'if (!list_to_tv(' + termC(list, vm) + ', &xs' + n + ')) {\n' + ind + 'tv_free(xs' + n + '.v);\n' + generic + ind + '} else {\n' +
         ind + 'Term *x' + n + ' = ' + termC(x, vm) + ', *ev' + n + ' = ' + termC(pl.env, vm) + '; TV res' + n + ' = { 0 }; size_t nrow' + n + ' = 0; int ok' + n + ' = 1; STEP(); STEP(); STEP();\n' +
-        loop + ind + 'free(xs' + n + '.v);\n' + ind + 'if (!ok' + n + ') { free(res' + n + '.v); ' + fail + ' }\n' +
-        ind + '{ Term *rl = tv_list(&res' + n + '); free(res' + n + '.v); if (!unify(' + termC(pl.out, vm) + ', rl)) ' + fail + ' } } }\n';
+        loop + ind + 'tv_free(xs' + n + '.v);\n' + ind + 'if (!ok' + n + ') { tv_free(res' + n + '.v); ' + fail + ' }\n' +
+        ind + '{ Term *rl = tv_list(&res' + n + '); tv_free(res' + n + '.v); if (!unify(' + termC(pl.out, vm) + ', rl)) ' + fail + ' } } }\n';
     }
     function stmt(g, vm, fail, ind) {
       g = D(g); const k = P.key(g); const as = g.t === 'c' ? g.a : [];
@@ -257,6 +340,19 @@ static double ref_ms(void (*run)(long)) {
         return ind + 'if (!' + pfn(k) + '(' + argsC(as, vm) + ')) ' + fail + '\n';
       }
       if (!C_BUILTINS.has(k)) warn('builtin ' + k + ' is not in the C runtime');
+      // the common type tests and unifications are written in place (no dispatch by name); checked builds keep
+      // bi_call, which counts steps
+      if (!opts.checked) {
+        const A = () => termC(as[0], vm), B = () => termC(as[1], vm);
+        switch (k) {
+          case '=/2': return ind + 'if (!unify(' + A() + ', ' + B() + ')) ' + fail + '\n';
+          case 'var/1': return ind + 'if (deref(' + A() + ')->tag != T_VAR) ' + fail + '\n';
+          case 'nonvar/1': return ind + 'if (deref(' + A() + ')->tag == T_VAR) ' + fail + '\n';
+          case '==/2': return ind + 'if (compare(' + A() + ', ' + B() + ') != 0) ' + fail + '\n';
+          case '\\==/2': return ind + 'if (compare(' + A() + ', ' + B() + ') == 0) ' + fail + '\n';
+          case 'copy_term/2': return ind + 'if (!unify(' + B() + ', copy_term(' + A() + '))) ' + fail + '\n';
+        }
+      }
       return ind + 'if (!bi_call(' + cstrBytes(k) + ', ' + argsC(as, vm) + ')) ' + fail + '\n';
     }
     function headInfo(t) {
@@ -288,7 +384,7 @@ static double ref_ms(void (*run)(long)) {
       k: t => t.t === 'a' ? atomIx(t.n) : KC(t),
       box: e => 'mk_int(' + e + ')',
       unbox: e => 'n_iv(' + e + ')',
-      cmp: (f, args) => f === '.' && args.length === 2 ? 'mk_cons(' + args[0] + ', ' + args[1] + ')' : 'mk_cmp(' + fnIx(f) + ', ' + args.length + ', (Term*[]){' + args.join(', ') + '})',
+      cmp: (f, args) => f === '.' && args.length === 2 ? (opts.checked ? 'mk_cons(' : 'mk_gcons(') + args[0] + ', ' + args[1] + ')' : 'mk_cmp(' + fnIx(f) + ', ' + args.length + ', (Term*[]){' + args.join(', ') + '})',
       eq: (a, b) => 'n_eq(' + a + ', ' + b + ')',
       isIntVal: (e, v) => 'n_isv(' + e + ', ' + v + ')',
       tmp: (t, e) => 'Term *' + t + ' = deref(' + e + ');',
@@ -300,7 +396,7 @@ static double ref_ms(void (*run)(long)) {
         if (pat.t === 's') return t + '->tag == T_STR && !strcmp(' + t + '->name, ' + cstrBytes(pat.v) + ')';
         return '0';
       },
-      fn: (name, args) => ({ IDIV: 'n_idiv', IMOD: 'n_imod', IREM: 'n_irem', MIN: 'n_min', MAX: 'n_max', ABS: 'llabs' })[name] + '(' + args.join(', ') + ')',
+      fn: (name, args) => ({ IDIV: 'n_idiv', IMOD: 'n_imod', IREM: 'n_irem', MIN: 'n_min', MAX: 'n_max', ABS: 'llabs', IADD: 'n_iadd', ISUB: 'n_isub', IMUL: 'n_imul' })[name] + '(' + args.join(', ') + ')',
       assign: (lhs, rhs) => lhs + ' = ' + rhs + ';\n',
       fail: L => 'goto ' + L + ';',
       blockNoThen: (L, rc, re) => '{\n' + rc + '}\n' + L + ': ;\n' + re,
@@ -327,6 +423,39 @@ static double ref_ms(void (*run)(long)) {
         return sig + ' {\n  STEP();\n  ' + decl + '\n' + body + '  nat_bail(); return 0;\n}\n';
       },
     };
+    // Last calls in the native tier (unchecked), so that list recursions run as loops:
+    //  1. s = f(A, &v); if (s != 1) return s; *o = v; return 1;      ==>  return f(A, o);
+    //     (f's result code is passed on unchanged and *o is read only after success)
+    //  2. s = f(A, &v); if (s != 1) return s; *o = cons(H, v); return 1;  ==>  c = cons(H, NULL); *o = c; return f(A, &c->args[1]);
+    //     (destination passing: H does not mention v, so it may be built first; on failure the caller ignores *o)
+    // f must be the function itself, so the call is a self tail call that the C compiler turns into a jump.
+    function lastCalls(src) {
+      const m = /^static int (nat\d+)\(/m.exec(src); if (!m) return src;
+      const f = m[1];
+      const esc = x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const splitArgs = t => { const out = []; let d = 0, cur = ''; for (const ch of t) { if (ch === '(') d++; if (ch === ')') d--; if (ch === ',' && d === 0) { out.push(cur.trim()); cur = ''; } else cur += ch; } if (cur.trim()) out.push(cur.trim()); return out; };
+      const re = new RegExp('\\{ (s\\d+) = ' + esc(f) + '\\((.*)\\);\\nif \\(\\1 != 1\\) return \\1;\\n((?:\\*o\\d+ = [^;]*; )+)return 1; \\}', 'g');
+      return src.replace(re, (all, sv, argText, asg) => {
+        const args = splitArgs(argText);
+        const outs = []; while (args.length && /^&v\d+_[a-z]$/.test(args[args.length - 1])) outs.unshift(args.pop().slice(1));
+        if (!outs.length) return all;
+        const assigns = [...asg.matchAll(/\*(o\d+) = ([^;]*); /g)].map(x => ({ o: x[1], e: x[2] }));
+        if (assigns.length !== outs.length) return all;
+        const mentions = (e, v) => new RegExp('\\b' + v + '\\b').test(e);
+        const pre = [], slot = [];
+        for (const v of outs) {
+          const as = assigns.filter(x => mentions(x.e, v)); if (as.length !== 1) return all;
+          const { o, e } = as[0];
+          if (e === v) { slot.push(o); continue; }
+          const c = /^mk_gcons\((.*), (v\d+_t)\)$/.exec(e);
+          if (!c || c[2] !== v || outs.some(w => mentions(c[1], w))) return all;
+          const cv = 'c' + pre.length + '_';
+          pre.push('Term *' + cv + ' = mk_gcons(' + c[1] + ', NULL); *' + o + ' = ' + cv + ';');
+          slot.push('&' + cv + '->args[1]');
+        }
+        return '{ ' + pre.join(' ') + (pre.length ? ' ' : '') + 'return ' + f + '(' + args.concat(slot).join(', ') + '); }';
+      });
+    }
     const nDone = new Map(); const nDefs = []; let nSeq = 0;
     const natModes = new Map(); // predicate key -> [{ mode, name, retInt }]
     for (const km of nativeModes || []) {
@@ -334,7 +463,7 @@ static double ref_ms(void (*run)(long)) {
       if (nDone.has(km) || !prog.preds.has(k)) continue;
       const batch = P.nativeBatch(prog, k, mode, EMC, { has: x => nDone.has(x), get: x => nDone.get(x) }, () => 'nat' + (nSeq++));
       if (!batch) { nDone.set(km, null); warn('native function for ' + km + ' not compiled to C'); continue; }
-      for (const [key2, e] of batch) { nDone.set(key2, { ref: e.name, retInt: e.retInt }); nDefs.push(e.src); }
+      for (const [key2, e] of batch) { nDone.set(key2, { ref: e.name, retInt: e.retInt }); nDefs.push(opts.checked ? e.src : lastCalls(e.src)); }
     }
     for (const km of nativeModes || []) {
       const f = nDone.get(km); if (!f) continue;
@@ -348,7 +477,7 @@ static double ref_ms(void (*run)(long)) {
     for (const [k, ms] of natModes) {
       const n = +k.slice(k.lastIndexOf('/') + 1) - 1;
       let c = 'static int ' + natEntryFn(k) + '(Term **a) {\n  Term *x[' + Math.max(1, n) + ']; char m[' + (n + 1) + '];\n';
-      c += '  for (int i = 0; i < ' + n + '; i++) { x[i] = deref(a[i]); if (x[i]->tag == T_VAR) { for (int j = 0; j < i; j++) if (x[j] == x[i]) return 0; m[i] = \'o\'; } else if (x[i]->tag == T_INT) m[i] = \'n\'; else if (is_ground(x[i])) m[i] = \'i\'; else return 0; }\n';
+      c += '  for (int i = 0; i < ' + n + '; i++) { x[i] = deref(a[i]); if (x[i]->tag == T_VAR) { for (int j = 0; j < i; j++) if (x[j] == x[i]) return 0; m[i] = \'o\'; } else if (x[i]->tag == T_INT) m[i] = \'n\'; else if (DL_GROUND(x[i])) m[i] = \'i\'; else return 0; }\n';
       c += '  m[' + n + '] = 0; Term *S = deref(a[' + n + ']); if (S->tag != T_VAR) return 0; for (int i = 0; i < ' + n + '; i++) if (x[i] == S) return 0;\n';
       for (const md of ms) {
         const outs = [...md.mode].map((ch, i) => ch === 'o' ? i : -1).filter(i => i >= 0);
@@ -376,9 +505,13 @@ static double ref_ms(void (*run)(long)) {
         for (const v of vs) vm.set(v, 'v' + (++vi));
         const head = D(cl.head); const hargs = head.t === 'c' ? head.a : [];
         let body = 'static int ' + f + '_c' + (i + 1) + '(Term **a) {\n';
-        if (vs.length) body += '  Term ' + vs.map(v => '*' + vm.get(v) + ' = mk_var()').join(', ') + ';\n';
+        // a head argument that is a variable not seen in an earlier argument is that argument itself:
+        // no fresh variable to make and bind (unchecked and checked alike: unify would only bind it)
+        const alias = new Map(), seen = new Set();
+        hargs.forEach((h, j) => { const d = D(h); if (d.t === 'v' && d.name && d.name !== '_' && !seen.has(d) && !alias.has(d)) alias.set(d, j); for (const v of P.termVars(h)) seen.add(v); });
+        if (vs.length) body += '  Term ' + vs.map(v => '*' + vm.get(v) + ' = ' + (alias.has(v) ? 'a[' + alias.get(v) + ']' : 'mk_var()')).join(', ') + ';\n';
         body += '  (void)a;\n';
-        hargs.forEach((h, j) => { body += '  if (!unify(a[' + j + '], ' + termC(h, vm) + ')) return 0;\n'; });
+        hargs.forEach((h, j) => { const d = D(h); if (d.t === 'v' && alias.get(d) === j) return; body += '  if (!unify(a[' + j + '], ' + termC(h, vm) + ')) return 0;\n'; });
         body += stmt(cl.body, vm, 'return -1;', '  ');
         body += '  return 1;\n}\n';
         defs.push(body);
@@ -411,7 +544,7 @@ static double ref_ms(void (*run)(long)) {
         } catch (e) { /* no reference for this query */ }
       });
     }
-    let main = 'int main(int argc, char **argv) {\n  int reps = 1; if (argc > 2 && !strcmp(argv[1], "-r")) reps = atoi(argv[2]); if (reps < 1) reps = 1;\n  rt_init(); init_tables(); long lim0 = dl_step_limit;\n';
+    let main = 'int main(int argc, char **argv) {\n  int reps = 1; if (argc > 2 && !strcmp(argv[1], "-r")) reps = atoi(argv[2]); if (reps < 1) reps = 1;\n  int refs = !(argc > 1 && !strcmp(argv[argc - 1], "--no-ref")); (void)refs; /* --no-ref: skip timing the hand-written C */\n  double st0 = now_ms(); rt_init(); init_tables(); long lim0 = dl_step_limit;\n  printf("%% startup %.4f ms\\n", now_ms() - st0);\n';
     qs.forEach(q => {
       const k = q.pred + '__cp/' + (q.vars.length + 1);
       main += '  {\n    const char *nm[] = {' + (q.vars.length ? q.vars.map(cstrBytes).join(', ') : '""') + '};\n';
@@ -426,27 +559,31 @@ static double ref_ms(void (*run)(long)) {
       const ref = refs.get(qs.indexOf(q));
       if (ref) {
         // the same algorithm written by hand in C, timed in this process: this program's speed as a % of C's
-        main += '    if (ok) { ref_need(' + Math.max(16, Math.ceil(ref.cells)) + '); double rc = ref_ms(' + ref.fn + '), me = (t1 - t0) / reps;\n';
+        main += '    if (ok && refs) { ref_need(' + Math.max(16, Math.ceil(ref.cells)) + '); double rc = ref_ms(' + ref.fn + '), me = (t1 - t0) / reps;\n';
         main += '      printf("%% hand-written C (' + ref.alg + '): %.6f ms per run; this program runs at %.3g%% of C\'s speed%s\\n", rc, 100 * rc / me, reps < 10 ? " (one timing run: use -r N for a steady figure)" : ""); }\n';
       }
       main += '  }\n';
     });
     main += '  return 0;\n}\n';
+    const kcInit = kcs.map((t, i) => '  KC[' + i + '] = ' + termC(t, new Map(), false) + ';').join('\n');
     const atomInit = [...atoms.keys()].map((n, i) => '  AT[' + i + '] = mk_atom(' + cstrBytes(n) + ');').join('\n');
     const fnInit = [...fns.keys()].map((n, i) => '  FN[' + i + '] = intern(' + cstrBytes(n) + ');').join('\n');
     const header = '/* C generated by pl2detlog from Detlog (' + (opts.mode || 'Detlog') + ').\n   Build: cc -O2 -o prog prog.c -lm    Run: ./prog    Time: ./prog -r 1000\n' +
+      (proofNotes.length ? '   Algebra (src/algebra.js):\n' + [...new Set(proofNotes)].map(w => '   - ' + w.replace(/\*\//g, '* /')).join('\n') + '\n' : '') +
       (warnings.length ? '   Warnings:\n' + warnings.map(w => '   - ' + w).join('\n') + '\n' : '') + '*/\n';
     const lib = P.C_RUNTIME || '#include "runtime.c"\n';
-    const kcInit = kcs.map((t, i) => '  KC[' + i + '] = ' + termC(t, new Map()) + ';').join('\n');
     const natLib = nDefs.length ? NATIVE_C + [...nTables.values()].map(t => 'static NMT ' + t + ';').join('\n') + '\n' : '';
     const tables = 'static Term *AT[' + Math.max(1, atoms.size) + '];\nstatic const char *FN[' + Math.max(1, fns.size) + '];\nstatic Term *KC[' + Math.max(1, kcs.length) + '];\n' +
       'static Term *mk_list(int n, Term **xs, Term *tail) { Term *r = tail; for (int i = n; i-- > 0;) r = mk_cons(xs[i], r); return r; }\n' +
       'static void init_tables(void) {\n' + atomInit + '\n' + fnInit + '\n' + kcInit + '\n}\n';
     const natProtos = [...sigs.values()].map(x => x + ';').join('\n') + (refs.size ? REF_C + refFns.join('\n') + '\n' : '');
-    const code = header + lib + '\n/* ---------- program ---------- */\n' + tables + natLib + protos.join('\n') + '\n' + natProtos + '\n\n' +
+    // unchecked by default: no step limit, type tests, overflow or zero-divisor tests in native code;
+    // opts.checked keeps them (and the step limit) for programs whose calls may break the contract
+    const mode = opts.checked ? '#define DL_CHECKED 1 /* checked: step limit, type, overflow and zero tests */\n' : '/* unchecked (the default): calls are assumed to meet the type contract; build with -DDL_CHECKED for the checks */\n';
+    const code = header + mode + lib + '\n/* ---------- program ---------- */\n' + tables + natLib + protos.join('\n') + '\n' + natProtos + '\n\n' +
       (nDefs.length ? '/* native tier: DET predicates in the modes the queries use */\n' + nDefs.join('\n') + '\n' + natEntries.join('\n') + '\n' : '') +
       defs.join('\n') + '\n' + main;
-    return { refs: [...refs.keys()].map(i => qs[i].text), code, warnings };
+    return { refs: [...refs.keys()].map(i => qs[i].text), code, warnings, proofs: [...new Set(proofNotes)] };
   }
   P.toC = toC;
 })(typeof module !== 'undefined' && module.exports ? (globalThis.PL2D = globalThis.PL2D || {}) : (window.PL2D = window.PL2D || {}));

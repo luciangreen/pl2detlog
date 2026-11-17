@@ -45,13 +45,18 @@
       factScan: mnn && opts.scan !== false, // ite_scan over a predicate of facts (MNN)
       det: mnn && opts.det !== false, // DET: output-free predicates with first-argument-exclusive clauses run without packets
       splice: mnn && opts.splice !== false, s2a: mnn && opts.s2a !== false, memo: mnn && opts.memo !== false };
+    // MNN: the source rewrites first (src/rewrite.js: solve for the last generator, accumulate an appended
+    // result), each derived from first principles; their derivations are in out.algebra
+    let algebra = [];
+    if (mnn && opts.algebra !== false && typeof src === 'string' && P.rewrite) { const rw = P.rewrite(src); src = rw.text; algebra = rw.steps; }
     const prog = typeof src === 'string' ? P.loadProgram(src) : src;
-    const out = { mode: mnn ? 'mnn' : 'plain', preds: [], clauses: [], steps: [], warnings: [], errors: [], report: [], feat, specs: [], queries: [] };
+    const out = { source: src, algebra, mode: mnn ? 'mnn' : 'plain', preds: [], clauses: [], steps: [], warnings: [], errors: [], report: [], feat, specs: [], queries: [] };
     // queries become predicates '$query<i>'(V1..Vk) so that they are converted like any clause body
     const queryPreds = new Set();
     (opts.queries || []).forEach((qt, i) => {
       try {
         const q = P.readTerm(qt);
+        if (mnn && opts.algebra !== false && P.fuseQuery) q.term = P.fuseQuery(prog, q.term, algebra);
         const vars = q.vars.filter(([nm]) => !nm.startsWith('_'));
         const nm = '$query' + (i + 1);
         const head = Cmp(nm, vars.map(([, v]) => v));

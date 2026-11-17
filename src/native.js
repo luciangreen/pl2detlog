@@ -113,7 +113,7 @@
       return fail + '\n';
     }
     // integer arithmetic on ground values; unbox bails on anything but an integer
-    const OPS = { '+': '+', '-': '-', '*': '*' };
+    const OPS = { '+': 'IADD', '-': 'ISUB', '*': 'IMUL' };
     const FNS = { '//': 'IDIV', mod: 'IMOD', rem: 'IREM', min: 'MIN', max: 'MAX' };
     function arith(t, s) {
       t = D(t);
@@ -122,11 +122,11 @@
       if (t.t !== 'c') nope();
       if (t.a.length === 2) {
         const a = arith(t.a[0], s), b = arith(t.a[1], s);
-        if (OPS[t.f]) return '(' + a + ' ' + OPS[t.f] + ' ' + b + ')';
+        if (OPS[t.f]) return EM.fn(OPS[t.f], [a, b]); // checked: overflow bails out
         if (FNS[t.f]) return EM.fn(FNS[t.f], [a, b]);
         nope();
       }
-      if (t.a.length === 1 && t.f === '-') return '(-' + arith(t.a[0], s) + ')';
+      if (t.a.length === 1 && t.f === '-') return EM.fn('ISUB', ['(0)', arith(t.a[0], s)]);
       if (t.a.length === 1 && t.f === 'abs') return EM.fn('ABS', [arith(t.a[0], s)]);
       nope();
     }

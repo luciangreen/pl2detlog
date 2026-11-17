@@ -111,6 +111,7 @@
     res.mnn = P.convert(src, Object.assign({ mnn: true, queries: allQs }, opts.mnn || {}));
     res.convertMnnMs = P.now() - t1;
     const progPlain = P.loadProgram(res.plain.text), progMnn = P.loadProgram(res.mnn.text);
+    try { progMnn.pairwiseSource = P.loadProgram(res.mnn.source); } catch (e) { /* the JIT then permutes in full */ }
     try { res.backPlain = P.backConvert(res.plain.text); } catch (e) { res.backPlain = null; res.errors.push('back-conversion (plain): ' + e.message); }
     try { res.backMnn = P.backConvert(res.mnn.text); } catch (e) { res.backMnn = null; res.errors.push('back-conversion (MNN): ' + e.message); }
     res.changes = res.backPlain ? P.changeWarnings(src, res.backPlain.text, res.backPlain) : [];

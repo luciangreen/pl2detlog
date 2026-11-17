@@ -248,13 +248,15 @@
     const ARITH2 = { '+': '+', '-': '-', '*': '*' };
     const CMP = { '=:=/2': '===', '=\\=/2': '!==', '</2': '<', '>/2': '>', '=</2': '<=', '>=/2': '>=' };
     // an integer expression compiled to JS: leaves are integers or variables, operators + - * and unary -;
-    // a leaf that is not an integer sets bad, and the generic builtin runs instead (errors, floats)
+    // a leaf that is not a safe integer, or a result that is not, sets bad, and the generic builtin runs
+    // instead (errors, floats, integers beyond 2^53)
     function arith(t, slot) {
       t = D(t);
       if (t.t === 'n') return t.f || !Number.isSafeInteger(t.v) ? null : '(' + t.v + ')';
-      if (t.t === 'v') { const i = slot.get(t); return '((q = D(v' + i + ' || BADV)).t === "n" && !q.f ? q.v : (bad = true, 0))'; }
+      if (t.t === 'v') { const i = slot.get(t); return '((q = D(v' + i + ' || BADV)).t === "n" && !q.f && typeof q.v === "number" ? q.v : (bad = true, 0))'; }
       if (t.t !== 'c') return null;
-      if (t.a.length === 2 && ARITH2[t.f]) { const a = arith(t.a[0], slot), b = arith(t.a[1], slot); return a && b ? '(' + a + ' ' + ARITH2[t.f] + ' ' + b + ')' : null; }
+      // each result must stay a safe integer, or the generic builtin (unbounded integers) runs instead
+      if (t.a.length === 2 && ARITH2[t.f]) { const a = arith(t.a[0], slot), b = arith(t.a[1], slot); return a && b ? '(Number.isSafeInteger(q2 = ' + a + ' ' + ARITH2[t.f] + ' ' + b + ') ? q2 : (bad = true, 0))' : null; }
       if (t.a.length === 1 && t.f === '-') { const a = arith(t.a[0], slot); return a ? '(-' + a + ')' : null; }
       return null;
     }
@@ -334,7 +336,14 @@
           }
         } }
       if (filt) {
-        const each = gk === 'member/2' ? '(fn) => { for (let i = 0; i < xs.length; i++) fn(xs[i]); }' : '(fn) => PERMS(xs, fn)';
+        // permutation(Xs, Ys) filtered by a pairwise test on Ys (when the program's source is known, as
+        // prog.pairwiseSource): failing prefixes are dropped (src/algebra.js has the derivation)
+        let pwEach = null;
+        if (gk === 'permutation/2' && prog.pairwiseSource && P.pairwise && filt.args.length === 1 && D(filt.args[0]) === D(G.a[1]) && /__d\/\d+$/.test(filt.k)) {
+          const pw = P.pairwise(prog.pairwiseSource, filt.k.replace(/__d\/(\d+)$/, (_, a) => '/' + (+a - 1)));
+          if (pw) pwEach = '(fn) => PERMSPW(xs, (p, yv, dist) => ' + pw.code('p', 'yv', 'dist', true) + ', ' + pw.c0 + ', fn)';
+        }
+        const each = gk === 'member/2' ? '(fn) => { for (let i = 0; i < xs.length; i++) fn(xs[i]); }' : pwEach || '(fn) => PERMS(xs, fn)';
         const argsCode = filt.args.map(a => build(a, slot)).join(', ');
         return '{ const xs = LA(' + build(G.a[1 - (gk === 'member/2' ? 0 : 1)], slot) + ');\nif (xs === null) {\n' + generic + '} else {\n' +
           TICK + ' ' + TICK + ' ' + TICK + '\nconst x = ' + build(G.a[gk === 'member/2' ? 0 : 1], slot) + ', ev = ' + build(env, slot) + ', res = []; let ok = true, nrow = 0;\n' +
@@ -363,10 +372,10 @@
         const generic = '{ const m = E.trail.length; if (!' + rb + '([' + g.a.map(x => build(x, slot)).join(', ') + '], E)) { E.undo(m); ' + FAIL + ' } }';
         if (k === 'is/2') {
           const ex = arith(g.a[1], slot);
-          if (ex) return TICK + '\n{ let bad = false, q; const r = ' + ex + ';\nif (bad) ' + generic + '\nelse { const m = E.trail.length; if (!E.unify(' + build(g.a[0], slot) + ', INT(r))) { E.undo(m); ' + FAIL + ' } } }\n';
+          if (ex) return TICK + '\n{ let bad = false, q, q2; const r = ' + ex + ';\nif (bad) ' + generic + '\nelse { const m = E.trail.length; if (!E.unify(' + build(g.a[0], slot) + ', INT(r))) { E.undo(m); ' + FAIL + ' } } }\n';
         } else {
           const ea = arith(g.a[0], slot), eb = arith(g.a[1], slot);
-          if (ea && eb) return TICK + '\n{ let bad = false, q; const x = ' + ea + ', y = ' + eb + ';\nif (bad) ' + generic + '\nelse if (!(x ' + CMP[k] + ' y)) ' + FAIL + ' }\n';
+          if (ea && eb) return TICK + '\n{ let bad = false, q, q2; const x = ' + ea + ', y = ' + eb + ';\nif (bad) ' + generic + '\nelse if (!(x ' + CMP[k] + ' y)) ' + FAIL + ' }\n';
         }
       }
       if (k === 'copy_term/2') {
@@ -500,12 +509,27 @@
     // run-time entry from packet code: decide the mode, run the native function, bind the outputs
     const NH = {
       YES: { native: 'yes' }, NO: { native: 'no' }, MAYBE: { native: 'maybe' }, BAIL: { native: 'bail' }, OUTS: [], N: { s: 0, l: 0 },
-      IV: x => (x.t === 'n' && !x.f) ? x.v : bailN(),
-      IDIV: (a, b) => b === 0 ? bailN() : Math.trunc(a / b),
-      IMOD: (a, b) => { if (b === 0) return bailN(); const m = a % b; return m !== 0 && (m < 0) !== (b < 0) ? m + b : m; },
-      IREM: (a, b) => b === 0 ? bailN() : a % b,
+      // checked (P.DETLOG_CHECKED): a non-integer, a result beyond the safe integers or a zero divisor bails
+      // out to the generic code. Unchecked (the default): the type contract is assumed and nothing is tested.
+      ...(P.DETLOG_CHECKED ? {
+        IV: x => (x.t === 'n' && !x.f && typeof x.v === 'number') ? x.v : bailN(),
+        // + - * on raw integers: a result beyond the safe integers bails to the generic code (unbounded integers)
+        IADD: (a, b) => { const r = a + b; return Number.isSafeInteger(r) ? r : bailN(); },
+        ISUB: (a, b) => { const r = a - b; return Number.isSafeInteger(r) ? r : bailN(); },
+        IMUL: (a, b) => { const r = a * b; return Number.isSafeInteger(r) ? r : bailN(); },
+        IDIV: (a, b) => b === 0 ? bailN() : Math.trunc(a / b),
+        IMOD: (a, b) => { if (b === 0) return bailN(); const m = a % b; return m !== 0 && (m < 0) !== (b < 0) ? m + b : m; },
+        IREM: (a, b) => b === 0 ? bailN() : a % b,
+      } : {
+        IV: x => x.v,
+        IADD: (a, b) => a + b, ISUB: (a, b) => a - b, IMUL: (a, b) => a * b,
+        IDIV: (a, b) => Math.trunc(a / b),
+        IMOD: (a, b) => { const m = a % b; return m !== 0 && (m < 0) !== (b < 0) ? m + b : m; },
+        IREM: (a, b) => a % b,
+      }),
       INT: v => ({ t: 'n', v, f: false }),
       ISV: (x, v) => x.t === 'n' && !x.f && x.v === v,
+      // a native integer result boxed as a term: a safe integer always (the operations bail otherwise)
       EQ: eqG, OVER: () => { throw new P.LimitError('step limit exceeded'); },
       // tables for memoised native calls: one per callee and mode, emptied at each entry from packet code
       T: new Map(),
@@ -522,6 +546,23 @@
         if (k === n) { let l = P.NIL; for (let i = n - 1; i >= 0; i--) l = ground ? { t: 'c', f: '.', a: [cur[i], l], gr: true } : { t: 'c', f: '.', a: [cur[i], l] }; fn(l); return; }
         // the builtin removes the chosen element and permutes the rest in their original order
         for (let i = 0; i < n; i++) if (!used[i]) { used[i] = true; cur[k] = xr[i]; rec(k + 1); used[i] = false; }
+      })(0);
+    }
+    // permutation/2 under a pairwise test (src/algebra.js): a prefix whose newest element fails the test
+    // against an earlier one is not extended; the permutations kept are those perms keeps, in its order
+    function permsPW(xs, test, c0, fn) {
+      const n = xs.length, xr = xs.map(D);
+      const val = xr.map(x => (x.t === 'n' && !x.f && Number.isSafeInteger(x.v) ? x.v : null));
+      if (val.includes(null)) return perms(xs, fn);
+      const cur = new Array(n), pl = new Array(n), used = new Array(n).fill(false);
+      (function rec(k) {
+        if (k === n) { let l = P.NIL; for (let i = n - 1; i >= 0; i--) l = { t: 'c', f: '.', a: [cur[i], l], gr: true }; fn(l); return; }
+        for (let i = 0; i < n; i++) if (!used[i]) {
+          const y = val[i]; let ok = true;
+          for (let j = k - 1; j >= 0; j--) if (!test(pl[j], y, c0 + (k - 1 - j))) { ok = false; break; }
+          if (!ok) continue;
+          used[i] = true; cur[k] = xr[i]; pl[k] = y; rec(k + 1); used[i] = false;
+        }
       })(0);
     }
     function eqG(a, b) {
@@ -541,7 +582,7 @@
       for (let i = 0; i < n; i++) {
         const x = D(args[i]);
         if (x.t === 'v') { if (outv.includes(x)) return undefined; mode += 'o'; outv.push(x); continue; }
-        if (x.t === 'n' && !x.f) { mode += 'n'; ins.push(x.v); continue; }
+        if (x.t === 'n' && !x.f && typeof x.v === 'number') { mode += 'n'; ins.push(x.v); continue; }
         const r = P.resolve(x);
         if (r.t === 'c' && !r.gr) return undefined;
         mode += 'i'; ins.push(r);
@@ -554,7 +595,7 @@
       let r;
       NH.N.s = E.steps; NH.N.l = E.stepLimit; if (NH.T.size) NH.T.clear();
       try { r = fn.apply(null, ins); }
-      catch (e) { E.steps = NH.N.s; if (e === NH.BAIL || e instanceof RangeError) return undefined; throw e; }
+      catch (e) { E.steps = NH.N.s; if (e === NH.BAIL || e instanceof RangeError || e instanceof TypeError) return undefined; throw e; }
       E.steps = NH.N.s; E.nativeCalls = (E.nativeCalls || 0) + 1;
       if (r === NH.MAYBE) return undefined;
       if (r === NH.NO) { E.bind(S, ATOMS.no); return true; }
@@ -566,7 +607,7 @@
     const src = '"use strict";\n' + out.join('\n') + '\nreturn {' + [...fname].map(([k, f]) => JSON.stringify(k) + ': ' + f).join(', ') + '};';
     const OVER = E => { throw new P.LimitError('step limit (' + E.stepLimit + ') exceeded'); };
     const BADV = { t: 'v', ref: null }; // stands for a variable that was never created (an unbound leaf)
-    const fns = new Function('K', 'RB', 'D', 'V', 'LA', 'LIST', 'OVER', 'INT', 'COPY', 'BADV', 'NATE', 'PERMS', 'LIMIT', src)(consts, rbs, D, Var, listToArray, list, OVER, P.Int, P.copy, BADV, natEntry, perms, P.LimitError);
+    const fns = new Function('K', 'RB', 'D', 'V', 'LA', 'LIST', 'OVER', 'INT', 'COPY', 'BADV', 'NATE', 'PERMS', 'LIMIT', 'PERMSPW', src)(consts, rbs, D, Var, listToArray, list, OVER, P.Int, P.copy, BADV, natEntry, perms, P.LimitError, permsPW);
     const preds = new Map();
     for (const [k, f] of Object.entries(fns)) preds.set(k, { k, fn: (args, E) => f(...args, E), pos: f });
     return { preds, src, jit: true, nat: NAT };
@@ -587,6 +628,7 @@
   // the (predicate, mode) pairs the native tier compiled for a program (the C export compiles the same)
   P.nativeModesOf = prog => { const F = cache.get(prog); return F && F.nat ? [...F.nat.done].filter(([, f]) => f).map(([k]) => k) : []; };
   if (P.DETLOG_NATIVE === undefined) P.DETLOG_NATIVE = true;
+  if (P.DETLOG_CHECKED === undefined) P.DETLOG_CHECKED = false; // the native tier assumes its type contract
 
   // same interface and result shape as runDetlog
   function runDetlogFast(prog, qpred, varNames, opts) {

@@ -99,6 +99,35 @@ All times are microseconds per run, in Node 22 and `cc -O2`, recorded by `node b
 
 **The C export reads its own % of C's speed.** For a query that runs one of the benchmark algorithms (and whose answers are exactly the hand-written version's), the generated program includes the hand-written C from `bench/reference.c`. After the query it times that in the same process and prints, for example, `% hand-written C (queens): 0.0076 ms per run; this program runs at 7.98% of C's speed`. Use `./prog -r N` for a steady figure; the step limit applies per run. `node cli.js prog.pl -q QUERY --c prog.c --run [REPS]` builds and runs it, picking the repetitions when REPS is left out.
 
+**Unchecked by default.** The native tier (the C route, in JavaScript and in the C export) assumes its type contract and tests nothing at run time: no type tests on its inputs, no ground test at entry (C), no overflow or zero-divisor tests, and no step limit in the C export. A call outside the contract (a float where an integer is expected, a result beyond 2^53 in JavaScript or 2^63 in C) can give a wrong answer. Set `P.DETLOG_CHECKED = true`, or build the C with `--checked` (`-DDL_CHECKED`), to test everything and bail out to the generic code, which then gives Prolog's answer or error.
+
+**The C export's data and loops.** A term is 40 bytes, with a compound's arguments in the same allocation; integers from -1024 to 65535 are shared; builtins are found by name with a two-character test first. `permutation/2` tested by a native predicate with no outputs writes each permutation into the same list cells and calls the native function directly; only kept permutations are built and copied. The program prints its startup time (`% startup`). `--best` builds the MNN program and the plain one (no determinism rewrites), times each as a whole process (startup and one run) and per run, and keeps the faster.
+
+**Rewrites from first principles (MNN).** Before conversion, `src/rewrite.js` rewrites the Prolog where an algebraic identity makes it cheaper; each rewrite's derivation is in `conv.algebra` and in the C file's header, and `{ algebra: false }` turns them off.
+
+- *Accumulate an appended result.* `p([], []). p([H|T], R) :- p(T, RT), append(RT, E, R).` computes p(L) = p(T) ++ E. With acc(L, A) = p(L) ++ A, acc([], A) = A and acc([H|T], A) = acc(T, E ++ A) by the associativity of ++, and p(L) = acc(L, []). So `nrev` becomes linear for a proper list; any other list runs the original clauses.
+- *Solve for the last generator.* `between(Lo, Hi, X), E1 =:= E2`, with the test linear in X with coefficient ±1 and its other variables integers bound earlier, has exactly one candidate: `X is S, Lo =< X, X =< Hi` (also through a one-clause `d(X) :- between(0, 9, X)`).
+- *Fuse a map into the fold that reads it.* `maplist(F, L, D), foldl(G, D, A0, S)` (or one-clause wrappers of them), with F and G single `is/2` clauses and A0 a number, is one walk `mf(L, D, A0, S)` by induction on the list: same answers, order and errors, since G's `is/2` on numbers cannot fail or raise. D is still built. Queries are fused too.
+- *Prune a pairwise test* (`src/algebra.js`). A test t(L) of the form `t([X|Xs]) :- r(X, Xs, C0), t(Xs)` with `r` comparing X with each later element at distance d holds iff every pair (Li, Lj), i < j, passes at distance C0 + (j − i − 1). The condition is closed under prefixes, so `permutation(Xs, Ys), t(Ys)` need not extend a failing prefix: the C export and the JIT (when it is given the source as `prog.pairwiseSource`, as the app does) build only the prefixes that pass, and keep the same permutations in the same order.
+
+**The C export's data, in more detail.** Ground compound constants in the code are built once at startup and shared (unification never writes into a term without variables). An S2A table's rows are built once, outside the per-run memory, and a call with unbound or ground arguments only selects matching rows. Cells over ground parts are marked ground when they are made, so copying and resolving stop at them; the native tier marks its cells ground outright, since its outputs are ground by its contract. A list cell is 48 bytes. Native recursions whose last step is a self call (directly, or after placing a list cell whose tail is the call's output) are written as tail calls, which the C compiler makes into loops. `=/2`, `var/1`, `nonvar/1`, `==/2`, `\==/2` and `copy_term/2` are written in place; a head argument that is a new variable is the caller's argument itself. Memory released between timing runs is kept for the next run.
+
+Per run, against the hand-written C in `bench/reference.c` (µs, `cc -O2`, this machine; noisy):
+
+| query | hand-written C | C export | |
+| --- | ---: | ---: | --- |
+| `fib(21, F)` | 17 | 1.8 | faster (memo) |
+| `fib(18, F)` | 3.0 | 1.7 | faster |
+| `numlist(1, 300, L), nrev(L, R)` | 170 | 12.7 | faster (accumulate) |
+| `numlist(1, 60, L), nrev(L, R)` | 5.6 | 2.5 | faster |
+| `queens(7, Qs)` | 67 | 19–25 | faster (pairwise pruning) |
+| `queens(6, Qs)` | 8.8 | 3.6 | faster |
+| `pin(A, B, C)` | 0.56 | < 0.1 | faster (solve, S2A rows kept) |
+| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 11.8 | 15–17 | 1.2–1.5× slower |
+| `anc(X, dee)` | 0.003 | 0.3 | slower |
+
+The two still slower are where the hand-written C does less work than the query asks for. For `doubles`/`total` it uses 16-byte cells of raw integers, where the export builds Prolog terms (48-byte cells and shared integer terms) for the `L` and `D` it prints. `anc` is three comparisons in a static array in C, with no answer terms; the export builds the three answer bindings. Both are within the fixed cost of producing Prolog answers, not a search the export does more of.
+
 **Integers are unbounded**, as in SWI-Prolog: the reference engine keeps a JavaScript number while an integer is a safe integer and a BigInt beyond (`fact(30, F)` gives `F = 265252859812191058636308480000000`). The JIT's inline arithmetic and the native tier work on raw numbers only while every result stays a safe integer; any other result bails out to the generic code, so the answers are the same. In the C export, `+`, `-` and `*` in native functions check for overflow and bail out.
 
 **The C export** has the same native tier as the JIT. The JS engine runs the queries once, and every (predicate, mode) its native tier compiled is compiled to C as well: `long long` integers, outputs through pointers, `longjmp` to bail out, memo tables keyed by integers. It also has the JIT's generate-and-test fusion. Its runtime allocates a compound in one block, shares ground subterms when copying, and clears the memo table in proportion to what was stored.
@@ -148,6 +177,8 @@ Detlog2 rejects a cut inside an if-then-else branch. pl2detlog converts it with 
 | `src/core.js` | terms, reader, printer |
 | `src/engine.js`, `src/builtins.js` | reference Prolog engine (the oracle, with step and choicepoint counts) |
 | `src/convert.js` | Prolog → Detlog, plain and MNN, with proof steps |
+| `src/rewrite.js` | MNN source rewrites from first principles (accumulate, solve for the last generator, map/fold fusion), each with its derivation |
+| `src/algebra.js` | pairwise prefix-closed tests (the pruned permutation loop of the C export and the JIT) |
 | `src/detlog_interp.js` | the Detlog interpreter: the cut-free program run as answer packets, without choicepoints |
 | `src/detlog_fast.js` | the deterministic engine for converted Detlog code: compiled to JavaScript source (JIT), with the closure compiler as fallback, and the native tier for DET predicates |
 | `src/native.js` | the native tier's compiler, shared by the JIT (JavaScript) and the C export (C) |
@@ -165,6 +196,7 @@ Detlog2 rejects a cut inside an if-then-else branch. pl2detlog converts it with 
 | `test/run.js` | tests: every example converts, proves, back-converts, compiles to C and runs on the Prolog runtime |
 | `io/` | 200 inputs and outputs from real runs (`io/ios.txt`, `io/ios.jsonl`), made from `io/cases.mjs` |
 | `test/ios.test.js` | runs the 200 inputs again and checks the outputs are the same |
+| `test/algebra.test.js` | each rewrite against the Prolog engine, and the C export and JIT with and without them |
 
 ## Build, test, command line
 

@@ -23,7 +23,10 @@ test('arithmetic beyond 2^53 is exact', () => {
   assert.equal(ans('', 'X is round(-2.5)'), 'X = -3');
 });
 
-test('the converted routes give the same big answers as Prolog', () => {
+// Exact only with the native tier's checks on (P.DETLOG_CHECKED): unchecked, the default, assumes results stay
+// within the safe integers (the type contract) and does not test them.
+test('the converted routes give the same big answers as Prolog (checked)', () => {
+  P.DETLOG_CHECKED = true;
   for (const n of [20, 21, 25, 30]) {
     const q = `fact(${n}, F)`;
     const want = ans(FACT, q);
@@ -37,4 +40,5 @@ test('the converted routes give the same big answers as Prolog', () => {
     }
   }
   P.DETLOG_NATIVE = true;
+  P.DETLOG_CHECKED = false;
 });

@@ -100,8 +100,9 @@
     e.write(txt); return true;
   });
   det('flush_output/0', () => true);
-  det('halt/0', () => { throw new PlError(Atom('$halt')); });
-  det('halt/1', () => { throw new PlError(Atom('$halt')); });
+  // halt is not an error: no catch/3 sees it; the run stops with its exit code
+  det('halt/0', () => { throw { halt: true, code: 0 }; });
+  det('halt/1', (a) => { const c = evalArith(a[0]); throw { halt: true, code: Number(c.v) }; });
 
   // atoms & strings
   det('atom_codes/2', (a, e) => { const t = D(a[0]); if (t.t !== 'v') return e.unify(a[1], codesList(textOf(t))); return e.unify(t, Atom(textOf(a[1]))); });
@@ -143,7 +144,15 @@
     if (sep === '') throw instErr();
     return e.unify(a[0], list(textOf(a[2]).split(sep).map(x => Atom(x))));
   });
-  det('string_concat/3', (a, e) => { const x = D(a[0]), y = D(a[1]); if (x.t !== 'v' && y.t !== 'v') return e.unify(a[2], Str(textOf(x) + textOf(y))); return B['$string_concat_nd'] ? false : false; });
+  nondet('string_concat/3', function* (a, e) {
+    const x = D(a[0]), y = D(a[1]);
+    if (x.t !== 'v' && y.t !== 'v') { if (e.unify(a[2], Str(textOf(x) + textOf(y)))) yield 'last'; return; }
+    const z = textOf(a[2]);
+    if (x.t !== 'v') { const p = textOf(x); if (z.startsWith(p) && e.unify(y, Str(z.slice(p.length)))) yield 'last'; return; }
+    if (y.t !== 'v') { const q = textOf(y); if (z.endsWith(q) && e.unify(x, Str(z.slice(0, z.length - q.length)))) yield 'last'; return; }
+    const cs = [...z];
+    for (let i = 0; i <= cs.length; i++) { const m = e.trail.length; if (e.unify(x, Str(cs.slice(0, i).join(''))) && e.unify(y, Str(cs.slice(i).join('')))) yield; e.undo(m); }
+  });
   nondet('atom_concat/3', function* (a, e) {
     const x = D(a[0]), y = D(a[1]);
     if (x.t !== 'v' && y.t !== 'v') { if (e.unify(a[2], Atom(textOf(x) + textOf(y)))) yield 'last'; return; }
@@ -325,10 +334,20 @@
     const consCase = conj(ls.map((l, i) => Cmp('=', [l, cons(hs[i], ts[i])])).concat([Cmp('call', [a[0]].concat(hs)), Cmp('$maplist_rec', [a[0], list(ts)])]));
     return Cmp(';', [nilCase, consCase]);
   });
+  callb('$foldl_rec/4', a => {
+    const ls = arr(a[1]); const hs = ls.map(() => Var()), ts = ls.map(() => Var()), V1 = Var();
+    const nilCase = conj(ls.map(l => Cmp('=', [l, NIL])).concat([Cmp('=', [a[2], a[3]])]));
+    const consCase = conj(ls.map((l, i) => Cmp('=', [l, cons(hs[i], ts[i])])).concat([Cmp('call', [a[0]].concat(hs, [a[2], V1])), Cmp('$foldl_rec', [a[0], list(ts), V1, a[3]])]));
+    return Cmp(';', [nilCase, consCase]);
+  });
   callb('foldl/4', a => foldGoal(a, 1)); callb('foldl/5', a => foldGoal(a, 2)); callb('foldl/6', a => foldGoal(a, 3));
   function foldGoal(a, k) {
-    const ls = a.slice(1, 1 + k).map(arr); const n = ls[0].length;
+    // the lists may be partial (as SWI-Prolog's foldl walks them): a proper one sets the length
+    const raw = a.slice(1, 1 + k), known = raw.map(l => listToArray(l)).find(x => x);
     const goals = []; let acc = a[1 + k];
+    if (!known) return Cmp('$foldl_rec', [a[0], list(raw), acc, a[2 + k]]);
+    const n = known.length;
+    const ls = raw.map(l => { const x = listToArray(l); if (x && x.length === n) return x; const vs = []; for (let i = 0; i < n; i++) vs.push(Var()); goals.push(Cmp('=', [l, list(vs)])); return vs; });
     for (let i = 0; i < n; i++) { const nx = Var(); goals.push(Cmp('call', [a[0]].concat(ls.map(l => l[i]), [acc, nx]))); acc = nx; }
     goals.push(Cmp('=', [acc, a[2 + k]]));
     return conj(goals);

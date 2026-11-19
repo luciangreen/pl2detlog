@@ -18,6 +18,15 @@
   const TRUE = Atom('true');
   const FAIL = Atom('fail');
   function cons(h, t) { return { t: 'c', f: '.', a: [h, t] }; }
+  // a dict: dict(Tag, [K-V, ...]) with keys (atoms or small integers) in standard order, each once
+  function mkDict(tag, pairs) {
+    const ps = pairs.map(([k, v]) => [deref(k), v]);
+    for (const [k] of ps) if (!(k.t === 'a' || k.t === 'n' && !k.f)) throw new Error('dict keys are atoms or integers');
+    ps.sort((x, y) => compare(x[0], y[0]));
+    for (let i = 1; i < ps.length; i++) if (compare(ps[i - 1][0], ps[i][0]) === 0) throw new PrologSyntaxError('duplicate dict key ' + show(ps[i][0]), 0, '');
+    return { t: 'c', f: 'dict', a: [tag, list(ps.map(([k, v]) => ({ t: 'c', f: '-', a: [k, v] })))] };
+  }
+  function dictPairs(t) { t = deref(t); if (t.t !== 'c' || t.f !== 'dict' || t.a.length !== 2) return null; const l = listToArray(t.a[1]); if (!l) return null; const out = []; for (const x of l) { const p = deref(x); if (p.t !== 'c' || p.f !== '-' || p.a.length !== 2) return null; out.push([deref(p.a[0]), p.a[1]]); } return out; }
   function list(arr, tail) { let r = tail || NIL; for (let i = arr.length - 1; i >= 0; i--) r = cons(arr[i], r); return r; }
 
   function deref(t) { while (t.t === 'v' && t.ref) t = t.ref; return t; }
@@ -145,18 +154,19 @@
   }
   [[1200, 'xfx', [':-', '-->']], [1200, 'fx', [':-', '?-']], [1100, 'xfy', [';', '|']], [1105, 'xfy', ['|']],
    [1050, 'xfy', ['->', '*->']], [1000, 'xfy', [',']], [990, 'xfx', [':=']], [900, 'fy', ['\\+']],
-   [700, 'xfx', ['=', '\\=', '==', '\\==', '@<', '@>', '@=<', '@>=', '=..', 'is', '=:=', '=\\=', '<', '>', '=<', '>=', '>:<', ':<', 'as']],
+   [700, 'xfx', ['=', '\\=', '==', '\\==', '@<', '@>', '@=<', '@>=', '=..', 'is', '=:=', '=\\=', '<', '>', '=<', '>=', '>:<', ':<', 'as', '=@=', '\\=@=']],
    [600, 'xfy', [':']], [500, 'yfx', ['+', '-', '/\\', '\\/', 'xor']], [500, 'fx', ['?']],
    [400, 'yfx', ['*', '/', '//', 'rem', 'mod', 'div', '<<', '>>', 'divmod', 'rdiv']],
    [200, 'xfx', ['**']], [200, 'xfy', ['^']], [200, 'fy', ['-', '+', '\\']], [100, 'yfx', ['.']], [1, 'fx', ['$']],
-   [1150, 'fx', ['dynamic', 'discontiguous', 'initialization', 'module_transparent', 'multifile', 'public', 'thread_local', 'table']]
+   [1150, 'fx', ['dynamic', 'discontiguous', 'initialization', 'module_transparent', 'multifile', 'public', 'thread_local', 'table', 'meta_predicate']], [200, 'xfy', ['::']], [100, 'fx', ['@']]
   ].forEach(([p, ty, ns]) => ns.forEach(n => addOp(p, ty, n)));
   ops.infix.set(',', { p: 1000, type: 'xfy' });
 
   // ---------- tokenizer ----------
   const SYM = '+-*/\\^<>=~:.?@#&$';
-  const isSym = c => SYM.indexOf(c) >= 0;
-  const isAlnum = c => /[A-Za-z0-9_]/.test(c);
+  // non-ASCII as SWI-Prolog reads it: letters and digits join names, other symbols join symbol atoms
+  const isSym = c => SYM.indexOf(c) >= 0 || c > '\x7f' && /[\p{S}\p{Po}\p{Pd}]/u.test(c) && c !== '\u00b7';
+  const isAlnum = c => /[A-Za-z0-9_]/.test(c) || c > '\x7f' && /[\p{L}\p{N}\p{Mn}\p{Mc}]/u.test(c);
   function PrologSyntaxError(msg, pos, src) {
     const line = src ? src.slice(0, pos).split('\n').length : 0;
     const e = new Error('Syntax error' + (line ? ' (line ' + line + ')' : '') + ': ' + msg);
@@ -193,8 +203,8 @@
         const text = src.slice(i, j).replace(/_/g, '');
         toks.push({ k: 'num', v: isF ? parseFloat(text) : bigOrNum(BigInt(text)), f: isF, pos: start, lb }); i = j; continue;
       }
-      if (c === '_' || /[A-Z]/.test(c)) { let j = i; while (j < n && isAlnum(src[j])) j++; toks.push({ k: 'var', v: src.slice(i, j), pos: start, lb }); i = j; continue; }
-      if (/[a-z]/.test(c)) { let j = i; while (j < n && isAlnum(src[j])) j++; toks.push({ k: 'atom', v: src.slice(i, j), pos: start, lb }); i = j; continue; }
+      if (c === '_' || /[A-Z]/.test(c) || c > '\x7f' && /\p{Lu}|\p{Lt}/u.test(c)) { let j = i; while (j < n && isAlnum(src[j])) j++; toks.push({ k: 'var', v: src.slice(i, j), pos: start, lb }); i = j; continue; }
+      if (/[a-z]/.test(c) || c > '\x7f' && /[\p{Ll}\p{Lo}\p{Lm}]/u.test(c)) { let j = i; while (j < n && isAlnum(src[j])) j++; toks.push({ k: 'atom', v: src.slice(i, j), pos: start, lb }); i = j; continue; }
       if (c === "'" || c === '"' || c === '`') {
         const q = c; let j = i + 1; let s = '';
         for (;;) {
@@ -263,7 +273,7 @@
     const tok = this.next();
     switch (tok.k) {
       case 'num': return { term: Num(tok.v, tok.f), prec: 0 };
-      case 'var': return { term: this.mkVar(tok.v), prec: 0 };
+      case 'var': { const v = this.mkVar(tok.v); const p = this.peek(); if (p.k === 'punct' && p.v === '{' && !p.lb) return { term: this.parseDict(v), prec: 0 }; return { term: v, prec: 0 }; }
       case 'str': return { term: Str(tok.v), prec: 0 };
       case 'bq': return { term: list([...tok.v].map(ch => Int(ch.codePointAt(0)))), prec: 0 };
       case 'punct':
@@ -293,8 +303,25 @@
       default: this.err('unexpected end of input', tok);
     }
   };
+  // SWI-Prolog dicts: Tag{Key: Value, ...} with no space before {, as dict(Tag, [Key-Value, ...]) with the
+  // pairs in standard order of keys
+  Parser.prototype.parseDict = function (tag) {
+    this.next(); const pairs = [];
+    if (!(this.peek().k === 'punct' && this.peek().v === '}')) {
+      for (;;) {
+        const kv = deref(this.parse(999));
+        if (!(kv.t === 'c' && kv.f === ':' && kv.a.length === 2)) this.err('dict pairs are Key:Value', this.peek());
+        pairs.push([deref(kv.a[0]), kv.a[1]]);
+        if (this.peek().k === 'punct' && this.peek().v === ',') { this.next(); continue; }
+        break;
+      }
+    }
+    this.expect('punct', '}');
+    return mkDict(tag, pairs);
+  };
   Parser.prototype.afterAtom = function (nm, tok, maxPrec) {
     const p = this.peek();
+    if ((tok.k === 'atom' && /^[a-z]/.test(nm) || tok.k === 'qatom') && p.k === 'punct' && p.v === '{' && !p.lb) return { term: this.parseDict(Atom(nm)), prec: 0 };
     if (p.k === 'punct' && p.v === '(' && !p.lb) {
       this.next(); const a = [this.parse(999)];
       while (this.peek().k === 'punct' && this.peek().v === ',') { this.next(); a.push(this.parse(999)); }
@@ -321,7 +348,10 @@
       }
       return { term: Atom(nm), prec: op.p > maxPrec ? 0 : op.p };
     }
-    const pr = (ops.infix.has(nm) || ops.prefix.has(nm)) ? Math.max(ops.infix.has(nm) ? ops.infix.get(nm).p : 0, 0) : 0;
+    let pr = (ops.infix.has(nm) || ops.prefix.has(nm)) ? Math.max(ops.infix.has(nm) ? ops.infix.get(nm).p : 0, 0) : 0;
+    // an operator atom used as an operand (is/2, (dynamic)/1) is an ordinary atom, as in SWI-Prolog
+    const nx = this.peek();
+    if (pr && nx && (nx.k === 'atom' && ops.infix.has(nx.v) || nx.k === 'punct' && (nx.v === ',' || nx.v === '|' || nx.v === ')' || nx.v === ']' || nx.v === '}'))) pr = 0;
     return { term: Atom(nm), prec: pr > maxPrec ? 0 : pr };
   };
   Parser.prototype.parse = function (maxPrec) {
@@ -340,6 +370,8 @@
         if (p <= maxPrec && leftPrec <= la) {
           this.next();
           const right = this.parse(ra);
+          // SWI-Prolog's dict access: Dict.key, Dict.put(...) (expanded where the clause is added)
+          if (nm === '.' && !tok.lb) { left = Cmp('$dot', [left, right]); leftPrec = 0; continue; }
           const f = nm === '|' ? ';' : nm;
           left = Cmp(f, [left, right]); leftPrec = p; continue;
         }
@@ -351,6 +383,16 @@
     return left;
   };
 
+  // :- op(P, T, Names) and the op(P, T, Names) a module exports change how what follows is read
+  function applyOpDirective(d) {
+    d = deref(d);
+    if (d.t === 'c' && d.f === 'op' && d.a.length === 3) {
+      const pr = deref(d.a[0]).v, ty = deref(d.a[1]).n; const nmT = deref(d.a[2]);
+      const names = listToArray(nmT) || [nmT];
+      names.forEach(x => { x = deref(x); if (x.t === 'c' && x.f === ':' && x.a.length === 2) x = deref(x.a[1]); if (x.t === 'a') addOp(pr, ty, x.n); });
+    }
+    if (d.t === 'c' && d.f === 'module' && d.a.length === 2) for (const x of listToArray(d.a[1]) || []) applyOpDirective(x);
+  }
   function readProgram(src) {
     const p = new Parser(src); const out = [];
     for (;;) {
@@ -358,11 +400,7 @@
       const t = c.term;
       if (t.t === 'c' && t.f === ':-' && t.a.length === 1) {
         const d = deref(t.a[0]);
-        if (d.t === 'c' && d.f === 'op' && d.a.length === 3) {
-          const pr = deref(d.a[0]).v, ty = deref(d.a[1]).n; const nmT = deref(d.a[2]);
-          const names = listToArray(nmT) || [nmT];
-          names.forEach(x => addOp(pr, ty, deref(x).n));
-        }
+        applyOpDirective(d);
       }
       out.push(c);
     }
@@ -379,6 +417,8 @@
     if (n === '[]' || n === '!' || n === ';' || n === '{}' || n === ',') return n === ',';
     if (/^[a-z][A-Za-z0-9_]*$/.test(n)) return false;
     if (/^[+\-*/\\^<>=~:.?@#&$]+$/.test(n)) return false;
+    if (/^[\p{Ll}\p{Lo}\p{Lm}][\p{L}\p{N}_]*$/u.test(n)) return false;
+    if (n.length && [...n].every((c) => isSym(c))) return false;
     return true;
   }
   function quoteAtom(n) {
@@ -394,7 +434,13 @@
   function show(t, opts) {
     opts = opts || {};
     const q = opts.quoted !== false;
-    const vn = opts.varName || (v => v.name && v.name !== '_' ? v.name : '_G' + v.id);
+    const vn0 = v => v.name && v.name !== '_' ? v.name : '_G' + v.id;
+    // swi: as SWI-Prolog's write/print/writeq lay terms out (no space after commas, none around
+    // symbolic operators); without it, as its toplevel shows answers
+    const swi = !!opts.swi, sep = swi && !opts.nextArg ? ',' : ', ';
+    // SWI-Prolog writes a variable as _N, never by its name in the source (two copies of a clause
+    // must not print the same name)
+    const vn = opts.varName || (swi ? (v => '_G' + v.id) : vn0);
     function w(t, maxP) {
       t = deref(t);
       switch (t.t) {
@@ -403,10 +449,12 @@
         case 's': return q ? JSON.stringify(t.v) : t.v;
         case 'a': { const s = fmtAtom(t.n, q); if ((ops.infix.has(t.n) || ops.prefix.has(t.n)) && maxP < 1200 && t.n !== '[]' && t.n !== '{}' && t.n !== '!' && t.n !== ';') { const p = Math.max(ops.infix.has(t.n) ? ops.infix.get(t.n).p : 0, ops.prefix.has(t.n) ? ops.prefix.get(t.n).p : 0); if (p > maxP) return '(' + s + ')'; } return s; }
         case 'c': {
+          if (t.f === '$VAR' && t.a.length === 1 && opts.numbervars !== false) { const n = deref(t.a[0]); if (n.t === 'n' && !n.f && n.v >= 0) return String.fromCharCode(65 + n.v % 26) + (n.v >= 26 ? Math.floor(n.v / 26) : ''); if (n.t === 'a') return n.n; if (n.t === 's') return n.v; }
+          if (t.f === 'dict' && t.a.length === 2) { const ps = dictPairs(t); if (ps) { const tg = deref(t.a[0]); return (tg.t === 'v' ? '_' : w(tg, 0)) + '{' + ps.map(([k, v]) => w(k, 0) + ':' + w(v, 599)).join(sep) + '}'; } }
           if (t.f === '.' && t.a.length === 2) {
             const items = []; let x = t;
             while (x.t === 'c' && x.f === '.' && x.a.length === 2) { items.push(w(x.a[0], 999)); x = deref(x.a[1]); }
-            let s = '[' + items.join(', ');
+            let s = '[' + items.join(sep);
             if (!(x.t === 'a' && x.n === '[]')) s += '|' + w(x, 999);
             return s + ']';
           }
@@ -416,7 +464,8 @@
             const lp = op.type[0] === 'y' ? p : p - 1, rp = op.type[2] === 'y' ? p : p - 1;
             let l = w(t.a[0], lp), r = w(t.a[1], rp);
             let s;
-            if (t.f === ',') s = l + ', ' + r;
+            if (t.f === ',') s = l + sep + r;
+            else if (swi && !/^[a-z]/.test(t.f)) { const ft = fmtAtom(t.f, q); const glueR = isSym(ft[ft.length - 1]) && (isSym(r[0]) || /^-?\d/.test(r) && r[0] === '-'); const glueL = isSym(ft[0]) && isSym(l[l.length - 1]); s = l + (glueL ? ' ' : '') + ft + (glueR ? ' ' : '') + r; }
             else if (/^[a-z]/.test(t.f) || ['->', ':-', '-->', ';', '*->', 'is', '=', '\\=', '==', '\\==', '=..', '<', '>', '=<', '>=', '=:=', '=\\=', '@<', '@>', '@=<', '@>='].includes(t.f) || p >= 700) s = l + ' ' + fmtAtom(t.f, q) + ' ' + r;
             else {
               // avoid gluing symbol chars, e.g. 1- -1, a- (-b)
@@ -434,12 +483,12 @@
               const a0 = deref(t.a[0]);
               let as = w(a0, ap);
               const ft = fmtAtom(t.f, q);
-              const needSpace = /^[a-z]/i.test(ft) || ft === '\\+' || isSym(ft[ft.length - 1]) && (isSym(as[0]) || a0.t === 'n') || as[0] === '(';
+              const needSpace = /^[a-z]/i.test(ft) || !swi && ft === '\\+' || isSym(ft[ft.length - 1]) && (isSym(as[0]) || a0.t === 'n') || as[0] === '(';
               const s = ft + (needSpace ? ' ' : '') + as;
               return p > maxP ? '(' + s + ')' : s;
             }
           }
-          return fmtAtom(t.f, q) + '(' + t.a.map(x => w(x, 999)).join(', ') + ')';
+          return fmtAtom(t.f, q) + '(' + t.a.map(x => w(x, 999)).join(sep) + ')';
         }
       }
       return '?';
@@ -505,7 +554,7 @@
     return showBody(b, d + 1, o).replace(/^\s+/, '');
   }
 
-  Object.assign(P, {
+  Object.assign(P, { mkDict, dictPairs, applyOpDirective,
     Atom, Num, Int, Str, Var, Cmp, NIL, TRUE, FAIL, cons, list, deref, isCons, isNil, listToArray,
     name, arity, key, args, copy, resolve, termVars, isGround, compare, variantKey,
     ops, addOp, tokenize, Parser, readProgram, readTerm, show, showClause, namer, letters, PrologSyntaxError,

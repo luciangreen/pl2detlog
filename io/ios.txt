@@ -1,402 +1,402 @@
 pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file; npm test checks it).
 
-1. run_prolog("last", "last([5], X)")
-   => {"ok":true,"answers":["X = 5"],"output":"","error":null}
-2. convert("grade", "grade(98, G)", "plain")
-   => {"mode":"plain","clauses":2,"errors":[],"warnings":0,"cut_free":true,"heads":["grade__cp(A__1, A__2, R__0) :-"]}
-3. convert_and_back("last")
-   => {"same_clauses":true,"back":["last([X], X) :-","    !.","last([_|T], X) :-","    last(T, X)."],"warnings":0}
-4. analyse("evens", "evens([9, 4], R)")
-   => {"same":true,"prolog":["R = [4]"],"detlog":["R = [4]"],"mnn":["R = [4]"],"back":["R = [4]"],"proof_checks":12,"proof_failed":[]}
-5. newton_fit([-4,-14,-36,-76,-140])
-   => {"differences":[-4,-10,-12,-6],"formula":"-I*I*I - 3*I*I - 6*I - 4"}
-6. s2a_formula([[1,5,"x",2],[2,9,"x",5],[3,13,"x",10]])
-   => "A1 = I + 1, A2 = 4*I + 5, A3 = x, A4 = data[I]"
-7. read_and_show("(a:-b,c;d)")
-   => "a :- b, c ; d"
-8. purity("append")
-   => {"pure":["app/3"],"writes":[],"order":["app/3"]}
-9. parse_range("3..16 by 2")
-   => [3,5,7,9,11,13,15]
-10. fit_growth(3, [{"x":2,"y":16},{"x":5,"y":250},{"x":8,"y":1024},{"x":11,"y":2662},{"x":14,"y":5488},{"x":17,"y":9826}])
-   => {"label":"O(n³)","k":3}
-11. run_prolog("member", "mem(X, [2, 1])")
-   => {"ok":true,"answers":["X = 2","X = 1"],"output":"","error":null}
-12. convert("evens", "evens([1, 2, 0], R)", "mnn")
-   => {"mode":"mnn","clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["evens__cp(A__1, A__2, R__0) :-"]}
-13. convert_and_back("double")
-   => {"same_clauses":true,"back":["dbl(X, Y) :-","    Y is 2*X.","dbls([], []).","dbls([H|T], [D|R]) :-","    dbl(H, D),","    dbls(T, R)."],"warnings":0}
-14. analyse("reverse", "rev([7, 4, 3, 6, 9], R)")
-   => {"same":true,"prolog":["R = [9, 6, 3, 4, 7]"],"detlog":["R = [9, 6, 3, 4, 7]"],"mnn":["R = [9, 6, 3, 4, 7]"],"back":["R = [9, 6, 3, 4, 7]"],"proof_checks":15,"proof_failed":[]}
-15. newton_fit([9,17,29,45,65,89,117])
-   => {"differences":[9,8,4],"formula":"2*I*I + 6*I + 9"}
-16. s2a_formula([[1,4,"x",1],[2,8,"x",4],[3,12,"x",9]])
-   => "A1 = I + 1, A2 = 4*I + 4, A3 = x, A4 = data[I]"
-17. read_and_show("a- -1")
-   => "a- -1"
-18. purity("max")
-   => {"pure":[],"writes":[],"order":["mx/3"]}
-19. parse_range("97")
-   => [97]
-20. fit_growth(1, [{"x":2,"y":12},{"x":5,"y":30},{"x":8,"y":48},{"x":11,"y":66},{"x":14,"y":84},{"x":17,"y":102}])
-   => {"label":"O(n)","k":1}
-21. run_prolog("max", "mx(1, -8, M)")
-   => {"ok":true,"answers":["M = 1"],"output":"","error":null}
-22. convert("greet", "greet_all([2, 1, 3])", "mnn")
-   => {"mode":"mnn","clauses":9,"errors":[],"warnings":0,"cut_free":true,"heads":["greet__cp(A__1, R__0) :-","greet_all__cp(A__1, R__0) :-","greet_all__c1(A__1, R__0) :-","greet_all__c2(A__1, R__0) :-"]}
-23. convert_and_back("member")
-   => {"same_clauses":true,"back":["mem(X, [X|_]).","mem(X, [_|T]) :-","    mem(X, T)."],"warnings":0}
-24. analyse("length", "len([5, 3, 1], N)")
-   => {"same":true,"prolog":["N = 3"],"detlog":["N = 3"],"mnn":["N = 3"],"back":["N = 3"],"proof_checks":14,"proof_failed":[]}
-25. newton_fit([-9,-16,-25,-36,-49,-64])
-   => {"differences":[-9,-7,-2],"formula":"-I*I - 6*I - 9"}
-26. s2a_formula([[1,5,"x",3],[2,8,"x",6],[3,11,"x",11]])
-   => "A1 = I + 1, A2 = 3*I + 5, A3 = x, A4 = data[I]"
-27. read_and_show("'\\n'")
-   => "'\\n'"
-28. purity("member")
-   => {"pure":["mem/2"],"writes":[],"order":["mem/2"]}
-29. parse_range("5..20")
-   => [5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
-30. fit_growth(1, [{"x":2,"y":16},{"x":5,"y":40},{"x":8,"y":64},{"x":11,"y":88},{"x":14,"y":112},{"x":17,"y":136}])
-   => {"label":"O(n)","k":1}
-31. run_prolog("greet", "greet_all([2, 0, 1])")
-   => {"ok":true,"answers":["true"],"output":"hello(2)\nhello(0)\nhello(1)\n","error":null}
-32. convert("sum", "sum([2, 8, 3], S)", "mnn")
-   => {"mode":"mnn","clauses":13,"errors":[],"warnings":0,"cut_free":true,"heads":["sum__cp(A__1, A__2, R__0) :-","sum__c1(A__1, A__2, R__0) :-","sum__c2(A__1, A__2, R__0) :-"]}
-33. convert_and_back("double")
-   => {"same_clauses":true,"back":["dbl(X, Y) :-","    Y is 2*X.","dbls([], []).","dbls([H|T], [D|R]) :-","    dbl(H, D),","    dbls(T, R)."],"warnings":0}
-34. analyse("last", "last([2, 3, 3, 2], X)")
-   => {"same":true,"prolog":["X = 2"],"detlog":["X = 2"],"mnn":["X = 2"],"back":["X = 2"],"proof_checks":14,"proof_failed":[]}
-35. newton_fit([2,5,0])
-   => {"formula":null}
-36. s2a_formula([[1,5,"x",4],[2,7,"x",7],[3,9,"x",12]])
-   => "A1 = I + 1, A2 = 2*I + 5, A3 = x, A4 = data[I]"
-37. read_and_show("(a:-b,c;d)")
-   => "a :- b, c ; d"
-38. purity("greet")
-   => {"pure":[],"writes":["greet/1","greet_all/1"],"order":["greet/1","greet_all/1"]}
-39. parse_range("2..18 by 4")
-   => [2,6,10,14,18]
-40. fit_growth(3, [{"x":2,"y":48},{"x":5,"y":750},{"x":8,"y":3072},{"x":11,"y":7986},{"x":14,"y":16464},{"x":17,"y":29478}])
-   => {"label":"O(n³)","k":3}
-41. run_prolog("append", "app([4], [6, 3, 3, 6, 0], Z)")
-   => {"ok":true,"answers":["Z = [4, 6, 3, 3, 6, 0]"],"output":"","error":null}
-42. convert("append", "app(X, Y, [0, 1, 1])", "plain")
-   => {"mode":"plain","clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["app__cp(A__1, A__2, A__3, R__0) :-","app__c1(A__1, A__2, A__3, R__0) :-","app__c2(A__1, A__2, A__3, R__0) :-"]}
-43. convert_and_back("max")
-   => {"same_clauses":true,"back":["mx(X, Y, X) :-","    X >= Y,","    !.","mx(_, Y, Y)."],"warnings":0}
-44. analyse("sum", "sum([2, 0, 9, 9], S)")
-   => {"same":true,"prolog":["S = 20"],"detlog":["S = 20"],"mnn":["S = 20"],"back":["S = 20"],"proof_checks":14,"proof_failed":[]}
-45. newton_fit([-4,-7,-14,-25,-40,-59])
-   => {"differences":[-4,-3,-4],"formula":"-2*I*I - I - 4"}
-46. s2a_formula([[1,4,"x",2],[2,7,"x",5],[3,10,"x",10],[4,13,"x",17],[5,16,"x",26]])
-   => "A1 = I + 1, A2 = 3*I + 4, A3 = x, A4 = I*I + 2*I + 2"
-47. read_and_show("[1, 2|X]")
-   => "[1, 2|X]"
-48. purity("grade")
-   => {"pure":[],"writes":[],"order":["grade/2"]}
-49. parse_range("2..13")
-   => [2,3,4,5,6,7,8,9,10,11,12,13]
-50. fit_growth(2, [{"x":2,"y":28},{"x":5,"y":175},{"x":8,"y":448},{"x":11,"y":847},{"x":14,"y":1372},{"x":17,"y":2023}])
-   => {"label":"O(n²)","k":2}
-51. run_prolog("last", "last([6, 6, 9, 0], X)")
-   => {"ok":true,"answers":["X = 0"],"output":"","error":null}
-52. convert("double", "dbls([0, 8, 5, 5, 3], R)", "plain")
-   => {"mode":"plain","clauses":9,"errors":[],"warnings":0,"cut_free":true,"heads":["dbl__cp(A__1, A__2, R__0) :-","dbls__cp(A__1, A__2, R__0) :-","dbls__c1(A__1, A__2, R__0) :-","dbls__c2(A__1, A__2, R__0) :-"]}
-53. convert_and_back("length")
-   => {"same_clauses":true,"back":["len([], 0).","len([_|T], N) :-","    len(T, M),","    N is M+1."],"warnings":0}
-54. analyse("evens", "evens([0, 5], R)")
-   => {"same":true,"prolog":["R = [0]"],"detlog":["R = [0]"],"mnn":["R = [0]"],"back":["R = [0]"],"proof_checks":12,"proof_failed":[]}
-55. newton_fit([5,13,25,41,61,85])
-   => {"differences":[5,8,4],"formula":"2*I*I + 6*I + 5"}
-56. s2a_formula([[1,4,"x",2],[2,7,"x",5],[3,10,"x",10]])
-   => "A1 = I + 1, A2 = 3*I + 4, A3 = x, A4 = data[I]"
-57. read_and_show("a- -1")
-   => "a- -1"
-58. purity("greet")
-   => {"pure":[],"writes":["greet/1","greet_all/1"],"order":["greet/1","greet_all/1"]}
-59. parse_range("-3..7")
-   => [-3,-2,-1,0,1,2,3,4,5,6,7]
-60. fit_growth("exp", [{"x":2,"y":24},{"x":5,"y":192},{"x":8,"y":1536},{"x":11,"y":12288},{"x":14,"y":98304},{"x":17,"y":786432}])
-   => {"label":"O(2.00^n)","k":4.71}
-61. run_prolog("append", "app(X, Y, [4, 0])")
-   => {"ok":true,"answers":["X = [], Y = [4, 0]","X = [4], Y = [0]","X = [4, 0], Y = []"],"output":"","error":null}
-62. convert("append", "app([9, 1, 6, 8], [5, 4, 6], Z)", "mnn")
-   => {"mode":"mnn","clauses":9,"errors":[],"warnings":0,"cut_free":true,"heads":["app__cp(A__1, A__2, A__3, R__0) :-","app__c1(A__1, A__2, A__3, R__0) :-","app__c2(A__1, A__2, A__3, R__0) :-"]}
-63. convert_and_back("evens")
-   => {"same_clauses":true,"back":["evens([], []).","evens([H|T], [H|R]) :-","    0 is H mod 2,","    !,","    evens(T, R).","evens([_|T], R) :-","    evens(T, R)."],"warnings":0}
-64. analyse("reverse", "rev([], R)")
-   => {"same":true,"prolog":["R = []"],"detlog":["R = []"],"mnn":["R = []"],"back":["R = []"],"proof_checks":15,"proof_failed":[]}
-65. newton_fit([5,10,19,32,49,70])
-   => {"differences":[5,5,4],"formula":"2*I*I + 3*I + 5"}
-66. s2a_formula([[1,4,"y",1],[2,8,"y",4],[3,12,"y",9],[4,16,"y",16]])
-   => "A1 = I + 1, A2 = 4*I + 4, A3 = y, A4 = I*I + 2*I + 1"
-67. read_and_show("'\\n'")
-   => "'\\n'"
-68. purity("length")
-   => {"pure":["len/2"],"writes":[],"order":["len/2"]}
-69. parse_range("9 3 x 4")
-   => [9,3,4]
-70. fit_growth(0, [{"x":2,"y":6},{"x":5,"y":6},{"x":8,"y":6},{"x":11,"y":6},{"x":14,"y":6},{"x":17,"y":6}])
-   => {"label":"O(1)","k":0}
-71. run_prolog("greet", "greet_all([4, 1])")
-   => {"ok":true,"answers":["true"],"output":"hello(4)\nhello(1)\n","error":null}
-72. convert("sum", "sum([4, 9, 9, 6, 1], S)", "mnn")
-   => {"mode":"mnn","clauses":13,"errors":[],"warnings":0,"cut_free":true,"heads":["sum__cp(A__1, A__2, R__0) :-","sum__c1(A__1, A__2, R__0) :-","sum__c2(A__1, A__2, R__0) :-"]}
-73. convert_and_back("last")
-   => {"same_clauses":true,"back":["last([X], X) :-","    !.","last([_|T], X) :-","    last(T, X)."],"warnings":0}
-74. analyse("last", "last([3, 9, 0, 4, 2], X)")
-   => {"same":true,"prolog":["X = 2"],"detlog":["X = 2"],"mnn":["X = 2"],"back":["X = 2"],"proof_checks":14,"proof_failed":[]}
-75. newton_fit([-5,-5,-5,-5])
-   => {"differences":[-5],"formula":"-5"}
-76. s2a_formula([[1,5,"x",4],[2,7,"x",7],[3,9,"x",12],[4,11,"x",19],[5,13,"x",28],[6,15,"x",39]])
-   => "A1 = I + 1, A2 = 2*I + 5, A3 = x, A4 = I*I + 2*I + 4"
-77. read_and_show("\\+ p(X)")
+1. interpreter_swipl(["halt.pl"])
+   => {"exit":3,"output":"start\n","errors":""}
+2. thermo_code("banana")
+   => {"alphabet":"abn","counts":[3,1,2],"rank":"34","round_trip":true,"neurons_sum":"34","rank_bits":6,"raw_bits":12,"entropy_bits":8.755,"erased_bits":1}
+3. thermo_store("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", 128)
+   => {"bytes":13,"chars":211,"round_trip":true}
+4. thermo_prove(["a","b"], 3)
+   => ["thermo_round_trip: {\"domain\":[[\"a\",\"b\"],3],\"count\":15}","thermo_bijection: {\"typeClasses\":10,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\"],3],\"count\":15}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\"],3],\"count\":15}","thermo_landauer: 0"]
+5. run_prolog("evens", "evens([9, 4], R)")
+   => {"ok":true,"answers":["R = [4]"],"output":"","error":null}
+6. convert("factorial", "fact(1, F)", "plain")
+   => {"mode":"plain","clauses":6,"errors":[],"warnings":0,"cut_free":true,"heads":["fact__cp(A__1, A__2, R__0) :-"]}
+7. convert_and_back("reverse")
+   => {"same_clauses":true,"back":["rev(L, R) :-","    rev(L, [], R).","rev([], A, A).","rev([H|T], A, R) :-","    rev(T, [H|A], R)."],"warnings":0}
+8. analyse("length", "len([0, 3], N)")
+   => {"same":true,"prolog":["N = 2"],"detlog":["N = 2"],"mnn":["N = 2"],"back":["N = 2"],"proof_checks":14,"proof_failed":[]}
+9. newton_fit([-1,-9,-21,-37,-57])
+   => {"differences":[-1,-8,-4],"formula":"-2*I*I - 6*I - 1"}
+10. s2a_formula([[1,2,"y",2],[2,3,"y",5],[3,4,"y",10],[4,5,"y",17],[5,6,"y",26],[6,7,"y",37]])
+   => "A1 = I + 1, A2 = I + 2, A3 = y, A4 = I*I + 2*I + 2"
+11. read_and_show("\\+ p(X)")
    => "\\+ p(X)"
-78. purity("max")
-   => {"pure":[],"writes":[],"order":["mx/3"]}
-79. parse_range("34")
-   => [34]
-80. fit_growth(1, [{"x":2,"y":12},{"x":5,"y":30},{"x":8,"y":48},{"x":11,"y":66},{"x":14,"y":84},{"x":17,"y":102}])
-   => {"label":"O(n)","k":1}
-81. run_prolog("reverse", "rev([], R)")
-   => {"ok":true,"answers":["R = []"],"output":"","error":null}
-82. convert("member", "mem(X, [2, 6])", "mnn")
-   => {"mode":"mnn","clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__cp(A__1, A__2, R__0) :-","mem__c1(A__1, A__2, R__0) :-","mem__c2(A__1, A__2, R__0) :-"]}
-83. convert_and_back("append")
-   => {"same_clauses":true,"back":["app([], L, L).","app([H|T], L, [H|R]) :-","    app(T, L, R)."],"warnings":0}
-84. analyse("sum", "sum([7], S)")
-   => {"same":true,"prolog":["S = 7"],"detlog":["S = 7"],"mnn":["S = 7"],"back":["S = 7"],"proof_checks":14,"proof_failed":[]}
-85. newton_fit([-4,-14,-36,-76])
-   => {"formula":null}
-86. s2a_formula([[1,5,"y",4],[2,7,"y",7],[3,9,"y",12],[4,11,"y",19],[5,13,"y",28]])
-   => "A1 = I + 1, A2 = 2*I + 5, A3 = y, A4 = I*I + 2*I + 4"
-87. read_and_show("f(-)")
-   => "f(-)"
-88. purity("sum")
-   => {"pure":["sum/2"],"writes":[],"order":["sum/2"]}
-89. parse_range("")
-   => []
-90. fit_growth(2, [{"x":2,"y":32},{"x":5,"y":200},{"x":8,"y":512},{"x":11,"y":968},{"x":14,"y":1568},{"x":17,"y":2312}])
-   => {"label":"O(n²)","k":2}
-91. run_prolog("factorial", "fact(0, F)")
-   => {"ok":true,"answers":["F = 1"],"output":"","error":null}
-92. convert("member", "mem(X, [0, 3, 8, 8])", "plain")
-   => {"mode":"plain","clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__cp(A__1, A__2, R__0) :-","mem__c1(A__1, A__2, R__0) :-","mem__c2(A__1, A__2, R__0) :-"]}
-93. convert_and_back("greet")
-   => {"same_clauses":true,"back":["greet(N) :-","    write(hello(N)),","    nl.","greet_all([]).","greet_all([H|T]) :-","    greet(H),","    greet_all(T)."],"warnings":0}
-94. analyse("greet", "greet_all([1, 0])")
-   => {"same":true,"prolog":["true"],"detlog":["true"],"mnn":["true"],"back":["true"],"proof_checks":12,"proof_failed":[]}
-95. newton_fit([-3,-2,-1,0,1])
-   => {"differences":[-3,1],"formula":"I - 3"}
-96. s2a_formula([[1,6,"y",3],[2,10,"y",6],[3,14,"y",11],[4,18,"y",18]])
-   => "A1 = I + 1, A2 = 4*I + 6, A3 = y, A4 = I*I + 2*I + 3"
-97. read_and_show("a+b*c")
-   => "a+b*c"
-98. purity("double")
-   => {"pure":["dbl/2","dbls/2"],"writes":[],"order":["dbl/2","dbls/2"]}
-99. parse_range("80, 52")
-   => [80,52]
-100. fit_growth(3, [{"x":2,"y":16},{"x":5,"y":250},{"x":8,"y":1024},{"x":11,"y":2662},{"x":14,"y":5488},{"x":17,"y":9826}])
+12. purity("greet")
+   => {"pure":[],"writes":["greet/1","greet_all/1"],"order":["greet/1","greet_all/1"]}
+13. parse_range("-2..16")
+   => [-2,-1,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
+14. fit_growth(3, [{"x":2,"y":48},{"x":5,"y":750},{"x":8,"y":3072},{"x":11,"y":7986},{"x":14,"y":16464},{"x":17,"y":29478}])
    => {"label":"O(n³)","k":3}
-101. run_prolog("member", "mem(X, [6, 3])")
-   => {"ok":true,"answers":["X = 6","X = 3"],"output":"","error":null}
-102. convert("max", "mx(-1, -3, M)", "mnn")
-   => {"mode":"mnn","clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["mx__cp(A__1, A__2, A__3, R__0) :-"]}
-103. convert_and_back("evens")
-   => {"same_clauses":true,"back":["evens([], []).","evens([H|T], [H|R]) :-","    0 is H mod 2,","    !,","    evens(T, R).","evens([_|T], R) :-","    evens(T, R)."],"warnings":0}
-104. analyse("grade", "grade(35, G)")
-   => {"same":true,"prolog":["G = c"],"detlog":["G = c"],"mnn":["G = c"],"back":["G = c"],"proof_checks":14,"proof_failed":[]}
-105. newton_fit([1,-7,-19,-35,-55,-79])
-   => {"differences":[1,-8,-4],"formula":"-2*I*I - 6*I + 1"}
-106. s2a_formula([[1,4,"y",3],[2,6,"y",6],[3,8,"y",11],[4,10,"y",18]])
+15. interpreter_swipl(["-g","main","-t","halt","strings.pl"])
+   => {"exit":0,"output":"4 hel [\"a\",\"b\",\"\",\"c\"]\n","errors":""}
+16. thermo_code("mississippi")
+   => {"alphabet":"imps","counts":[4,1,2,4],"rank":"13736","round_trip":true,"neurons_sum":"13736","rank_bits":16,"raw_bits":22,"entropy_bits":20.054,"erased_bits":0}
+17. thermo_store("{\"pick\":\"MNN\",\"why\":\"the fastest on this goal\"}", 128)
+   => {"bytes":86,"chars":47,"round_trip":true}
+18. thermo_prove(["a"], 5)
+   => ["thermo_round_trip: {\"domain\":[[\"a\"],5],\"count\":6}","thermo_bijection: {\"typeClasses\":6,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\"],5],\"count\":6}","thermo_entropy_bound: {\"domain\":[[\"a\"],5],\"count\":6}","thermo_landauer: 0"]
+19. run_prolog("evens", "evens([3, 6], R)")
+   => {"ok":true,"answers":["R = [6]"],"output":"","error":null}
+20. convert("grade", "grade(95, G)", "mnn")
+   => {"mode":"mnn","clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["grade__cp(A__1, A__2, R__0) :-"]}
+21. convert_and_back("grade")
+   => {"same_clauses":true,"back":["grade(N, a) :-","    N >= 80,","    !.","grade(N, b) :-","    N >= 60,","    !.","grade(_, c)."],"warnings":0}
+22. analyse("double", "dbls([1, 0, 8, 2, 8], R)")
+   => {"same":true,"prolog":["R = [2, 0, 16, 4, 16]"],"detlog":["R = [2, 0, 16, 4, 16]"],"mnn":["R = [2, 0, 16, 4, 16]"],"back":["R = [2, 0, 16, 4, 16]"],"proof_checks":16,"proof_failed":[]}
+23. newton_fit([6,20,48,96,170,276,420])
+   => {"differences":[6,14,14,6],"formula":"I*I*I + 4*I*I + 9*I + 6"}
+24. s2a_formula([[1,4,"x",4],[2,5,"x",7],[3,6,"x",12]])
+   => "A1 = I + 1, A2 = I + 4, A3 = x, A4 = data[I]"
+25. read_and_show("a+b*c")
+   => "a+b*c"
+26. purity("sum")
+   => {"pure":["sum/2"],"writes":[],"order":["sum/2"]}
+27. parse_range("84, 20, 8, 24, 88")
+   => [84,20,8,24,88]
+28. fit_growth(1, [{"x":2,"y":4},{"x":5,"y":10},{"x":8,"y":16},{"x":11,"y":22},{"x":14,"y":28},{"x":17,"y":34}])
+   => {"label":"O(n)","k":1}
+29. interpreter_swipl(["-g","main","-t","halt","strings.pl"])
+   => {"exit":0,"output":"4 hel [\"a\",\"b\",\"\",\"c\"]\n","errors":""}
+30. thermo_code("banana")
+   => {"alphabet":"abn","counts":[3,1,2],"rank":"34","round_trip":true,"neurons_sum":"34","rank_bits":6,"raw_bits":12,"entropy_bits":8.755,"erased_bits":1}
+31. thermo_store("{\"pick\":\"MNN\",\"why\":\"the fastest on this goal\"}", 64)
+   => {"bytes":86,"chars":47,"round_trip":true}
+32. thermo_prove(["a"], 3)
+   => ["thermo_round_trip: {\"domain\":[[\"a\"],3],\"count\":4}","thermo_bijection: {\"typeClasses\":4,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\"],3],\"count\":4}","thermo_entropy_bound: {\"domain\":[[\"a\"],3],\"count\":4}","thermo_landauer: 0"]
+33. run_prolog("max", "mx(-5, 6, M)")
+   => {"ok":true,"answers":["M = 6"],"output":"","error":null}
+34. convert("member", "mem(X, [9, 8, 0, 1])", "plain")
+   => {"mode":"plain","clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__cp(A__1, A__2, R__0) :-","mem__c1(A__1, A__2, R__0) :-","mem__c2(A__1, A__2, R__0) :-"]}
+35. convert_and_back("grade")
+   => {"same_clauses":true,"back":["grade(N, a) :-","    N >= 80,","    !.","grade(N, b) :-","    N >= 60,","    !.","grade(_, c)."],"warnings":0}
+36. analyse("member", "mem(X, [8, 0, 2])")
+   => {"same":true,"prolog":["X = 8","X = 0","X = 2"],"detlog":["X = 8","X = 0","X = 2"],"mnn":["X = 8","X = 0","X = 2"],"back":["X = 8","X = 0","X = 2"],"proof_checks":12,"proof_failed":[]}
+37. newton_fit([7,6,-5])
+   => {"formula":null}
+38. s2a_formula([[1,4,"y",3],[2,6,"y",6],[3,8,"y",11],[4,10,"y",18]])
    => "A1 = I + 1, A2 = 2*I + 4, A3 = y, A4 = I*I + 2*I + 3"
-107. read_and_show("a- -1")
-   => "a- -1"
-108. purity("evens")
-   => {"pure":[],"writes":[],"order":["evens/2"]}
-109. parse_range("3 4 x 3")
-   => [3,4,3]
-110. fit_growth(1, [{"x":2,"y":2},{"x":5,"y":5},{"x":8,"y":8},{"x":11,"y":11},{"x":14,"y":14},{"x":17,"y":17}])
-   => {"label":"O(n)","k":1}
-111. run_prolog("last", "last([9, 8, 3], X)")
-   => {"ok":true,"answers":["X = 3"],"output":"","error":null}
-112. convert("factorial", "fact(6, F)", "mnn")
-   => {"mode":"mnn","clauses":11,"errors":[],"warnings":0,"cut_free":true,"heads":["fact__cp(A__1, A__2, R__0) :-"]}
-113. convert_and_back("append")
-   => {"same_clauses":true,"back":["app([], L, L).","app([H|T], L, [H|R]) :-","    app(T, L, R)."],"warnings":0}
-114. analyse("last", "last([2, 7], X)")
-   => {"same":true,"prolog":["X = 7"],"detlog":["X = 7"],"mnn":["X = 7"],"back":["X = 7"],"proof_checks":14,"proof_failed":[]}
-115. newton_fit([4,6,10,16,24,34,46])
-   => {"differences":[4,2,2],"formula":"I*I + I + 4"}
-116. s2a_formula([[1,5,"x",4],[2,7,"x",7],[3,9,"x",12],[4,11,"x",19],[5,13,"x",28],[6,15,"x",39]])
-   => "A1 = I + 1, A2 = 2*I + 5, A3 = x, A4 = I*I + 2*I + 4"
-117. read_and_show("'hello world'")
-   => "'hello world'"
-118. purity("double")
+39. read_and_show("[1, 2|X]")
+   => "[1, 2|X]"
+40. purity("double")
    => {"pure":["dbl/2","dbls/2"],"writes":[],"order":["dbl/2","dbls/2"]}
-119. parse_range("3..5")
-   => [3,4,5]
-120. fit_growth("exp", [{"x":2,"y":8},{"x":5,"y":64},{"x":8,"y":512},{"x":11,"y":4096},{"x":14,"y":32768},{"x":17,"y":262144}])
-   => {"label":"O(2.00^n)","k":4.71}
-121. run_prolog("sum", "sum([], S)")
-   => {"ok":true,"answers":["S = 0"],"output":"","error":null}
-122. convert("last", "last([8, 9, 0, 9], X)", "mnn")
-   => {"mode":"mnn","clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["last__cp(A__1, A__2, R__0) :-"]}
-123. convert_and_back("last")
-   => {"same_clauses":true,"back":["last([X], X) :-","    !.","last([_|T], X) :-","    last(T, X)."],"warnings":0}
-124. analyse("member", "mem(X, [8])")
-   => {"same":true,"prolog":["X = 8"],"detlog":["X = 8"],"mnn":["X = 8"],"back":["X = 8"],"proof_checks":12,"proof_failed":[]}
-125. newton_fit([1,9,21,37,57,81,109])
-   => {"differences":[1,8,4],"formula":"2*I*I + 6*I + 1"}
-126. s2a_formula([[1,4,"x",1],[2,8,"x",4],[3,12,"x",9],[4,16,"x",16],[5,20,"x",25],[6,24,"x",36]])
-   => "A1 = I + 1, A2 = 4*I + 4, A3 = x, A4 = I*I + 2*I + 1"
-127. read_and_show("\\+ p(X)")
-   => "\\+ p(X)"
-128. purity("sum")
-   => {"pure":["sum/2"],"writes":[],"order":["sum/2"]}
-129. parse_range("0..18 by 4")
-   => [0,4,8,12,16]
-130. fit_growth(1, [{"x":2,"y":2},{"x":5,"y":5},{"x":8,"y":8},{"x":11,"y":11},{"x":14,"y":14},{"x":17,"y":17}])
-   => {"label":"O(n)","k":1}
-131. run_prolog("last", "last([9, 2, 7, 5, 2], X)")
-   => {"ok":true,"answers":["X = 2"],"output":"","error":null}
-132. convert("double", "dbls([], R)", "plain")
-   => {"mode":"plain","clauses":9,"errors":[],"warnings":0,"cut_free":true,"heads":["dbl__cp(A__1, A__2, R__0) :-","dbls__cp(A__1, A__2, R__0) :-","dbls__c1(A__1, A__2, R__0) :-","dbls__c2(A__1, A__2, R__0) :-"]}
-133. convert_and_back("append")
-   => {"same_clauses":true,"back":["app([], L, L).","app([H|T], L, [H|R]) :-","    app(T, L, R)."],"warnings":0}
-134. analyse("sum", "sum([6, 2, 3, 4], S)")
-   => {"same":true,"prolog":["S = 15"],"detlog":["S = 15"],"mnn":["S = 15"],"back":["S = 15"],"proof_checks":14,"proof_failed":[]}
-135. newton_fit([0,1,2,3,4,5])
-   => {"differences":[0,1],"formula":"I"}
-136. s2a_formula([[1,2,"x",1],[2,4,"x",4],[3,6,"x",9],[4,8,"x",16],[5,10,"x",25]])
-   => "A1 = I + 1, A2 = 2*I + 2, A3 = x, A4 = I*I + 2*I + 1"
-137. read_and_show("-(1)")
-   => "- 1"
-138. purity("double")
-   => {"pure":["dbl/2","dbls/2"],"writes":[],"order":["dbl/2","dbls/2"]}
-139. parse_range("1 5 x 2")
-   => [1,5,2]
-140. fit_growth(0, [{"x":2,"y":6},{"x":5,"y":6},{"x":8,"y":6},{"x":11,"y":6},{"x":14,"y":6},{"x":17,"y":6}])
+41. parse_range("3..14 by 3")
+   => [3,6,9,12]
+42. fit_growth(0, [{"x":2,"y":1},{"x":5,"y":1},{"x":8,"y":1},{"x":11,"y":1},{"x":14,"y":1},{"x":17,"y":1}])
    => {"label":"O(1)","k":0}
-141. run_prolog("length", "len([], N)")
-   => {"ok":true,"answers":["N = 0"],"output":"","error":null}
-142. convert("sum", "sum([2, 6], S)", "plain")
-   => {"mode":"plain","clauses":8,"errors":[],"warnings":0,"cut_free":true,"heads":["sum__cp(A__1, A__2, R__0) :-","sum__c1(A__1, A__2, R__0) :-","sum__c2(A__1, A__2, R__0) :-"]}
-143. convert_and_back("length")
-   => {"same_clauses":true,"back":["len([], 0).","len([_|T], N) :-","    len(T, M),","    N is M+1."],"warnings":0}
-144. analyse("member", "mem(X, [8, 4, 4])")
-   => {"same":true,"prolog":["X = 8","X = 4","X = 4"],"detlog":["X = 8","X = 4","X = 4"],"mnn":["X = 8","X = 4","X = 4"],"back":["X = 8","X = 4","X = 4"],"proof_checks":12,"proof_failed":[]}
-145. newton_fit([5,1,-7])
-   => {"formula":null}
-146. s2a_formula([[1,5,"y",3],[2,8,"y",6],[3,11,"y",11]])
-   => "A1 = I + 1, A2 = 3*I + 5, A3 = y, A4 = data[I]"
-147. read_and_show("a+b*c")
-   => "a+b*c"
-148. purity("sum")
-   => {"pure":["sum/2"],"writes":[],"order":["sum/2"]}
-149. parse_range("1..21 by 4")
-   => [1,5,9,13,17,21]
-150. fit_growth("exp", [{"x":2,"y":36},{"x":5,"y":288},{"x":8,"y":2304},{"x":11,"y":18432},{"x":14,"y":147456},{"x":17,"y":1179648}])
-   => {"label":"O(2.00^n)","k":4.71}
-151. run_prolog("double", "dbls([], R)")
-   => {"ok":true,"answers":["R = []"],"output":"","error":null}
-152. convert("double", "dbls([3, 1], R)", "plain")
-   => {"mode":"plain","clauses":9,"errors":[],"warnings":0,"cut_free":true,"heads":["dbl__cp(A__1, A__2, R__0) :-","dbls__cp(A__1, A__2, R__0) :-","dbls__c1(A__1, A__2, R__0) :-","dbls__c2(A__1, A__2, R__0) :-"]}
-153. convert_and_back("factorial")
-   => {"same_clauses":true,"back":["fact(0, 1) :-","    !.","fact(N, F) :-","    N1 is N-1,","    fact(N1, F1),","    F is N*F1."],"warnings":0}
-154. analyse("reverse", "rev([9, 5, 0], R)")
-   => {"same":true,"prolog":["R = [0, 5, 9]"],"detlog":["R = [0, 5, 9]"],"mnn":["R = [0, 5, 9]"],"back":["R = [0, 5, 9]"],"proof_checks":15,"proof_failed":[]}
-155. newton_fit([7,17,41,85,155,257,397])
-   => {"differences":[7,10,14,6],"formula":"I*I*I + 4*I*I + 5*I + 7"}
-156. s2a_formula([[1,7,"y",4],[2,11,"y",7],[3,15,"y",12],[4,19,"y",19],[5,23,"y",28],[6,27,"y",39]])
-   => "A1 = I + 1, A2 = 4*I + 7, A3 = y, A4 = I*I + 2*I + 4"
-157. read_and_show("f(X, [a|T], \"s\", 1.5)")
-   => "f(X, [a|T], \"s\", 1.5)"
-158. purity("evens")
-   => {"pure":[],"writes":[],"order":["evens/2"]}
-159. parse_range("10, 47, 19, 12")
-   => [10,47,19,12]
-160. fit_growth(0, [{"x":2,"y":6},{"x":5,"y":6},{"x":8,"y":6},{"x":11,"y":6},{"x":14,"y":6},{"x":17,"y":6}])
-   => {"label":"O(1)","k":0}
-161. run_prolog("length", "len([4], N)")
-   => {"ok":true,"answers":["N = 1"],"output":"","error":null}
-162. convert("double", "dbls([9, 3, 3], R)", "mnn")
-   => {"mode":"mnn","clauses":19,"errors":[],"warnings":0,"cut_free":true,"heads":["dbl__cp(A__1, A__2, R__0) :-","dbls__cp(A__1, A__2, R__0) :-","dbls__c1(A__1, A__2, R__0) :-","dbls__c2(A__1, A__2, R__0) :-"]}
-163. convert_and_back("member")
-   => {"same_clauses":true,"back":["mem(X, [X|_]).","mem(X, [_|T]) :-","    mem(X, T)."],"warnings":0}
-164. analyse("sum", "sum([4, 4, 1], S)")
-   => {"same":true,"prolog":["S = 9"],"detlog":["S = 9"],"mnn":["S = 9"],"back":["S = 9"],"proof_checks":14,"proof_failed":[]}
-165. newton_fit([-4,-16,-44,-94,-172,-284])
-   => {"differences":[-4,-12,-16,-6],"formula":"-I*I*I - 5*I*I - 6*I - 4"}
-166. s2a_formula([[1,4,"x",1],[2,8,"x",4],[3,12,"x",9],[4,16,"x",16]])
-   => "A1 = I + 1, A2 = 4*I + 4, A3 = x, A4 = I*I + 2*I + 1"
-167. read_and_show("a+b*c")
-   => "a+b*c"
-168. purity("double")
-   => {"pure":["dbl/2","dbls/2"],"writes":[],"order":["dbl/2","dbls/2"]}
-169. parse_range("3..22 by 4")
-   => [3,7,11,15,19]
-170. fit_growth(1, [{"x":2,"y":6},{"x":5,"y":15},{"x":8,"y":24},{"x":11,"y":33},{"x":14,"y":42},{"x":17,"y":51}])
-   => {"label":"O(n)","k":1}
-171. run_prolog("last", "last([2], X)")
-   => {"ok":true,"answers":["X = 2"],"output":"","error":null}
-172. convert("grade", "grade(60, G)", "plain")
-   => {"mode":"plain","clauses":2,"errors":[],"warnings":0,"cut_free":true,"heads":["grade__cp(A__1, A__2, R__0) :-"]}
-173. convert_and_back("evens")
-   => {"same_clauses":true,"back":["evens([], []).","evens([H|T], [H|R]) :-","    0 is H mod 2,","    !,","    evens(T, R).","evens([_|T], R) :-","    evens(T, R)."],"warnings":0}
-174. analyse("evens", "evens([7], R)")
-   => {"same":true,"prolog":["R = []"],"detlog":["R = []"],"mnn":["R = []"],"back":["R = []"],"proof_checks":12,"proof_failed":[]}
-175. newton_fit([5,1,-7,-19])
-   => {"differences":[5,-4,-4],"formula":"-2*I*I - 2*I + 5"}
-176. s2a_formula([[1,5,"y",2],[2,9,"y",5],[3,13,"y",10],[4,17,"y",17]])
-   => "A1 = I + 1, A2 = 4*I + 5, A3 = y, A4 = I*I + 2*I + 2"
-177. read_and_show("-(1)")
-   => "- 1"
-178. purity("grade")
-   => {"pure":[],"writes":[],"order":["grade/2"]}
-179. parse_range("4..30 by 2")
-   => [4,6,8,10,12,14,16,18,20,22,24,26,28,30]
-180. fit_growth(0, [{"x":2,"y":4},{"x":5,"y":4},{"x":8,"y":4},{"x":11,"y":4},{"x":14,"y":4},{"x":17,"y":4}])
-   => {"label":"O(1)","k":0}
-181. run_prolog("sum", "sum([7, 5, 7, 9], S)")
-   => {"ok":true,"answers":["S = 28"],"output":"","error":null}
-182. convert("member", "mem(X, [4, 6, 2, 8])", "plain")
-   => {"mode":"plain","clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__cp(A__1, A__2, R__0) :-","mem__c1(A__1, A__2, R__0) :-","mem__c2(A__1, A__2, R__0) :-"]}
-183. convert_and_back("evens")
-   => {"same_clauses":true,"back":["evens([], []).","evens([H|T], [H|R]) :-","    0 is H mod 2,","    !,","    evens(T, R).","evens([_|T], R) :-","    evens(T, R)."],"warnings":0}
-184. analyse("last", "last([8, 2, 3, 3], X)")
-   => {"same":true,"prolog":["X = 3"],"detlog":["X = 3"],"mnn":["X = 3"],"back":["X = 3"],"proof_checks":14,"proof_failed":[]}
-185. newton_fit([3,1,-3,-9,-17,-27])
-   => {"differences":[3,-2,-2],"formula":"-I*I - I + 3"}
-186. s2a_formula([[1,6,"y",3],[2,10,"y",6],[3,14,"y",11]])
-   => "A1 = I + 1, A2 = 4*I + 6, A3 = y, A4 = data[I]"
-187. read_and_show("- 1")
-   => "- 1"
-188. purity("length")
-   => {"pure":["len/2"],"writes":[],"order":["len/2"]}
-189. parse_range("65")
-   => [65]
-190. fit_growth(3, [{"x":2,"y":8},{"x":5,"y":125},{"x":8,"y":512},{"x":11,"y":1331},{"x":14,"y":2744},{"x":17,"y":4913}])
-   => {"label":"O(n³)","k":3}
-191. run_prolog("factorial", "fact(5, F)")
-   => {"ok":true,"answers":["F = 120"],"output":"","error":null}
-192. convert("reverse", "rev([2, 9, 1, 9], R)", "mnn")
-   => {"mode":"mnn","clauses":15,"errors":[],"warnings":0,"cut_free":true,"heads":["rev__cp(A__1, A__2, R__0) :-","rev__cp(A__1, A__2, A__3, R__0) :-","rev__c1(A__1, A__2, A__3, R__0) :-","rev__c2(A__1, A__2, A__3, R__0) :-"]}
-193. convert_and_back("greet")
+43. interpreter_swipl(["-g","main","-t","halt","nrev.pl"])
+   => {"exit":0,"output":"30\n","errors":""}
+44. thermo_code("aaaa")
+   => {"alphabet":"a","counts":[4],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":0,"raw_bits":0,"entropy_bits":0,"erased_bits":0}
+45. thermo_store("a", 128)
+   => {"bytes":8,"chars":1,"round_trip":true}
+46. thermo_prove(["a","b"], 5)
+   => ["thermo_round_trip: {\"domain\":[[\"a\",\"b\"],5],\"count\":63}","thermo_bijection: {\"typeClasses\":21,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\"],5],\"count\":63}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\"],5],\"count\":63}","thermo_landauer: 0"]
+47. run_prolog("max", "mx(-1, 4, M)")
+   => {"ok":true,"answers":["M = 4"],"output":"","error":null}
+48. convert("sum", "sum([5], S)", "mnn")
+   => {"mode":"mnn","clauses":13,"errors":[],"warnings":0,"cut_free":true,"heads":["sum__cp(A__1, A__2, R__0) :-","sum__c1(A__1, A__2, R__0) :-","sum__c2(A__1, A__2, R__0) :-"]}
+49. convert_and_back("greet")
    => {"same_clauses":true,"back":["greet(N) :-","    write(hello(N)),","    nl.","greet_all([]).","greet_all([H|T]) :-","    greet(H),","    greet_all(T)."],"warnings":0}
-194. analyse("member", "mem(X, [1, 3])")
-   => {"same":true,"prolog":["X = 1","X = 3"],"detlog":["X = 1","X = 3"],"mnn":["X = 1","X = 3"],"back":["X = 1","X = 3"],"proof_checks":12,"proof_failed":[]}
-195. newton_fit([4,2,-2,-8,-16,-26])
-   => {"differences":[4,-2,-2],"formula":"-I*I - I + 4"}
-196. s2a_formula([[1,5,"y",4],[2,7,"y",7],[3,9,"y",12],[4,11,"y",19]])
-   => "A1 = I + 1, A2 = 2*I + 5, A3 = y, A4 = I*I + 2*I + 4"
-197. read_and_show("a- -1")
+50. analyse("append", "app(X, Y, [6, 3, 3])")
+   => {"same":true,"prolog":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"detlog":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"mnn":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"back":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"proof_checks":14,"proof_failed":[]}
+51. newton_fit([-1,3,7,11,15,19])
+   => {"differences":[-1,4],"formula":"4*I - 1"}
+52. s2a_formula([[1,4,"x",1],[2,8,"x",4],[3,12,"x",9]])
+   => "A1 = I + 1, A2 = 4*I + 4, A3 = x, A4 = data[I]"
+53. read_and_show("{a, b}")
+   => "{a, b}"
+54. purity("member")
+   => {"pure":["mem/2"],"writes":[],"order":["mem/2"]}
+55. parse_range("2..29 by 2")
+   => [2,4,6,8,10,12,14,16,18,20,22,24,26,28]
+56. fit_growth(3, [{"x":2,"y":24},{"x":5,"y":375},{"x":8,"y":1536},{"x":11,"y":3993},{"x":14,"y":8232},{"x":17,"y":14739}])
+   => {"label":"O(n³)","k":3}
+57. interpreter_swipl(["-g","main","-t","halt","json.pl"])
+   => {"exit":0,"output":"Ann 6\n","errors":""}
+58. thermo_code("thermodynamic")
+   => {"alphabet":"acdehimnorty","counts":[1,1,1,1,1,1,2,1,1,1,1,1],"rank":"2721350141","round_trip":true,"neurons_sum":"2721350141","rank_bits":32,"raw_bits":52,"entropy_bits":46.106,"erased_bits":0}
+59. thermo_store("", 128)
+   => {"bytes":6,"chars":0,"round_trip":true}
+60. thermo_prove(["a"], 2)
+   => ["thermo_round_trip: {\"domain\":[[\"a\"],2],\"count\":3}","thermo_bijection: {\"typeClasses\":3,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\"],2],\"count\":3}","thermo_entropy_bound: {\"domain\":[[\"a\"],2],\"count\":3}","thermo_landauer: 0"]
+61. run_prolog("last", "last([3, 7, 1], X)")
+   => {"ok":true,"answers":["X = 1"],"output":"","error":null}
+62. convert("member", "mem(X, [6, 5, 0, 1])", "mnn")
+   => {"mode":"mnn","clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__cp(A__1, A__2, R__0) :-","mem__c1(A__1, A__2, R__0) :-","mem__c2(A__1, A__2, R__0) :-"]}
+63. convert_and_back("reverse")
+   => {"same_clauses":true,"back":["rev(L, R) :-","    rev(L, [], R).","rev([], A, A).","rev([H|T], A, R) :-","    rev(T, [H|A], R)."],"warnings":0}
+64. analyse("length", "len([6, 0, 0], N)")
+   => {"same":true,"prolog":["N = 3"],"detlog":["N = 3"],"mnn":["N = 3"],"back":["N = 3"],"proof_checks":14,"proof_failed":[]}
+65. newton_fit([-5,-3,1,7,15,25])
+   => {"differences":[-5,2,2],"formula":"I*I + I - 5"}
+66. s2a_formula([[1,6,"x",3],[2,10,"x",6],[3,14,"x",11],[4,18,"x",18],[5,22,"x",27]])
+   => "A1 = I + 1, A2 = 4*I + 6, A3 = x, A4 = I*I + 2*I + 3"
+67. read_and_show("a- -1")
    => "a- -1"
-198. purity("last")
-   => {"pure":[],"writes":[],"order":["last/2"]}
-199. parse_range("3..15")
-   => [3,4,5,6,7,8,9,10,11,12,13,14,15]
-200. fit_growth("exp", [{"x":2,"y":28},{"x":5,"y":224},{"x":8,"y":1792},{"x":11,"y":14336},{"x":14,"y":114688},{"x":17,"y":917504}])
+68. purity("grade")
+   => {"pure":[],"writes":[],"order":["grade/2"]}
+69. parse_range("0")
+   => [0]
+70. fit_growth(2, [{"x":2,"y":28},{"x":5,"y":175},{"x":8,"y":448},{"x":11,"y":847},{"x":14,"y":1372},{"x":17,"y":2023}])
+   => {"label":"O(n²)","k":2}
+71. interpreter_swipl(["-g","main","-t","halt","nrev.pl"])
+   => {"exit":0,"output":"30\n","errors":""}
+72. thermo_code("ab")
+   => {"alphabet":"ab","counts":[1,1],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":1,"raw_bits":2,"entropy_bits":2,"erased_bits":0}
+73. thermo_store("", 64)
+   => {"bytes":5,"chars":0,"round_trip":true}
+74. thermo_prove(["a","b","c"], 1)
+   => ["thermo_round_trip: {\"domain\":[[\"a\",\"b\",\"c\"],1],\"count\":4}","thermo_bijection: {\"typeClasses\":4,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\",\"c\"],1],\"count\":4}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\",\"c\"],1],\"count\":4}","thermo_landauer: 0"]
+75. run_prolog("double", "dbls([0, 1, 7, 0], R)")
+   => {"ok":true,"answers":["R = [0, 2, 14, 0]"],"output":"","error":null}
+76. convert("greet", "greet_all([3, 9, 8])", "mnn")
+   => {"mode":"mnn","clauses":9,"errors":[],"warnings":0,"cut_free":true,"heads":["greet__cp(A__1, R__0) :-","greet_all__cp(A__1, R__0) :-","greet_all__c1(A__1, R__0) :-","greet_all__c2(A__1, R__0) :-"]}
+77. convert_and_back("factorial")
+   => {"same_clauses":true,"back":["fact(0, 1) :-","    !.","fact(N, F) :-","    N1 is N-1,","    fact(N1, F1),","    F is N*F1."],"warnings":0}
+78. analyse("last", "last([2, 1, 9], X)")
+   => {"same":true,"prolog":["X = 9"],"detlog":["X = 9"],"mnn":["X = 9"],"back":["X = 9"],"proof_checks":14,"proof_failed":[]}
+79. newton_fit([-2,-6,-10])
+   => {"differences":[-2,-4],"formula":"-4*I - 2"}
+80. s2a_formula([[1,5,"x",4],[2,7,"x",7],[3,9,"x",12]])
+   => "A1 = I + 1, A2 = 2*I + 5, A3 = x, A4 = data[I]"
+81. read_and_show("f(-)")
+   => "f(-)"
+82. purity("member")
+   => {"pure":["mem/2"],"writes":[],"order":["mem/2"]}
+83. parse_range("")
+   => []
+84. fit_growth(2, [{"x":2,"y":24},{"x":5,"y":150},{"x":8,"y":384},{"x":11,"y":726},{"x":14,"y":1176},{"x":17,"y":1734}])
+   => {"label":"O(n²)","k":2}
+85. interpreter_swipl(["-g","main","-t","halt","files.pl"])
+   => {"exit":0,"output":"line 1\n","errors":""}
+86. thermo_code("")
+   => {"alphabet":"","counts":[],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":0,"raw_bits":0,"entropy_bits":0,"erased_bits":0}
+87. thermo_store("ünïcödé • text", 128)
+   => {"bytes":39,"chars":14,"round_trip":true}
+88. thermo_prove(["a","b"], 4)
+   => ["thermo_round_trip: {\"domain\":[[\"a\",\"b\"],4],\"count\":31}","thermo_bijection: {\"typeClasses\":15,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\"],4],\"count\":31}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\"],4],\"count\":31}","thermo_landauer: 0"]
+89. run_prolog("evens", "evens([1], R)")
+   => {"ok":true,"answers":["R = []"],"output":"","error":null}
+90. convert("double", "dbls([9, 5], R)", "mnn")
+   => {"mode":"mnn","clauses":19,"errors":[],"warnings":0,"cut_free":true,"heads":["dbl__cp(A__1, A__2, R__0) :-","dbls__cp(A__1, A__2, R__0) :-","dbls__c1(A__1, A__2, R__0) :-","dbls__c2(A__1, A__2, R__0) :-"]}
+91. convert_and_back("factorial")
+   => {"same_clauses":true,"back":["fact(0, 1) :-","    !.","fact(N, F) :-","    N1 is N-1,","    fact(N1, F1),","    F is N*F1."],"warnings":0}
+92. analyse("length", "len([6, 7, 1, 0], N)")
+   => {"same":true,"prolog":["N = 4"],"detlog":["N = 4"],"mnn":["N = 4"],"back":["N = 4"],"proof_checks":14,"proof_failed":[]}
+93. newton_fit([5,5,3,-1,-7,-15])
+   => {"differences":[5,0,-2],"formula":"-I*I + I + 5"}
+94. s2a_formula([[1,1,"x",1],[2,2,"x",4],[3,3,"x",9]])
+   => "A1 = I + 1, A2 = I + 1, A3 = x, A4 = data[I]"
+95. read_and_show("[a, b, c]")
+   => "[a, b, c]"
+96. purity("member")
+   => {"pure":["mem/2"],"writes":[],"order":["mem/2"]}
+97. parse_range("5 9 x 9")
+   => [5,9,9]
+98. fit_growth(0, [{"x":2,"y":6},{"x":5,"y":6},{"x":8,"y":6},{"x":11,"y":6},{"x":14,"y":6},{"x":17,"y":6}])
+   => {"label":"O(1)","k":0}
+99. interpreter_swipl(["halt.pl"])
+   => {"exit":3,"output":"start\n","errors":""}
+100. thermo_code("")
+   => {"alphabet":"","counts":[],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":0,"raw_bits":0,"entropy_bits":0,"erased_bits":0}
+101. thermo_store("hello world", 128)
+   => {"bytes":28,"chars":11,"round_trip":true}
+102. thermo_prove(["a"], 2)
+   => ["thermo_round_trip: {\"domain\":[[\"a\"],2],\"count\":3}","thermo_bijection: {\"typeClasses\":3,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\"],2],\"count\":3}","thermo_entropy_bound: {\"domain\":[[\"a\"],2],\"count\":3}","thermo_landauer: 0"]
+103. run_prolog("reverse", "rev([], R)")
+   => {"ok":true,"answers":["R = []"],"output":"","error":null}
+104. convert("max", "mx(-1, 6, M)", "plain")
+   => {"mode":"plain","clauses":2,"errors":[],"warnings":0,"cut_free":true,"heads":["mx__cp(A__1, A__2, A__3, R__0) :-"]}
+105. convert_and_back("greet")
+   => {"same_clauses":true,"back":["greet(N) :-","    write(hello(N)),","    nl.","greet_all([]).","greet_all([H|T]) :-","    greet(H),","    greet_all(T)."],"warnings":0}
+106. analyse("double", "dbls([1, 5], R)")
+   => {"same":true,"prolog":["R = [2, 10]"],"detlog":["R = [2, 10]"],"mnn":["R = [2, 10]"],"back":["R = [2, 10]"],"proof_checks":16,"proof_failed":[]}
+107. newton_fit([1,6,15,28,45])
+   => {"differences":[1,5,4],"formula":"2*I*I + 3*I + 1"}
+108. s2a_formula([[1,2,"x",1],[2,4,"x",4],[3,6,"x",9],[4,8,"x",16]])
+   => "A1 = I + 1, A2 = 2*I + 2, A3 = x, A4 = I*I + 2*I + 1"
+109. read_and_show("\\+ p(X)")
+   => "\\+ p(X)"
+110. purity("append")
+   => {"pure":["app/3"],"writes":[],"order":["app/3"]}
+111. parse_range("2..14 by 2")
+   => [2,4,6,8,10,12,14]
+112. fit_growth(0, [{"x":2,"y":8},{"x":5,"y":8},{"x":8,"y":8},{"x":11,"y":8},{"x":14,"y":8},{"x":17,"y":8}])
+   => {"label":"O(1)","k":0}
+113. interpreter_swipl(["-g","main","-t","halt","fail.pl"])
+   => {"exit":1,"output":"","errors":"Warning: goal (main) failed\n"}
+114. thermo_code("abracadabra")
+   => {"alphabet":"abcdr","counts":[5,2,1,1,2],"rank":"21519","round_trip":true,"neurons_sum":"21519","rank_bits":17,"raw_bits":33,"entropy_bits":22.444,"erased_bits":5}
+115. thermo_store("", 16)
+   => {"bytes":5,"chars":0,"round_trip":true}
+116. thermo_prove(["a","b"], 3)
+   => ["thermo_round_trip: {\"domain\":[[\"a\",\"b\"],3],\"count\":15}","thermo_bijection: {\"typeClasses\":10,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\"],3],\"count\":15}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\"],3],\"count\":15}","thermo_landauer: 0"]
+117. run_prolog("grade", "grade(56, G)")
+   => {"ok":true,"answers":["G = c"],"output":"","error":null}
+118. convert("last", "last([4, 3, 0], X)", "mnn")
+   => {"mode":"mnn","clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["last__cp(A__1, A__2, R__0) :-"]}
+119. convert_and_back("last")
+   => {"same_clauses":true,"back":["last([X], X) :-","    !.","last([_|T], X) :-","    last(T, X)."],"warnings":0}
+120. analyse("max", "mx(-9, -4, M)")
+   => {"same":true,"prolog":["M = -4"],"detlog":["M = -4"],"mnn":["M = -4"],"back":["M = -4"],"proof_checks":14,"proof_failed":[]}
+121. newton_fit([-2,5,16,31,50])
+   => {"differences":[-2,7,4],"formula":"2*I*I + 5*I - 2"}
+122. s2a_formula([[1,2,"x",2],[2,3,"x",5],[3,4,"x",10],[4,5,"x",17],[5,6,"x",26],[6,7,"x",37]])
+   => "A1 = I + 1, A2 = I + 2, A3 = x, A4 = I*I + 2*I + 2"
+123. read_and_show("a- -1")
+   => "a- -1"
+124. purity("append")
+   => {"pure":["app/3"],"writes":[],"order":["app/3"]}
+125. parse_range("4..18 by 5")
+   => [4,9,14]
+126. fit_growth(3, [{"x":2,"y":56},{"x":5,"y":875},{"x":8,"y":3584},{"x":11,"y":9317},{"x":14,"y":19208},{"x":17,"y":34391}])
+   => {"label":"O(n³)","k":3}
+127. interpreter_swipl(["-g","main","-t","halt","nrev.pl"])
+   => {"exit":0,"output":"30\n","errors":""}
+128. thermo_code("banana")
+   => {"alphabet":"abn","counts":[3,1,2],"rank":"34","round_trip":true,"neurons_sum":"34","rank_bits":6,"raw_bits":12,"entropy_bits":8.755,"erased_bits":1}
+129. thermo_store("append([], L, L).\nappend([H|T], L, [H|R]) :- append(T, L, R).\n", 64)
+   => {"bytes":86,"chars":62,"round_trip":true}
+130. thermo_prove(["x","y","z","w"], 3)
+   => ["thermo_round_trip: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],3],\"count\":85}","thermo_bijection: {\"typeClasses\":35,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],3],\"count\":85}","thermo_entropy_bound: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],3],\"count\":85}","thermo_landauer: 0"]
+131. run_prolog("sum", "sum([8, 5], S)")
+   => {"ok":true,"answers":["S = 13"],"output":"","error":null}
+132. convert("double", "dbls([8], R)", "plain")
+   => {"mode":"plain","clauses":9,"errors":[],"warnings":0,"cut_free":true,"heads":["dbl__cp(A__1, A__2, R__0) :-","dbls__cp(A__1, A__2, R__0) :-","dbls__c1(A__1, A__2, R__0) :-","dbls__c2(A__1, A__2, R__0) :-"]}
+133. convert_and_back("evens")
+   => {"same_clauses":true,"back":["evens([], []).","evens([H|T], [H|R]) :-","    0 is H mod 2,","    !,","    evens(T, R).","evens([_|T], R) :-","    evens(T, R)."],"warnings":0}
+134. analyse("length", "len([3], N)")
+   => {"same":true,"prolog":["N = 1"],"detlog":["N = 1"],"mnn":["N = 1"],"back":["N = 1"],"proof_checks":14,"proof_failed":[]}
+135. newton_fit([1,0,-1,-2])
+   => {"differences":[1,-1],"formula":"-I + 1"}
+136. s2a_formula([[1,6,"x",3],[2,10,"x",6],[3,14,"x",11],[4,18,"x",18],[5,22,"x",27]])
+   => "A1 = I + 1, A2 = 4*I + 6, A3 = x, A4 = I*I + 2*I + 3"
+137. read_and_show("[a, b, c]")
+   => "[a, b, c]"
+138. purity("member")
+   => {"pure":["mem/2"],"writes":[],"order":["mem/2"]}
+139. parse_range("3..18 by 4")
+   => [3,7,11,15]
+140. fit_growth(0, [{"x":2,"y":5},{"x":5,"y":5},{"x":8,"y":5},{"x":11,"y":5},{"x":14,"y":5},{"x":17,"y":5}])
+   => {"label":"O(1)","k":0}
+141. interpreter_swipl(["-g","main","-t","halt","json.pl"])
+   => {"exit":0,"output":"Ann 6\n","errors":""}
+142. thermo_code("banana")
+   => {"alphabet":"abn","counts":[3,1,2],"rank":"34","round_trip":true,"neurons_sum":"34","rank_bits":6,"raw_bits":12,"entropy_bits":8.755,"erased_bits":1}
+143. thermo_store("hello world", 16)
+   => {"bytes":28,"chars":11,"round_trip":true}
+144. thermo_prove(["a","b","c"], 1)
+   => ["thermo_round_trip: {\"domain\":[[\"a\",\"b\",\"c\"],1],\"count\":4}","thermo_bijection: {\"typeClasses\":4,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\",\"c\"],1],\"count\":4}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\",\"c\"],1],\"count\":4}","thermo_landauer: 0"]
+145. run_prolog("append", "app([5, 9, 8], [4, 5], Z)")
+   => {"ok":true,"answers":["Z = [5, 9, 8, 4, 5]"],"output":"","error":null}
+146. convert("member", "mem(X, [8, 3, 7, 8])", "mnn")
+   => {"mode":"mnn","clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__cp(A__1, A__2, R__0) :-","mem__c1(A__1, A__2, R__0) :-","mem__c2(A__1, A__2, R__0) :-"]}
+147. convert_and_back("double")
+   => {"same_clauses":true,"back":["dbl(X, Y) :-","    Y is 2*X.","dbls([], []).","dbls([H|T], [D|R]) :-","    dbl(H, D),","    dbls(T, R)."],"warnings":0}
+148. analyse("greet", "greet_all([4])")
+   => {"same":true,"prolog":["true"],"detlog":["true"],"mnn":["true"],"back":["true"],"proof_checks":12,"proof_failed":[]}
+149. newton_fit([1,1,-9,-35,-83,-159,-269])
+   => {"differences":[1,0,-10,-6],"formula":"-I*I*I - 2*I*I + 3*I + 1"}
+150. s2a_formula([[1,4,"y",4],[2,5,"y",7],[3,6,"y",12],[4,7,"y",19],[5,8,"y",28]])
+   => "A1 = I + 1, A2 = I + 4, A3 = y, A4 = I*I + 2*I + 4"
+151. read_and_show("\\+ p(X)")
+   => "\\+ p(X)"
+152. purity("append")
+   => {"pure":["app/3"],"writes":[],"order":["app/3"]}
+153. parse_range("")
+   => []
+154. fit_growth("exp", [{"x":2,"y":4},{"x":5,"y":32},{"x":8,"y":256},{"x":11,"y":2048},{"x":14,"y":16384},{"x":17,"y":131072}])
    => {"label":"O(2.00^n)","k":4.71}
+155. interpreter_swipl(["-g","nrev([a,b,c], R), print(R), nl","-t","halt","nrev.pl"])
+   => {"exit":0,"output":"[c,b,a]\n","errors":""}
+156. thermo_code("")
+   => {"alphabet":"","counts":[],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":0,"raw_bits":0,"entropy_bits":0,"erased_bits":0}
+157. thermo_store("hello world", 16)
+   => {"bytes":28,"chars":11,"round_trip":true}
+158. thermo_prove(["x","y","z","w"], 1)
+   => ["thermo_round_trip: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],1],\"count\":5}","thermo_bijection: {\"typeClasses\":5,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],1],\"count\":5}","thermo_entropy_bound: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],1],\"count\":5}","thermo_landauer: 0"]
+159. run_prolog("evens", "evens([2, 4, 9, 8, 1], R)")
+   => {"ok":true,"answers":["R = [2, 4, 8]"],"output":"","error":null}
+160. convert("greet", "greet_all([])", "mnn")
+   => {"mode":"mnn","clauses":9,"errors":[],"warnings":0,"cut_free":true,"heads":["greet__cp(A__1, R__0) :-","greet_all__cp(A__1, R__0) :-","greet_all__c1(A__1, R__0) :-","greet_all__c2(A__1, R__0) :-"]}
+161. convert_and_back("sum")
+   => {"same_clauses":true,"back":["sum([], 0).","sum([H|T], S) :-","    sum(T, S1),","    S is S1+H."],"warnings":0}
+162. analyse("length", "len([], N)")
+   => {"same":true,"prolog":["N = 0"],"detlog":["N = 0"],"mnn":["N = 0"],"back":["N = 0"],"proof_checks":14,"proof_failed":[]}
+163. newton_fit([-3,3,21,57])
+   => {"formula":null}
+164. s2a_formula([[1,2,"x",2],[2,3,"x",5],[3,4,"x",10]])
+   => "A1 = I + 1, A2 = I + 2, A3 = x, A4 = data[I]"
+165. read_and_show("f(X, [a|T], \"s\", 1.5)")
+   => "f(X, [a|T], \"s\", 1.5)"
+166. purity("last")
+   => {"pure":[],"writes":[],"order":["last/2"]}
+167. parse_range("")
+   => []
+168. fit_growth(3, [{"x":2,"y":24},{"x":5,"y":375},{"x":8,"y":1536},{"x":11,"y":3993},{"x":14,"y":8232},{"x":17,"y":14739}])
+   => {"label":"O(n³)","k":3}
+169. interpreter_swipl(["-g","main","-t","halt","files.pl"])
+   => {"exit":0,"output":"line 1\n","errors":""}
+170. thermo_code("ab")
+   => {"alphabet":"ab","counts":[1,1],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":1,"raw_bits":2,"entropy_bits":2,"erased_bits":0}
+171. thermo_store("{\"pick\":\"MNN\",\"why\":\"the fastest on this goal\"}", 64)
+   => {"bytes":86,"chars":47,"round_trip":true}
+172. thermo_prove(["a","b","c"], 4)
+   => ["thermo_round_trip: {\"domain\":[[\"a\",\"b\",\"c\"],4],\"count\":121}","thermo_bijection: {\"typeClasses\":35,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\",\"c\"],4],\"count\":121}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\",\"c\"],4],\"count\":121}","thermo_landauer: 0"]
+173. run_prolog("evens", "evens([], R)")
+   => {"ok":true,"answers":["R = []"],"output":"","error":null}
+174. convert("factorial", "fact(4, F)", "plain")
+   => {"mode":"plain","clauses":6,"errors":[],"warnings":0,"cut_free":true,"heads":["fact__cp(A__1, A__2, R__0) :-"]}
+175. convert_and_back("double")
+   => {"same_clauses":true,"back":["dbl(X, Y) :-","    Y is 2*X.","dbls([], []).","dbls([H|T], [D|R]) :-","    dbl(H, D),","    dbls(T, R)."],"warnings":0}
+176. analyse("evens", "evens([9], R)")
+   => {"same":true,"prolog":["R = []"],"detlog":["R = []"],"mnn":["R = []"],"back":["R = []"],"proof_checks":12,"proof_failed":[]}
+177. newton_fit([4,2,-4])
+   => {"formula":null}
+178. s2a_formula([[1,3,"x",1],[2,6,"x",4],[3,9,"x",9],[4,12,"x",16]])
+   => "A1 = I + 1, A2 = 3*I + 3, A3 = x, A4 = I*I + 2*I + 1"
+179. read_and_show("X = f(Y, Y)")
+   => "X = f(Y, Y)"
+180. purity("length")
+   => {"pure":["len/2"],"writes":[],"order":["len/2"]}
+181. parse_range("6")
+   => [6]
+182. fit_growth(2, [{"x":2,"y":36},{"x":5,"y":225},{"x":8,"y":576},{"x":11,"y":1089},{"x":14,"y":1764},{"x":17,"y":2601}])
+   => {"label":"O(n²)","k":2}
+183. interpreter_swipl(["-q","-g","main","-t","halt","lambda.pl"])
+   => {"exit":0,"output":"[1,4,9]-14\n","errors":""}
+184. thermo_code("banana")
+   => {"alphabet":"abn","counts":[3,1,2],"rank":"34","round_trip":true,"neurons_sum":"34","rank_bits":6,"raw_bits":12,"entropy_bits":8.755,"erased_bits":1}
+185. thermo_store("", 16)
+   => {"bytes":5,"chars":0,"round_trip":true}
+186. thermo_prove(["a","b","c"], 3)
+   => ["thermo_round_trip: {\"domain\":[[\"a\",\"b\",\"c\"],3],\"count\":40}","thermo_bijection: {\"typeClasses\":20,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\",\"c\"],3],\"count\":40}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\",\"c\"],3],\"count\":40}","thermo_landauer: 0"]
+187. run_prolog("last", "last([3], X)")
+   => {"ok":true,"answers":["X = 3"],"output":"","error":null}
+188. convert("last", "last([3, 5, 7, 9], X)", "mnn")
+   => {"mode":"mnn","clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["last__cp(A__1, A__2, R__0) :-"]}
+189. convert_and_back("double")
+   => {"same_clauses":true,"back":["dbl(X, Y) :-","    Y is 2*X.","dbls([], []).","dbls([H|T], [D|R]) :-","    dbl(H, D),","    dbls(T, R)."],"warnings":0}
+190. analyse("greet", "greet_all([3, 8])")
+   => {"same":true,"prolog":["true"],"detlog":["true"],"mnn":["true"],"back":["true"],"proof_checks":12,"proof_failed":[]}
+191. newton_fit([2,-1,-6,-13,-22,-33,-46])
+   => {"differences":[2,-3,-2],"formula":"-I*I - 2*I + 2"}
+192. s2a_formula([[1,4,"x",1],[2,8,"x",4],[3,12,"x",9],[4,16,"x",16],[5,20,"x",25],[6,24,"x",36]])
+   => "A1 = I + 1, A2 = 4*I + 4, A3 = x, A4 = I*I + 2*I + 1"
+193. read_and_show("- 1")
+   => "- 1"
+194. purity("length")
+   => {"pure":["len/2"],"writes":[],"order":["len/2"]}
+195. parse_range("")
+   => []
+196. fit_growth(3, [{"x":2,"y":72},{"x":5,"y":1125},{"x":8,"y":4608},{"x":11,"y":11979},{"x":14,"y":24696},{"x":17,"y":44217}])
+   => {"label":"O(n³)","k":3}
+197. interpreter_swipl(["-g","nrev([a,b,c], R), print(R), nl","-t","halt","nrev.pl"])
+   => {"exit":0,"output":"[c,b,a]\n","errors":""}
+198. thermo_code("")
+   => {"alphabet":"","counts":[],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":0,"raw_bits":0,"entropy_bits":0,"erased_bits":0}
+199. thermo_store("{\"pick\":\"MNN\",\"why\":\"the fastest on this goal\"}", 64)
+   => {"bytes":86,"chars":47,"round_trip":true}
+200. thermo_prove(["x","y","z","w"], 3)
+   => ["thermo_round_trip: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],3],\"count\":85}","thermo_bijection: {\"typeClasses\":35,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],3],\"count\":85}","thermo_entropy_bound: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],3],\"count\":85}","thermo_landauer: 0"]

@@ -17,10 +17,13 @@
   function Program() { this.preds = new Map(); this.order = []; this.dynamic = new Set(); this.directives = []; this.clauses = []; }
   Program.prototype.add = function (term, vars, atEnd) {
     term = deref(term);
+    if (P.expandDots && P.hasDots(term)) term = P.expandDots(term);
     let head = term, body = P.TRUE;
     if (term.t === 'c' && term.f === ':-' && term.a.length === 2) { head = deref(term.a[0]); body = term.a[1]; }
     else if (term.t === 'c' && term.f === ':-' && term.a.length === 1) { this.directives.push(term.a[0]); return; }
     else if (term.t === 'c' && term.f === '-->' && term.a.length === 2) { const t = dcgTransform(term); return this.add(t, vars, atEnd); }
+    // Module:Head defines Head (modules are flat here; src/swi.js renames private predicates)
+    while (head.t === 'c' && head.f === ':' && head.a.length === 2 && deref(head.a[0]).t === 'a') head = deref(head.a[1]);
     if (head.t === 'v') throw new Error('clause head is a variable');
     if (head.t !== 'a' && head.t !== 'c') throw new Error('clause head is not callable: ' + show(head));
     const k = P.key(head);
@@ -212,13 +215,14 @@
       if (f[i] === '`') { num = String(f[i + 1].codePointAt(0)); i += 2; }
       const d = f[i]; const n = num === '' ? null : parseInt(num, 10);
       switch (d) {
-        case 'w': out += show(nextArg(), { quoted: false }); break;
-        case 'p': out += show(nextArg(), { quoted: false }); break;
-        case 'q': out += show(nextArg(), { quoted: true }); break;
+        case 'w': out += show(nextArg(), { quoted: false, swi: !!P.SWI_WRITE }); break;
+        case 'p': out += show(nextArg(), { quoted: !!P.SWI_WRITE, swi: !!P.SWI_WRITE }); break;
+        case 'q': out += show(nextArg(), { quoted: true, swi: !!P.SWI_WRITE }); break;
         case 'a': out += textOf(nextArg()); break;
         case 'd': { const x = deref(nextArg()); if (x.t !== 'n' || x.f) throw typeError('integer', x); if (n) { const s = String(x.v < 0 ? -x.v : x.v).padStart(n + 1, '0'); out += (x.v < 0 ? '-' : '') + s.slice(0, s.length - n) + '.' + s.slice(s.length - n); } else out += String(x.v); break; }
         case 'D': { const x = deref(nextArg()); out += String(x.v).replace(/\B(?=(\d{3})+(?!\d))/g, ','); break; }
-        case 'f': case 'e': case 'g': { const x = evalArith(nextArg()); out += d === 'f' ? x.v.toFixed(n === null ? 6 : n) : d === 'e' ? x.v.toExponential(n === null ? 6 : n) : String(x.v); break; }
+        case 'f': case 'e': case 'g': { const x = evalArith(nextArg()); const v = Number(x.v); out += d === 'f' ? v.toFixed(n === null ? 6 : n) : d === 'e' ? v.toExponential(n === null ? 6 : n).replace(/e([+-])(\d)$/, 'e$10$2') : String(v); break; }
+        case 'W': { const t = nextArg(), o = P.listToArray(nextArg()) || []; const has = (f, v) => o.some((x) => { x = deref(x); return x.t === 'c' && x.f === f && deref(x.a[0]).n === v; }); out += show(t, { quoted: has('quoted', 'true'), swi: !!P.SWI_WRITE, nextArg: has('spacing', 'next_argument') }); break; }
         case 's': out += textOf(nextArg()); break;
         case 'n': out += '\n'.repeat(n || 1); break;
         case 'c': { const x = deref(nextArg()); out += String.fromCodePoint(x.v).repeat(n || 1); break; }
@@ -250,6 +254,9 @@
     this.stepLimit = opts.stepLimit || 5e6;
     this.globals = new Map();
     this.onOut = opts.onOut || null;
+    // SWI-Prolog's I/O (src/swi.js): io = { out(s), err(s), readFile(p), writeFile(p, s, append), stat(p), list(p), stdin, argv, cwd }
+    this.accel = opts.accel || null;
+    this.io = opts.io || null; this.err = ''; this.onErr = opts.onErr || null; this.streams = new Map(); this.streamSeq = 0;
     this.flags = { occurs_check: false };
     this.depth = 0;
   }
@@ -276,6 +283,7 @@
     return true;
   };
   Engine.prototype.write = function (s) { this.out += s; if (this.onOut) this.onOut(s); };
+  Engine.prototype.writeErr = function (s) { this.err += s; if (this.onErr) this.onErr(s); };
 
   // solve goal; calls onSol() for each solution; onSol returns true to continue.
   Engine.prototype.solve = function (goal, onSol, depthCut) {
@@ -457,11 +465,24 @@
         if (k.startsWith('call/') && n > 1) {
           const c = deref(a[0]); const extra = a.slice(1);
           let ng;
-          if (c.t === 'a') ng = Cmp(c.n, extra); else if (c.t === 'c') ng = Cmp(c.f, c.a.concat(extra)); else if (c.t === 'v') throw instErr(); else throw typeError('callable', c);
+          const cq = c.t === 'c' && c.f === ':' && c.a.length === 2 ? deref(c.a[1]) : null; // call(M:G, X): M:G(X)
+          if (cq) ng = Cmp(':', [c.a[0], cq.t === 'a' ? Cmp(cq.n, extra) : cq.t === 'c' ? Cmp(cq.f, cq.a.concat(extra)) : Cmp('call', [cq].concat(extra))]);
+          else if (c.t === 'a') ng = Cmp(c.n, extra); else if (c.t === 'c') ng = Cmp(c.f, c.a.concat(extra)); else if (c.t === 'v') throw instErr(); else throw typeError('callable', c);
           goals = { g: ng, cb: cps.length, next: goals };
           continue;
         }
         const clauses = self.prog.preds.get(k);
+        // a faster route for this call (the interpreter's: src/interp.js), as a generator of its answers
+        if (clauses && self.accel) {
+          const it = self.accel(k, g, self);
+          if (it) {
+            const mark = self.trail.length;
+            const r = it.next();
+            if (r.done) { self.undo(mark); if (!backtrack()) return false; continue; }
+            if (r.value !== 'last') push({ kind: 'gen', it, next: goals, trail: mark });
+            continue;
+          }
+        }
         if (clauses) {
           const res = self.tryClauses(g, clauses, 0, goals, null, cps, null, push);
           if (res) { goals = res; continue; }
@@ -490,6 +511,8 @@
           continue;
         }
         if (self.prog.dynamic.has(k)) { if (!backtrack()) return false; continue; }
+        // a goal built at run time that names a module's private predicate (src/swi.js)
+        if (self.prog.privates && self.prog.privates.has(k)) { const nm = self.prog.privates.get(k)[0]; goals = { g: g.t === 'a' ? Atom(nm) : Cmp(nm, a), cb: cps.length, next: goals }; continue; }
         throw existErr(k);
       } catch (e) {
         if (!(e instanceof PlError)) throw e;
@@ -559,11 +582,12 @@
     opts = opts || {};
     if (typeof prog === 'string') prog = loadProgram(prog);
     const q = typeof queryText === 'string' ? P.readTerm(queryText) : queryText;
+    if (P.expandDots && P.hasDots(q.term)) q.term = P.expandDots(Cmp(':-', [Atom('$q'), q.term])).a[1];
     const vars = q.vars.filter(([nm]) => !nm.startsWith('_'));
     const eng = new Engine(prog, opts);
     const maxAnswers = opts.maxAnswers || 1000;
     const answers = [], events = [];
-    let lastOut = 0, error = null, limit = false;
+    let lastOut = 0, error = null, limit = false, halted = null;
     const t0 = now();
     try {
       runInitGlobals(eng, prog);
@@ -574,11 +598,12 @@
         answers.push({ text }); events.push({ k: 'row', text });
         return answers.length < maxAnswers;
       });
-    } catch (e) { error = e.limit ? e.message : e.prolog ? (e.term ? errText(e.term) : e.message) : e.message; limit = !!e.limit; if (!e.prolog && !e.limit && opts.debug) console.error(e); }
+    } catch (e) { if (e && e.halt) { halted = e.code; } else error = e.limit ? e.message : e.prolog ? (e.term ? errText(e.term) : e.message) : e.message; limit = !!e.limit; if (!e.prolog && !e.limit && opts.debug) console.error(e); }
     const t1 = now();
     eng.undo(0); // leave the (possibly reused) query term unbound
     if (eng.out.length > lastOut) events.push({ k: 'out', text: eng.out.slice(lastOut) });
-    return { ok: !error, answers, events, output: eng.out, steps: eng.steps, cps: eng.cpCreated, maxCP: eng.maxCP, timeMs: t1 - t0, error, limit, truncated: answers.length >= maxAnswers };
+    if (P.closeStreams) P.closeStreams(eng);
+    return { ok: !error, answers, events, output: eng.out, errOutput: eng.err, halted, steps: eng.steps, cps: eng.cpCreated, maxCP: eng.maxCP, timeMs: t1 - t0, error, limit, truncated: answers.length >= maxAnswers };
   }
   function runInitGlobals() { }
   function errText(t) { t = deref(t); if (t.t === 'c' && t.f === 'error' && t.a.length === 2) return show(t.a[0], { varName: P.namer() }); return 'uncaught ' + show(t, { varName: P.namer() }); }

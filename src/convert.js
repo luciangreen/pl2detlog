@@ -17,7 +17,7 @@
   // ----- builtin classification -----
   const EFFECT = new Set(['write/1', 'print/1', 'writeln/1', 'writeq/1', 'write_canonical/1', 'write_term/2', 'nl/0', 'tab/1', 'put_char/1', 'format/1', 'format/2', 'flush_output/0']);
   const DBEFFECT = new Set(['assert/1', 'asserta/1', 'assertz/1', 'retractall/1', 'nb_setval/2', 'b_setval/2', 'setarg/3', 'nb_setarg/3']);
-  const NONDET_BI = new Set(['member/2', 'between/3', 'append/3', 'length/2', 'nth0/3', 'nth1/3', 'select/3', 'permutation/2', 'atom_concat/3', 'sub_atom/5', 'sub_string/5', 'arg/3', 'last/2', 'char_type/2', 'retract/1']);
+  const NONDET_BI = new Set(['member/2', 'between/3', 'append/3', 'length/2', 'nth0/3', 'nth1/3', 'select/3', 'permutation/2', 'atom_concat/3', 'sub_atom/5', 'sub_string/5', 'arg/3', 'last/2', 'char_type/2', 'retract/1', 'get_dict/3', 'clause/2', 'current_prolog_flag/2', 'string_concat/3']);
   const GENERATOR_BI = new Set(['member/2', 'between/3']);
   const PURE_BI = new Set(['=/2', 'is/2', '=:=/2', '=\\=/2', '</2', '>/2', '=</2', '>=/2', 'between/3', 'member/2', 'succ/2', 'plus/3', 'true/0']);
   const CONTROL = new Set([',/2', ';/2', '->/2', '\\+/1', 'findall/3', 'findall/4', 'aggregate_all/3', 'bagof/3', 'setof/3', 'true/0', 'fail/0', 'false/0', '!/0']);

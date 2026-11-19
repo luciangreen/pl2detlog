@@ -657,5 +657,15 @@
       violationPreds: E.violations.length ? [...new Set(E.violations)] : [], cps: 0, maxCP: 0, timeMs: t1 - t0,
       memoHits: E.memoHits, memoStores: E.memoStores, rowsBuilt: E.rowsBuilt, maxRows: E.maxRows };
   }
+  // Calls a compiled Detlog predicate (key, e.g. 'app__cp/4') with the given arguments; the last
+  // is the answer packet. For the interpreter's per-call routes (src/interp.js).
+  function detlogCall(prog, key, args, opts) {
+    const F = compiled(prog);
+    const r = F.preds.get(key); if (!r || !r.fn) return null;
+    const E = new P.DetEngine(prog, opts || {});
+    const ok = r.pos ? r.pos.apply(null, args.concat([E])) : r.fn(args, E);
+    return { ok, steps: E.steps };
+  }
+  P.detlogCall = detlogCall;
   P.FastDetlog = FastDetlog; P.runDetlogFast = runDetlogFast;
 })(typeof module !== 'undefined' && module.exports ? (globalThis.PL2D = globalThis.PL2D || {}) : (window.PL2D = window.PL2D || {}));

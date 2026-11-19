@@ -20,6 +20,7 @@
   }
   Machine.prototype.bind = function (v, t) { v.ref = t; this.trail.push(v); };
   Machine.prototype.undo = function (m) { const tr = this.trail; while (tr.length > m) tr.pop().ref = null; };
+  Machine.prototype.mark = function () { return this.trail.length; }; // every binding is trailed here
   Machine.prototype.unify = P.Engine.prototype.unify;
   Machine.prototype.tick = function (n) { this.steps += n || 1; if (this.steps > this.stepLimit) throw new P.LimitError('step limit (' + this.stepLimit + ') exceeded'); };
   // output goes into the packet being built, in the order it is written

@@ -48,22 +48,24 @@
     map = map || new Map();
     t = deref(t);
     if (t.gr) return t;
-    if (t.t === 'v') { let v = map.get(t); if (!v) { v = Var(t.name); map.set(t, v); } return v; }
+    if (t.t === 'v') { let v = map.get(t); if (!v) { v = Var(t.name); map.set(t, v); } else if (v === t) map.kept = (map.kept || 0) + 1; return v; }
     if (t.t === 'c') {
       if (t.f === '.' && t.a.length === 2) { // iterate along list spines
-        const heads = [], cells = []; let x = t;
-        while (x.t === 'c' && x.f === '.' && x.a.length === 2 && !x.gr) { cells.push(x); heads.push(copy(x.a[0], map)); x = deref(x.a[1]); }
-        let r = copy(x, map);
+        // a variable the caller mapped to itself (kept shared, e.g. yall Free) is copied as itself: the
+        // cell is unchanged but not ground, so it is shared without the ground mark
+        const heads = [], cells = [], kept = []; let x = t;
+        while (x.t === 'c' && x.f === '.' && x.a.length === 2 && !x.gr) { cells.push(x); const k0 = map.kept || 0; heads.push(copy(x.a[0], map)); kept.push((map.kept || 0) !== k0); x = deref(x.a[1]); }
+        const k1 = map.kept || 0; let r = copy(x, map); let g = (map.kept || 0) === k1;
         for (let i = heads.length - 1; i >= 0; i--) {
-          const c = cells[i];
-          if (r === c.a[1] && heads[i] === c.a[0]) { c.gr = true; r = c; } // unchanged suffix: share (deref'd tail identical)
+          const c = cells[i]; g = g && !kept[i];
+          if (r === c.a[1] && heads[i] === c.a[0]) { if (g) c.gr = true; r = c; } // unchanged suffix: share (deref'd tail identical)
           else r = { t: 'c', f: '.', a: [heads[i], r] };
         }
         return r;
       }
-      const a = new Array(t.a.length); let same = true;
+      const a = new Array(t.a.length); let same = true; const k0 = map.kept || 0;
       for (let i = 0; i < a.length; i++) { a[i] = copy(t.a[i], map); if (a[i] !== t.a[i]) same = false; }
-      if (same) { t.gr = true; return t; }
+      if (same) { if ((map.kept || 0) === k0) t.gr = true; return t; }
       return { t: 'c', f: t.f, a };
     }
     return t;
@@ -94,17 +96,24 @@
   }
   function termVars(t, acc, seen) {
     acc = acc || []; seen = seen || new Set();
-    const st = [t];
+    const st = [t]; let n = 0, done = null;
     while (st.length) {
       let x = deref(st.pop());
       if (x.t === 'v') { if (!seen.has(x)) { seen.add(x); acc.push(x); } }
-      else if (x.t === 'c') for (let i = x.a.length - 1; i >= 0; i--) st.push(x.a[i]);
+      else if (x.t === 'c' && !x.gr) {
+        // a large term may share subterms (or be cyclic): after many steps each compound is visited once
+        if (++n > 50000) { done = done || new Set(); if (done.has(x)) continue; done.add(x); }
+        for (let i = x.a.length - 1; i >= 0; i--) st.push(x.a[i]);
+      }
     }
     return acc;
   }
   function isGround(t) {
-    const st = [t];
-    while (st.length) { const x = deref(st.pop()); if (x.t === 'v') return false; if (x.t === 'c') for (const y of x.a) st.push(y); }
+    const st = [t]; let n = 0, done = null;
+    while (st.length) {
+      const x = deref(st.pop()); if (x.t === 'v') return false;
+      if (x.t === 'c' && !x.gr) { if (++n > 50000) { done = done || new Set(); if (done.has(x)) continue; done.add(x); } for (const y of x.a) st.push(y); }
+    }
     return true;
   }
 
@@ -333,6 +342,9 @@
       const op = ops.prefix.get(nm);
       const nx = this.peek();
       let operand = isTermStart(nx);
+      // an infix-operator name written as a functor (-div(X, Y), -mod(A, B)) starts an operand
+      const nxFunctor = nx && nx.k === 'atom' && this.toks[this.i + 1] && this.toks[this.i + 1].k === 'punct' && this.toks[this.i + 1].v === '(' && !this.toks[this.i + 1].lb;
+      if (nxFunctor) operand = true;
       if (operand && nx.k === 'atom' && ops.infix.has(nx.v)) {
         // `- = x` : prefix op followed by an infix op -> treat as atom, unless the infix atom is a term itself (f( or prefix op)
         const n2 = this.toks[this.i + 1];
@@ -441,13 +453,13 @@
     // SWI-Prolog writes a variable as _N, never by its name in the source (two copies of a clause
     // must not print the same name)
     const vn = opts.varName || (swi ? (v => '_G' + v.id) : vn0);
-    function w(t, maxP) {
+    function w(t, maxP, operand = false) {
       t = deref(t);
       switch (t.t) {
         case 'v': return vn(t);
         case 'n': { const s = fmtNum(t); return s; }
         case 's': return q ? JSON.stringify(t.v) : t.v;
-        case 'a': { const s = fmtAtom(t.n, q); if ((ops.infix.has(t.n) || ops.prefix.has(t.n)) && maxP < 1200 && t.n !== '[]' && t.n !== '{}' && t.n !== '!' && t.n !== ';') { const p = Math.max(ops.infix.has(t.n) ? ops.infix.get(t.n).p : 0, ops.prefix.has(t.n) ? ops.prefix.get(t.n).p : 0); if (p > maxP) return '(' + s + ')'; } return s; }
+        case 'a': { const s = fmtAtom(t.n, q); const isOp = ops.infix.has(t.n) || ops.prefix.has(t.n) || ops.postfix.has(t.n) || t.n === ';' || t.n === '|'; if (isOp && t.n !== '[]' && t.n !== '{}' && t.n !== '!') { if (operand) return '(' + s + ')'; const p = Math.max(ops.infix.has(t.n) ? ops.infix.get(t.n).p : 0, ops.prefix.has(t.n) ? ops.prefix.get(t.n).p : 0, t.n === ';' || t.n === '|' ? 1100 : 0); if (p > maxP) return '(' + s + ')'; } return s; }
         case 'c': {
           if (t.f === '$VAR' && t.a.length === 1 && opts.numbervars !== false) { const n = deref(t.a[0]); if (n.t === 'n' && !n.f && n.v >= 0) return String.fromCharCode(65 + n.v % 26) + (n.v >= 26 ? Math.floor(n.v / 26) : ''); if (n.t === 'a') return n.n; if (n.t === 's') return n.v; }
           if (t.f === 'dict' && t.a.length === 2) { const ps = dictPairs(t); if (ps) { const tg = deref(t.a[0]); return (tg.t === 'v' ? '_' : w(tg, 0)) + '{' + ps.map(([k, v]) => w(k, 0) + ':' + w(v, 599)).join(sep) + '}'; } }
@@ -459,10 +471,11 @@
             return s + ']';
           }
           if (t.f === '{}' && t.a.length === 1) return '{' + w(t.a[0], 1200) + '}';
-          if (!opts.ignoreOps && t.a.length === 2 && ops.infix.has(t.f)) {
+          if (!opts.ignoreOps && t.a.length === 2 && ops.infix.has(t.f) && t.f !== '|') { // '|'(A, B) is written as a compound
             const op = ops.infix.get(t.f); const p = op.p;
             const lp = op.type[0] === 'y' ? p : p - 1, rp = op.type[2] === 'y' ? p : p - 1;
-            let l = w(t.a[0], lp), r = w(t.a[1], rp);
+            // an operator atom as an operand is bracketed: (is) = (-), \+ (;)
+            let l = w(t.a[0], lp, true), r = w(t.a[1], rp, true);
             let s;
             if (t.f === ',') s = l + sep + r;
             else if (swi && !/^[a-z]/.test(t.f)) { const ft = fmtAtom(t.f, q); const glueR = isSym(ft[ft.length - 1]) && (isSym(r[0]) || /^-?\d/.test(r) && r[0] === '-'); const glueL = isSym(ft[0]) && isSym(l[l.length - 1]); s = l + (glueL ? ' ' : '') + ft + (glueR ? ' ' : '') + r; }
@@ -481,7 +494,9 @@
             if (op) {
               const p = op.p; const ap = op.type === 'fy' ? p : p - 1;
               const a0 = deref(t.a[0]);
-              let as = w(a0, ap);
+              // a prefix operator term or an operator atom as the operand is bracketed: -(+a), \+ (is)
+              const a0op = a0.t === 'c' && a0.a.length === 1 && ops.prefix.has(a0.f) && !(a0.f === '-' || a0.f === '+') ? false : a0.t === 'c' && a0.a.length <= 2 && (a0.a.length === 1 ? ops.prefix.has(a0.f) : false);
+              let as = a0op ? '(' + w(a0, 1200) + ')' : w(a0, ap, true);
               const ft = fmtAtom(t.f, q);
               const needSpace = /^[a-z]/i.test(ft) || !swi && ft === '\\+' || isSym(ft[ft.length - 1]) && (isSym(as[0]) || a0.t === 'n') || as[0] === '(';
               const s = ft + (needSpace ? ' ' : '') + as;
@@ -554,6 +569,7 @@
     return showBody(b, d + 1, o).replace(/^\s+/, '');
   }
 
+  P.varCount = () => varCounter;
   Object.assign(P, { mkDict, dictPairs, applyOpDirective,
     Atom, Num, Int, Str, Var, Cmp, NIL, TRUE, FAIL, cons, list, deref, isCons, isNil, listToArray,
     name, arity, key, args, copy, resolve, termVars, isGround, compare, variantKey,

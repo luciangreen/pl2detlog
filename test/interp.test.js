@@ -134,3 +134,47 @@ test('compiled C: the C route prints what Prolog prints', (t) => {
     assert.deepStrictEqual(r.answers, pr.answers.map((a) => a.text), g + ' on ' + r.route);
   }
 });
+
+// fixes found running S2A2, mnns and Starlog on the interpreter
+test('Starlog, plunit and the fixes from S2A2 and mnns', () => {
+  const files = {
+    // -div(..): an infix-operator name written as a functor after prefix minus
+    'neg.pl': 'main :- K = 3, G = 2, X is -div(-K, G), Y is - mod(7, 4), print(X/Y), nl.\n',
+    // plunit: a test chosen by name, and a unit whose condition fails is skipped
+    'units.pl': ':- begin_tests(a).\ntest(one) :- true.\ntest(two) :- fail.\n:- end_tests(a).\n:- begin_tests(b, [condition(fail)]).\ntest(no) :- fail.\n:- end_tests(b).\n',
+    // a module's initialization/1 calls its own predicates, even when another module exports the same names
+    'm1.pl': ':- module(m1, [set/1]).\n:- dynamic d/1.\nset(X) :- assertz(d(X)).\n:- initialization(set(one)).\n',
+    'm2.pl': ':- module(m2, [set/1, got/1]).\n:- dynamic d/1.\nset(X) :- assertz(d(X)).\ngot(X) :- d(X).\n:- initialization(set(two)).\n',
+    'mods.pl': ':- use_module(m1).\n:- use_module(m2).\nmain :- forall(m1:d(X), writeln(m1-X)), forall(m2:got(Y), writeln(m2-Y)).\n',
+    // lists:reverse/2 is the library's even when a module exports reverse/2 that calls it
+    'lib.pl': ':- module(r, [reverse/2]).\nreverse(X, Y) :- lists:reverse(X, Y).\n',
+    'libuse.pl': ':- use_module(lib).\nmain :- reverse([1,2,3], L), writeln(L).\n',
+    // the database is kept from one goal to the next; cyclic terms unify
+    'live.pl': ':- dynamic n/1.\nput :- assertz(n(1)).\nshow :- n(X), writeln(X).\ncyc :- X = f(X), Y = f(Y), X = Y, writeln(cyclic_ok).\n',
+    // a lambda's own variables are fresh at each call, on every route
+    'gcd.pl': 'g(Q, G) :- foldl([_-C, G0, G1]>>(G1 is gcd(G0, abs(C))), Q, 0, G).\nmain :- g([a-4, b-(-6), c-10], G), writeln(G).\n'
+  };
+  const r = (args) => swipl(files, args);
+  assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'neg.pl']).out, '2/ -3\n');
+  let x = r(['-g', 'run_tests(a:one)', '-t', 'halt', 'units.pl']);
+  assert.strictEqual(x.code, 0); assert.match(x.err, /All 1 tests passed/);
+  x = r(['-g', 'run_tests', '-t', 'halt', 'units.pl']);
+  assert.strictEqual(x.code, 1); assert.match(x.err, /test a:two: failed/); assert.doesNotMatch(x.err, /b:no/);
+  assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'mods.pl']).out, 'm1-one\nm2-two\n');
+  assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'libuse.pl']).out, '[3,2,1]\n');
+  assert.strictEqual(r(['-g', 'put', '-g', 'show', '-g', 'cyc', '-t', 'halt', 'live.pl']).out, '1\ncyclic_ok\n');
+  assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'gcd.pl']).out, '2\n');
+  const conv = P.convert(files['gcd.pl'], { mnn: true, s2a: false, queries: ['g([a-4, b-(-6), c-10], G)'] });
+  const q = conv.queries[0], d = P.runDetlogFast(P.loadProgram(conv.text), q.pred, q.vars, {});
+  assert.deepStrictEqual(d.answers.map((a) => a.text), ['G = 2']);
+});
+
+test('brackets: operator terms and Starlog operators read back as written', () => {
+  const ops = ':- op(600, yfx, :).\n:- op(650, yfx, &).\n:- op(650, yfx, >>).\n';
+  for (const s of ['X = -div(-K, G)', 'X = - (a)', 'X = (- = a)', 'X = [-]', 'X = -(-)', 'X = \\+mod(a, b)', 'X = (a:b):c', 'X = a:(b:c)', 'X = (a&b)>>c', 'X = - (- 1)', 'X = (:-)', 'X = f((a,b))', 'X = (a|b)']) {
+    const prog = P.loadProgram(ops);
+    const t = P.readTerm(s).term, txt = P.show(t, { quoted: true });
+    assert.ok(P.variantKey(P.readTerm(txt).term) === P.variantKey(t), s + ' -> ' + txt);
+    void prog;
+  }
+});

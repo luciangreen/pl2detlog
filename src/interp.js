@@ -133,7 +133,7 @@
   // ---------------------------------------------------------------- loading SWI-Prolog files
   const LOADERS = new Set(['consult', 'include', 'ensure_loaded', 'use_module', 'load_files', 'reexport']);
   const DROP = new Set(['module', 'set_prolog_flag', 'license', 'encoding', 'style_check', 'use_foreign_library', 'meta_predicate', 'module_transparent', 'public', 'multifile', 'table', 'noprofile', 'create_prolog_flag', 'expects_dialect']);
-  const NEEDS_SWI = new Set(['term_expansion/2', 'goal_expansion/2', 'term_expansion/4', 'goal_expansion/4', 'prolog_load_file/2', 'portray/1', 'message_hook/3']);
+  const NEEDS_SWI = new Set(['term_expansion/4', 'goal_expansion/4', 'prolog_load_file/2']);
   const fileSpec = (t) => { t = D(t); if (t.t === 'c' && t.f === 'library') return { library: true }; if (t.t === 'c' && t.a.length === 2 && t.f === ':') return fileSpec(t.a[1]); if (t.t === 'c' && t.f === '/' && t.a.length === 2) { const a = fileSpec(t.a[0]), b = fileSpec(t.a[1]); return { path: a.path + '/' + b.path }; } if (t.t === 'c' && t.a.length === 1) return { alias: t.f, path: P.textOf(t.a[0]) }; return { path: P.textOf(t) }; };
   const dirOf = (p) => { const i = p.lastIndexOf('/'); return i < 0 ? '' : i === 0 ? '/' : p.slice(0, i); };
 
@@ -152,76 +152,118 @@
     for (const c of cands) { const s = io.stat ? io.stat(c) : (io.readFile(c) != null ? 'file' : null); if (s === 'file') return c; }
     return null;
   }
+  // the text of a clause term, with its variables' names where the source gave them
+  const clauseText = (t, vars) => {
+    const names = new Map((vars || []).map(([n, v]) => [D(v), n])), nm = P.namer();
+    const varName = (v) => names.get(v) || nm(v);
+    t = D(t);
+    return (t.t === 'c' && t.f === ':-' && t.a.length === 1 ? ':- ' + P.show(t.a[0], { quoted: true, varName, prec: 1199 }) + '.' : P.showClause(t, { varName })) + '\n';
+  };
+  const definesExpansion = (t) => { t = D(t); if (t.t === 'c' && t.f === ':-' && t.a.length === 2) t = D(t.a[0]); while (t.t === 'c' && t.f === ':' && t.a.length === 2) t = D(t.a[1]); const k = keyOf(t); return k === 'term_expansion/2' || k === 'goal_expansion/2'; };
+  // an engine on the program loaded so far, to run term_expansion/2 and goal_expansion/2 (Starlog's)
+  function expander(io, st) {
+    if (!st.hooks) return null;
+    if (st.expander && st.expander.at === st.parts.length) return st.expander.e;
+    let prog;
+    try { prog = P.loadProgram(st.parts.join('\n') + '\n' + P.SWI_PRELUDE); } catch (e) { return null; }
+    for (const [M, k] of st.privates || []) P.notePrivates(prog, M, [k]);
+    prog.moduleFiles = new Map(st.moduleFiles || []);
+    const e = new P.Engine(prog, { io, stepLimit: 1e8 });
+    st.expander = { at: st.parts.length, e };
+    return e;
+  }
   function loadFile(io, path, st, base) {
-    const full = findFile(io, base, path);
+    const full = findFile(io, base, path) || (io.cwd && base !== io.cwd ? findFile(io, io.cwd, path) : null);
     if (!full) { st.missing.push(path); return; }
     if (st.seen.has(full)) return;
     st.seen.add(full); st.files.push(full);
     const text = io.readFile(full);
     const dir = dirOf(full);
-    st.parts.push('% ---- ' + full + ' ----');
-    // the file's clauses, as text and as terms; a module's private predicates are renamed (src/swi.js)
+    // 1. read the clauses in order: operators and the files a clause loads take effect at once, so
+    //    what follows is read with them (as SWI-Prolog reads a file)
     const items = []; let rest = text;
     for (;;) {
       const cl = P.nextClauseText(rest); if (cl === null) break;
       rest = rest.slice(cl.length);
-      let r = null; try { r = P.readTerm(cl); } catch (e) { /* the loader reports the syntax error */ }
-      if (r) { const d = D(r.term); if (d.t === 'c' && d.f === ':-' && d.a.length === 1) P.applyOpDirective(d.a[0]); }
-      items.push({ text: cl, r });
+      let r = null, err = null; try { r = P.readTerm(cl); } catch (e) { err = e; }
+      const item = { text: cl, r, err };
+      items.push(item);
+      if (!r) continue;
+      const t = D(r.term);
+      if (!(t.t === 'c' && t.f === ':-' && t.a.length === 1)) continue;
+      const d = D(t.a[0]), n = d.t === 'c' ? d.f : d.t === 'a' ? d.n : '';
+      P.applyOpDirective(d);
+      if (d.t === 'c' && LOADERS.has(n)) {
+        for (const x of (P.listToArray(d.a[0]) || [d.a[0]])) {
+          const sp = fileSpec(x);
+          if (sp.library || sp.alias && sp.alias !== 'library' && !findFile(io, dir, sp.path)) continue; // built in (src/swi.js)
+          loadFile(io, sp.path, st, dir);
+        }
+        item.loaded = true;
+      } else if (d.t === 'c' && d.f === '.') { for (const x of P.listToArray(d) || []) loadFile(io, fileSpec(x).path, st, dir); item.loaded = true; }
     }
+    // 2. a module's predicates are renamed (src/swi.js)
     const md = (function () { for (const x of items) { if (!x.r) return null; const d = D(x.r.term); if (!(d.t === 'c' && d.f === ':-' && d.a.length === 1)) return null; const g = D(d.a[0]); if (g.t === 'c' && g.f === 'module' && g.a.length === 2) return g; } return null; })();
+    const extra = [];
     if (md) {
       const M = P.textOf(md.a[0]);
       const ren = P.renameModule(items.map((x) => x.r ? x.r.term : P.Atom('true')), M, P.moduleExports(md));
       st.privates = (st.privates || []).concat(ren.privates.map((k) => [M, k]));
       (st.moduleFiles = st.moduleFiles || []).push([M, full]);
-      if (ren.privates.length || ren.forwarders.length) items.forEach((x, i) => {
-        if (!x.r) return;
-        const names = new Map(x.r.vars.map(([n, v]) => [D(v), n]));
-        const nm = P.namer();
-        const t2 = D(ren.terms[i]);
-        x.r = { term: t2, vars: x.r.vars };
-        x.text = (t2.t === 'c' && t2.f === ':-' && t2.a.length === 1 ? ':- ' + P.show(t2.a[0], { quoted: true, varName: (v) => names.get(v) || nm(v), prec: 1199 }) + '.' : P.showClause(t2, { varName: (v) => names.get(v) || nm(v) })) + '\n';
-      });
+      items.forEach((x, i) => { if (x.r && !x.loaded) x.r = { term: D(ren.terms[i]), vars: x.r.vars, renamed: true }; });
       st.forwarded = st.forwarded || new Set();
-      for (const fw of ren.forwarders) if (!st.forwarded.has(fw.key)) { st.forwarded.add(fw.key); items.push({ text: P.showClause(fw.clause) + '\n', r: { term: fw.clause, vars: [] } }); }
-
+      for (const fw of ren.forwarders) if (!st.forwarded.has(fw.key)) { st.forwarded.add(fw.key); extra.push({ text: P.showClause(fw.clause) + '\n', r: { term: fw.clause, vars: [], renamed: true } }); }
     }
-    for (const { text: cl, r } of items) {
-      if (!r) { st.parts.push(cl); continue; }
-      let t = D(r.term);
-      if (t.t === 'c' && t.f === ':-' && t.a.length === 1) {
-        const d = D(t.a[0]), k = keyOf(d), n = d.t === 'c' ? d.f : d.t === 'a' ? d.n : '';
-        if (n === 'op') { st.parts.push(cl); continue; }
-        if (d.t === 'c' && LOADERS.has(n)) {
-          for (const x of (P.listToArray(d.a[0]) || [d.a[0]])) {
-            const s = fileSpec(x);
-            if (s.library || s.alias && s.alias !== 'library' && !findFile(io, dir, s.path)) continue; // built in (src/swi.js)
-            loadFile(io, s.path, st, dir);
-          }
-          st.parts.push('% ' + cl.trim().replace(/\n/g, ' '));
-          continue;
-        }
-        if (d.t === 'c' && d.f === '.' ) { for (const x of P.listToArray(d) || []) loadFile(io, fileSpec(x).path, st, dir); st.parts.push('% ' + cl.trim()); continue; }
-        if (n === 'initialization') {
-          const how = d.a.length === 2 ? P.textOf(d.a[1]) : 'now';
-          if (how === 'main') st.initMain = P.show(d.a[0], { quoted: true }); else st.init.push(P.show(d.a[0], { quoted: true }));
-          st.parts.push('% ' + cl.trim().replace(/\n/g, ' '));
-          continue;
-        }
-        if (DROP.has(n)) { st.parts.push('% ' + cl.trim().replace(/\n/g, ' ')); continue; }
-        if (n === 'dynamic' || n === 'discontiguous') { st.parts.push(cl); continue; }
-        // any other directive runs when the files are loaded, in order
-        st.loadGoals.push(P.show(d, { quoted: true }));
-        st.parts.push('% ' + cl.trim().replace(/\n/g, ' '));
-        if (k && /^(assert|retract)/.test(k)) st.dynamicLoad = true;
-        continue;
+    // 3. each clause, expanded by term_expansion/goal_expansion where the program has them, is kept
+    st.parts.push('% ---- ' + full + ' ----');
+    const defines = items.some((x) => x.r && definesExpansion(x.r.term));
+    for (const item of items.concat(extra)) {
+      if (!item.r) { st.parts.push(item.text); continue; }
+      if (item.loaded) { st.parts.push('% ' + item.text.trim().replace(/\n/g, ' ')); continue; }
+      let terms = [{ term: item.r.term, vars: item.r.vars, text: item.r.renamed ? null : item.text }];
+      const ex = definesExpansion(item.r.term) ? null : expander(io, st);
+      if (ex) {
+        const out = P.expandClauses(ex, [{ term: item.r.term, vars: item.r.vars }]);
+        if (out.length !== 1 || P.variantKey(out[0].term) !== P.variantKey(item.r.term)) terms = out.map((o) => ({ term: o.term, vars: o.vars, text: null }));
       }
-      if (t.t === 'c' && t.f === ':-' && t.a.length === 2) { const hk = keyOf(t.a[0]); if (NEEDS_SWI.has(hk)) st.needsSwi.push('defines ' + hk); }
-      else if (NEEDS_SWI.has(keyOf(t))) st.needsSwi.push('defines ' + keyOf(t));
-      st.parts.push(cl);
+      for (const { term, vars, text: tx } of terms) emit(io, st, term, tx || clauseText(term, vars), dir);
     }
     if (rest.trim()) st.parts.push(rest);
+    if (defines) { st.hooks = true; st.expander = null; }
+  }
+  function emit(io, st, term, cl, dir) {
+    const t = D(term);
+    if (t.t === 'c' && t.f === ':-' && t.a.length === 1) {
+      const d = D(t.a[0]), k = keyOf(d), n = d.t === 'c' ? d.f : d.t === 'a' ? d.n : '';
+      if (n === 'op') { st.parts.push(cl); return; }
+      if (n === 'initialization') {
+        const how = d.a.length === 2 ? P.textOf(d.a[1]) : 'now';
+        if (how === 'main') st.initMain = P.show(d.a[0], { quoted: true }); else st.init.push(P.show(d.a[0], { quoted: true }));
+        st.parts.push('% ' + cl.trim().replace(/\n/g, ' '));
+        return;
+      }
+      if (DROP.has(n)) { st.parts.push('% ' + cl.trim().replace(/\n/g, ' ')); return; }
+      if (n === 'dynamic' || n === 'discontiguous') { st.parts.push(cl); return; }
+      if (n === 'begin_tests' || n === 'end_tests') { st.unit = n === 'begin_tests' ? P.textOf(d.a[0]) : null; st.parts.push('% ' + cl.trim().replace(/\n/g, ' ')); if (n === 'begin_tests' && d.a.length === 2) st.parts.push(P.show(P.Cmp('$plunit_unit', [d.a[0], d.a[1]]), { quoted: true, ignoreOps: false }) + '.'); return; }
+      // any other directive runs when the files are loaded, in order
+      st.loadGoals.push(P.show(d, { quoted: true }));
+      st.parts.push('% ' + cl.trim().replace(/\n/g, ' '));
+      if (k && /^(assert|retract)/.test(k)) st.dynamicLoad = true;
+      return;
+    }
+    // plunit: test(Name) and test(Name, Options) between begin_tests(Unit) and end_tests(Unit)
+    if (st.unit) {
+      let h = t, b = P.Atom('true');
+      if (t.t === 'c' && t.f === ':-' && t.a.length === 2) { h = D(t.a[0]); b = t.a[1]; }
+      if (h.t === 'c' && (h.f === 'test' || /:test$/.test(h.f)) && (h.a.length === 1 || h.a.length === 2)) {
+        const ut = P.Cmp(':-', [P.Cmp('$plunit_test', [P.Atom(st.unit), h.a[0], h.a.length === 2 ? h.a[1] : P.NIL, P.Int(++st.testSeq || (st.testSeq = 1))]), b]);
+        st.parts.push(clauseText(ut, []));
+        return;
+      }
+    }
+    if (t.t === 'c' && t.f === ':-' && t.a.length === 2) { const hk = keyOf(t.a[0]); if (NEEDS_SWI.has(hk)) st.needsSwi.push('defines ' + hk); }
+    else if (NEEDS_SWI.has(keyOf(t))) st.needsSwi.push('defines ' + keyOf(t));
+    st.parts.push(cl);
   }
 
   // ---------------------------------------------------------------- the interpreter
@@ -235,6 +277,13 @@
   // the events up to the first answer (a -g goal runs once)
   const firstOnly = (r) => { const ev = []; for (const e of r.events) { ev.push(e); if (e.k === 'row') break; } return Object.assign({}, r, { events: ev, answers: r.answers.slice(0, 1), output: ev.filter((e) => e.k === 'out').map((e) => e.text).join('') }); };
 
+  // smallTerms(ts, n): the terms have at most n cells in all
+  function smallTerms(ts, n) {
+    const st = ts.slice();
+    while (st.length) { const t = D(st.pop()); if (t.t === 'c') { if ((n -= t.a.length) < 0) return false; for (const x of t.a) st.push(x); } }
+    return true;
+  }
+
   class Interpreter {
     // opts: io (see src/swi.js), store ({ get(key) -> string|null, set(key, string) }), nativeC (Node:
     // { compile(code) -> handle|null, run(handle, args) -> { stdout, stderr, status, ms } }),
@@ -247,12 +296,20 @@
       this.setProgram('');
     }
     setProgram(src, meta = {}) {
-      this.src = src; this.meta = meta; this.plans = new Map();
+      this.src = src; this.meta = meta; this.plans = new Map(); this.live = null; this.globals = new Map();
       this.srcKey = hash(VERSION + '\0' + src);
       const was = P.SWI_WRITE; P.SWI_WRITE = true;
-      try { this.prog = P.loadProgram(src); this.loadError = null; for (const [M, k] of meta.privates || []) P.notePrivates(this.prog, M, [k]); this.prog.moduleFiles = new Map(meta.moduleFiles || []); } catch (e) { this.prog = P.loadProgram(''); this.loadError = e.message; } finally { P.SWI_WRITE = was; }
+      try { this.prog = this.freshProgram(); this.loadError = null; } catch (e) { this.prog = P.loadProgram(''); this.loadError = e.message; } finally { P.SWI_WRITE = was; }
       this.dynamic = !!meta.dynamicLoad || /\b(assert[az]?|retract(all)?|abolish)\s*\(/.test(src);
       if (this.installTime) this.installTime();
+    }
+    // the program as loaded, with its modules' private names and files (a run that changes the
+    // database starts from a fresh copy)
+    freshProgram() {
+      const prog = P.loadProgram(this.src);
+      for (const [M, k] of this.meta.privates || []) P.notePrivates(prog, M, [k]);
+      prog.moduleFiles = new Map(this.meta.moduleFiles || []);
+      return prog;
     }
     loadFiles(files, opts) { const st = loadFiles(this.io, files, opts); this.setProgram(st.src, st); return st; }
 
@@ -365,43 +422,55 @@
       this.acc = { det, info: new Map(keys.map((k) => [k, { state: 'try', calls: 0, samples: 0, jitMs: 0, prologMs: 0, fails: 0 }])) };
       return this.acc;
     }
+    // a sampled call's budget, on either route: more steps than this and the predicate stays on Prolog
     accelFn() {
+      const SAMPLE_STEPS = 200000;
       const acc = this.prepareAccel(); if (!acc) return null;
       const self = this;
       return function (k, g, eng) {
         const info = acc.info.get(k); if (!info || info.state === 'prolog' || info.busy) return null;
         if (info.state === 'try' && ++info.calls < 20) return null; // only predicates called often are tried
         const n = g.t === 'c' ? g.a.length : 0, args = n ? g.a.slice() : [];
+        // the compiled call copies its arguments (a packet's rows are copies): a call on a large term
+        // (key(Clause, K) on a whole clause, say) stays on Prolog
+        if (!smallTerms(args, 300)) return null;
         const R = P.Var('R');
         const call = (Rv) => {
           const was = [P.DETLOG_NATIVE, P.DETLOG_CHECKED]; P.DETLOG_NATIVE = true; P.DETLOG_CHECKED = true;
-          try { return P.detlogCall(acc.det, k.replace(/\/(\d+)$/, (m, a) => '__cp/' + (+a + 1)), args.concat([Rv]), { stepLimit: 5e6 }); }
+          try { return P.detlogCall(acc.det, k.replace(/\/(\d+)$/, (m, a) => '__cp/' + (+a + 1)), args.concat([Rv]), { stepLimit: info.state === 'try' ? SAMPLE_STEPS : 5e6 }); }
           catch (e) { return null; }
           finally { [P.DETLOG_NATIVE, P.DETLOG_CHECKED] = was; }
         };
         // the first call compiles: it is not timed
-        if (info.state === 'try' && !info.warm) { info.warm = true; const W = P.Var('W'), m0 = eng.trail.length; call(W); eng.undo(m0); }
+        if (info.state === 'try' && !info.warm) { info.warm = true; const W = P.Var('W'), m0 = eng.mark(); call(W); eng.undo(m0); }
         let t0 = P.now();
         const res = call(R);
         const jitMs = P.now() - t0;
         if (!res || !res.ok) { if (++info.fails > 2) info.state = 'prolog'; return null; }
         const items = P.listToArray(R) || [];
-        if (info.state === 'try') {
+        // on the compiled route, calls 2, 4, 8, 16, .. are checked again (a few samples can miss a case)
+        const recheck = info.state === 'jit' && ((info.jitCalls = (info.jitCalls || 0) + 1) & (info.jitCalls - 1)) === 0;
+        if (info.state === 'try' || recheck) {
           // the same call on the Prolog route, all its answers, its output caught
           info.busy = true;
-          const saveOut = eng.out, mark = eng.trail.length; eng.out = '';
+          // within a budget: a call with many answers (a search run under once/1, say) stays on Prolog
+          const saveOut = eng.out, saveOn = eng.onOut, mark = eng.mark(), outer = eng.stepLimit; eng.out = ''; eng.onOut = null;
           const sols = []; let perr = null; t0 = P.now();
+          eng.stepLimit = eng.steps + SAMPLE_STEPS;
           try { eng.solve(g, () => { sols.push({ out: eng.out, row: P.show(P.Cmp('e', args), { quoted: true, varName: P.namer() }) }); eng.out = ''; return true; }); } catch (e) { perr = e; }
+          eng.stepLimit = outer;
           const prologMs = P.now() - t0, tail = eng.out;
-          eng.out = saveOut; eng.undo(mark); info.busy = false;
-          if (perr) { if (perr.halt) throw perr; info.state = 'prolog'; return null; }
+          eng.out = saveOut; eng.onOut = saveOn; eng.undo(mark); info.busy = false;
+          if (perr) { if (perr.halt) throw perr; if (perr instanceof P.LimitError) void (eng.steps > outer); info.state = 'prolog'; return null; }
           // the packet as the same events
           const mine = []; let pend = '';
-          for (const it of items) { const x = D(it); if (x.t === 'c' && x.f === 'out') { pend += P.textOf(x.a[0]); continue; } const m2 = eng.trail.length; const vals = P.listToArray(x.a[0]); let row = null; if (vals && vals.length === n && args.every((a, i) => eng.unify(a, vals[i]))) row = P.show(P.Cmp('e', args), { quoted: true, varName: P.namer() }); eng.undo(m2); if (row !== null) { mine.push({ out: pend, row }); pend = ''; } }
+          for (const it of items) { const x = D(it); if (x.t === 'c' && x.f === 'out') { pend += P.textOf(x.a[0]); continue; } const m2 = eng.mark(); const vals = P.listToArray(x.a[0]); let row = null; if (vals && vals.length === n && args.every((a, i) => eng.unify(a, vals[i]))) row = P.show(P.Cmp('e', args), { quoted: true, varName: P.namer() }); eng.undo(m2); if (row !== null) { mine.push({ out: pend, row }); pend = ''; } }
           const same = JSON.stringify(mine) === JSON.stringify(sols) && pend === tail;
           if (!same) { if (self.debugAccel) self.debugAccel(k, P.show(g, { quoted: true }), mine, sols, pend, tail); info.state = 'prolog'; if (self.log) self.log({ plan: { goal: k }, route: 'Prolog', why: 'per call: the compiled Detlog gave other answers' }); return null; }
-          info.jitMs += jitMs; info.prologMs += prologMs;
-          if (++info.samples >= 3 && !self.debugAccel) info.state = info.jitMs < info.prologMs ? 'jit' : 'prolog';
+          if (info.state === 'try') {
+            info.jitMs += jitMs; info.prologMs += prologMs;
+            if (++info.samples >= 3 && !self.debugAccel) info.state = info.jitMs < info.prologMs ? 'jit' : 'prolog';
+          }
         }
         return (function* () {
           let rowsLeft = 0; for (const it of items) { const x = D(it); if (!(x.t === 'c' && x.f === 'out')) rowsLeft++; }
@@ -409,7 +478,7 @@
             const x = D(items[i]);
             if (x.t === 'c' && x.f === 'out') { eng.write(P.textOf(x.a[0])); continue; }
             rowsLeft--;
-            const vals = P.listToArray(x.a[0]); const m = eng.trail.length;
+            const vals = P.listToArray(x.a[0]); const m = eng.mark();
             if (vals && vals.length === n && args.every((a, j) => eng.unify(a, vals[j]))) {
               const restOut = items.slice(i + 1).some((y) => { y = D(y); return y.t === 'c' && y.f === 'out'; });
               if (!rowsLeft && !restOut) { yield 'last'; return; }
@@ -422,10 +491,14 @@
     }
 
     // ---- the routes
-    runProlog(text) {
-      const prog = this.dynamic || this.prog.dynamic.size ? P.loadProgram(this.src) : this.prog;
-      const r = P.runQuery(prog, text, { stepLimit: limit(this.stepLimit, this.timeLimitMs), maxAnswers: 1, io: this.io, accel: this.accelFn() });
-      r.error = tidy(r.error); return r;
+    // stream: write output as it is made (to this.onOut/this.onErr), for the run whose effects count
+    runProlog(text, stream) {
+      // a program that changes its clauses keeps one live database for the whole session (as in
+      // swipl: what initialization/1 or one goal asserts, the next goal sees)
+      if ((this.dynamic || this.prog.dynamic.size) && !this.live) this.live = this.freshProgram();
+      const prog = this.live || this.prog;
+      const r = P.runQuery(prog, text, { stepLimit: limit(this.stepLimit, this.timeLimitMs), maxAnswers: 1, io: this.io, accel: this.accelFn(), globals: this.globals, onOut: stream ? this.onOut : null, onErr: stream ? this.onErr : null });
+      r.error = tidy(r.error); if (stream && (this.onOut || this.onErr)) r.streamed = true; return r;
     }
     runDetlog(plan, native) {
       const was = P.DETLOG_NATIVE; P.DETLOG_NATIVE = native; P.DETLOG_CHECKED = this.checked;
@@ -463,37 +536,39 @@
       const text = goalText.trim().replace(/\.\s*$/, '');
       const plan = this.plan(text);
       let res, route;
-      if (plan.route === 'Prolog' || plan.pick === 'Prolog') { res = this.runProlog(text); route = 'Prolog'; }
+      if (plan.route === 'Prolog' || plan.pick === 'Prolog') { res = this.runProlog(text, true); route = 'Prolog'; }
       else if (plan.pick) {
         res = plan.pick === 'C' ? this.runNativeC(plan) : this.runDetlog(plan, plan.pick === 'C (JS)');
         route = plan.pick;
         if (!res) { res = this.runDetlog(plan, false); route = 'MNN'; }
       } else {
-        // first run: the routes that apply, timed; they must agree
-        const m = time(() => this.runDetlog(plan, false));
+        // first run: one route, the intersection of Detlog MNN and C (the MNN program with its C tier;
+        // compiled C on Node when the goal takes a while), checked once against Prolog. On the bundled
+        // examples it is the fastest route or within 5% of it, and MNN alone is ~70x slower, so the
+        // routes are no longer each timed.
+        // (the C tier applies where the compiled program has native modes; it is known after a run)
+        const m = time(() => this.runDetlog(plan, true), 0, 1);
+        const nat = P.nativeModesOf(plan.detlog).length > 0;
         const limited = /limit/.test(m.r.error || '');
-        const cj = limited ? null : time(() => this.runDetlog(plan, true));
-        const pr = limited ? null : time(() => this.runProlog(text), 20, 20);
-        const timing = { mnn: m.ms, cjs: cj ? cj.ms : null, prolog: pr ? pr.ms : null, c: null };
+        const pr = limited ? null : time(() => this.runProlog(text), 0, 1);
+        const own = nat ? 'C (JS)' : 'MNN';
+        const timing = { mnn: nat ? null : m.ms, cjs: nat ? m.ms : null, prolog: pr ? pr.ms : null, c: null };
         const cands = [];
-        if (!m.r.error) cands.push(['MNN', m.ms, m.r]);
-        if (cj && !cj.r.error && sameAnswers(cj.r, m.r) && P.nativeModesOf(plan.detlog).length) cands.push(['C (JS)', cj.ms, cj.r]);
-        if (pr && !pr.r.error && !pr.r.halted && sameAnswers(firstOnly(pr.r), m.r) && !pr.r.errOutput) cands.push(['Prolog', pr.ms, pr.r]);
-        // compiled C: worth its compile time when the goal takes a while (the binary is kept)
-        const best = cands.length ? Math.min(...cands.map((c) => c[1])) : Infinity;
-        if (this.nativeC && P.nativeModesOf(plan.detlog).length && best >= (this.nativeC.minMs || 5) && !m.r.error) {
+        const agrees = pr && !pr.r.error && !pr.r.halted && !pr.r.errOutput && sameAnswers(firstOnly(pr.r), m.r);
+        if (!m.r.error && agrees) cands.push([own, m.ms, m.r]);
+        if (this.nativeC && nat && m.ms >= (this.nativeC.minMs || 5) && cands.length) {
           const c = this.runNativeC(plan);
           if (c && !c.error && sameAnswers(c, m.r)) { timing.c = c.ms; cands.push(['C', c.ms, c]); }
           else if (c) plan.notes.push('compiled C: ' + (c.error || 'its answers differ from the MNN route\'s'));
         }
         plan.timing = timing;
-        if (!cands.length) { plan.pick = 'Prolog'; plan.why = m.r.error ? 'the converted route raised ' + m.r.error + ': Prolog decides' : 'the routes disagree: Prolog decides'; res = this.runProlog(text); route = 'Prolog'; }
+        if (!cands.length) { plan.pick = 'Prolog'; plan.why = m.r.error ? 'the converted route raised ' + m.r.error + ': Prolog decides' : 'the routes disagree: Prolog decides'; res = this.runProlog(text, true); route = 'Prolog'; }
         else {
           cands.sort((x, y) => x[1] - y[1]);
           const [name, ms, r] = cands[0];
-          plan.pick = name; plan.why = 'the fastest on this goal (' + cands.map(([n, t]) => n + ' ' + t.toFixed(3) + ' ms').join(', ') + ')';
+          plan.pick = name; plan.why = 'the Detlog MNN and C route, its answers checked against Prolog (' + cands.map(([n, t]) => n + ' ' + t.toFixed(3) + ' ms').join(', ') + ')';
           res = r; route = name;
-          if (name === 'Prolog') res = this.runProlog(text); // its effects happen once, now
+          if (name === 'Prolog') res = this.runProlog(text, true); // its effects happen once, now
         }
         this.save(plan);
       }
@@ -502,9 +577,9 @@
         const pr = this.runProlog(text);
         if (!sameAnswers(firstOnly(pr), res) || pr.error !== res.error) { res = pr; route = 'Prolog'; }
       }
-      if (route === 'Prolog') res = Object.assign(firstOnly(res), { errOutput: res.errOutput, halted: res.halted, error: res.error });
+      if (route === 'Prolog') res = Object.assign(firstOnly(res), { errOutput: res.errOutput, halted: res.halted, error: res.error, streamed: res.streamed });
       const status = res.halted != null ? 'halt' : res.error ? 'error' : res.answers.length ? 'true' : 'false';
-      return { status, code: res.halted, output: res.output || '', errOutput: res.errOutput || '', error: res.error || null, answers: res.answers.map((a) => a.text), route, why: plan.why, timing: plan.timing, plan };
+      return { status, code: res.halted, output: res.output || '', errOutput: res.errOutput || '', error: res.error || null, answers: res.answers.map((a) => a.text), route, why: plan.why, timing: plan.timing, plan, streamed: !!res.streamed };
     }
 
     // ---- swipl command lines
@@ -528,8 +603,10 @@
       return spec;
     }
     // Runs a swipl command line. out(s)/err(s) receive the output. Returns the exit code.
-    runArgs(args, { out = () => {}, err = () => {} } = {}) {
+    // stream: output is written as the goals make it (else after each goal)
+    runArgs(args, { out = () => {}, err = () => {}, stream = false } = {}) {
       const spec = Interpreter.parseArgs(args);
+      if (stream) { this.onOut = out; this.onErr = err; }
       this.io.argv = spec.argv;
       const st = this.loadFiles(spec.files);
       for (const f of st.missing) { err('Warning: source_sink `' + f + "' does not exist\n"); }
@@ -537,7 +614,7 @@
       const goal = (g, kind) => {
         const r = this.run(g);
         if (this.log) this.log(r);
-        out(r.output); if (r.errOutput) err(r.errOutput);
+        if (!r.streamed) { out(r.output); if (r.errOutput) err(r.errOutput); }
         if (r.status === 'halt') return { halt: r.code };
         if (r.status === 'error') { err((kind === 'init' ? 'Warning: ' : 'Warning: ') + 'goal (' + g + ') raised exception:\n' + r.error + '\n'); return { code: 2, failed: true }; }
         if (r.status === 'false') { err('Warning: goal (' + g + ') failed\n'); return { code: 1, failed: true }; }
@@ -578,6 +655,8 @@
   function unknown(prog, goalText) {
     let t; try { t = P.readTerm(goalText).term; } catch (e) { return []; }
     const r = reaches(prog, t), out = [];
+    // a program that loads files while it runs defines predicates only then: nothing is known missing
+    if (['consult/1', 'use_module/1', 'use_module/2', 'load_files/2', 'ensure_loaded/1'].some((k) => r.has(k))) return [];
     for (const k of r) {
       if (prog.preds.has(k) || P.builtins[k] || P.CONTROL.has(k) || prog.dynamic.has(k)) continue;
       if (/^call\/\d+$/.test(k) || k === ':/2' || /^'?\$/.test(k)) continue;

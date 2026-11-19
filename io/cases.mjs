@@ -44,11 +44,18 @@ const SWI = {
   'fail.pl': 'main :- member(X, [1,2]), X > 5.\n',
   'halt.pl': ':- initialization(main, main).\nmain :- writeln(start), halt(3).\n',
   'lambda.pl': ':- use_module(library(yall)).\nmain :- maplist([X, Y]>>(Y is X * X), [1,2,3], L), foldl([X, A0, A]>>(A is A0 + X), L, 0, S), print(L-S), nl.\n',
-  'nrev.pl': 'nrev([], []).\nnrev([H|T], R) :- nrev(T, RT), append(RT, [H], R).\nmain :- numlist(1, 30, L), nrev(L, R), R = [F|_], writeln(F).\n'
+  'nrev.pl': 'nrev([], []).\nnrev([H|T], R) :- nrev(T, RT), append(RT, [H], R).\nmain :- numlist(1, 30, L), nrev(L, R), R = [F|_], writeln(F).\n',
+  'neg.pl': 'main :- K = 3, G = 2, X is -div(-K, G), Y is - mod(7, 4), print(X/Y), nl.\n',
+  'units.pl': ':- begin_tests(a).\ntest(one) :- true.\ntest(two) :- fail.\n:- end_tests(a).\n:- begin_tests(b, [condition(fail)]).\ntest(no) :- fail.\n:- end_tests(b).\n',
+  'live.pl': ':- dynamic n/1.\nput :- assertz(n(1)).\nshow :- n(X), writeln(X).\ncyc :- X = f(X), Y = f(Y), X = Y, writeln(cyclic_ok).\n',
+  'gcd.pl': 'g(Q, G) :- foldl([_-C, G0, G1]>>(G1 is gcd(G0, abs(C))), Q, 0, G).\nmain :- g([a-4, b-(-6), c-10], G), writeln(G).\n',
+  'starlog.pl': ':- op(600, yfx, :).\nmain :- X = (a:b):c, Y = a:(b:c), writeq(X), nl, writeq(Y), nl.\n'
 };
 const SWI_RUNS = [['json.pl', ['-g', 'main', '-t', 'halt', 'json.pl']], ['strings.pl', ['-g', 'main', '-t', 'halt', 'strings.pl']], ['uses.pl', ['-g', 'main', '-t', 'halt', 'uses.pl']],
   ['files.pl', ['-g', 'main', '-t', 'halt', 'files.pl']], ['fail.pl', ['-g', 'main', '-t', 'halt', 'fail.pl']], ['halt.pl', ['halt.pl']], ['lambda.pl', ['-q', '-g', 'main', '-t', 'halt', 'lambda.pl']],
-  ['nrev.pl', ['-g', 'main', '-t', 'halt', 'nrev.pl']], ['nrev.pl', ['-g', 'nrev([a,b,c], R), print(R), nl', '-t', 'halt', 'nrev.pl']]];
+  ['nrev.pl', ['-g', 'main', '-t', 'halt', 'nrev.pl']], ['nrev.pl', ['-g', 'nrev([a,b,c], R), print(R), nl', '-t', 'halt', 'nrev.pl']],
+  ['neg.pl', ['-g', 'main', '-t', 'halt', 'neg.pl']], ['units.pl', ['-g', 'run_tests(a:one)', '-t', 'halt', 'units.pl']], ['units.pl', ['-g', 'run_tests', '-t', 'halt', 'units.pl']],
+  ['live.pl', ['-g', 'put', '-g', 'show', '-g', 'cyc', '-t', 'halt', 'live.pl']], ['gcd.pl', ['-g', 'main', '-t', 'halt', 'gcd.pl']], ['starlog.pl', ['-g', 'main', '-t', 'halt', 'starlog.pl']]];
 function memIO(files) {
   const fs = new Map(Object.entries(files));
   return { cwd: '', readFile: (p) => (fs.has(p) ? fs.get(p) : null), writeFile: (p, s, ap) => fs.set(p, (ap && fs.get(p) || '') + s), stat: (p) => (fs.has(p) ? 'file' : null), list: () => [...fs.keys()], deleteFile: (p) => fs.delete(p) };

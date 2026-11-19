@@ -1,4 +1,4 @@
-{"n":1,"name":"interpreter_swipl","input":[["halt.pl"]],"output":{"exit":3,"output":"start\n","errors":""}}
+{"n":1,"name":"interpreter_swipl","input":[["-g","main","-t","halt","neg.pl"]],"output":{"exit":0,"output":"2/ -3\n","errors":""}}
 {"n":2,"name":"thermo_code","input":["banana"],"output":{"alphabet":"abn","counts":[3,1,2],"rank":"34","round_trip":true,"neurons_sum":"34","rank_bits":6,"raw_bits":12,"entropy_bits":8.755,"erased_bits":1}}
 {"n":3,"name":"thermo_store","input":["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",128],"output":{"bytes":13,"chars":211,"round_trip":true}}
 {"n":4,"name":"thermo_prove","input":[["a","b"],3],"output":["thermo_round_trip: {\"domain\":[[\"a\",\"b\"],3],\"count\":15}","thermo_bijection: {\"typeClasses\":10,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\"],3],\"count\":15}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\"],3],\"count\":15}","thermo_landauer: 0"]}
@@ -26,7 +26,7 @@
 {"n":26,"name":"purity","input":["sum"],"output":{"pure":["sum/2"],"writes":[],"order":["sum/2"]}}
 {"n":27,"name":"parse_range","input":["84, 20, 8, 24, 88"],"output":[84,20,8,24,88]}
 {"n":28,"name":"fit_growth","input":[1,[{"x":2,"y":4},{"x":5,"y":10},{"x":8,"y":16},{"x":11,"y":22},{"x":14,"y":28},{"x":17,"y":34}]],"output":{"label":"O(n)","k":1}}
-{"n":29,"name":"interpreter_swipl","input":[["-g","main","-t","halt","strings.pl"]],"output":{"exit":0,"output":"4 hel [\"a\",\"b\",\"\",\"c\"]\n","errors":""}}
+{"n":29,"name":"interpreter_swipl","input":[["-g","main","-t","halt","uses.pl"]],"output":{"exit":0,"output":"42\n","errors":""}}
 {"n":30,"name":"thermo_code","input":["banana"],"output":{"alphabet":"abn","counts":[3,1,2],"rank":"34","round_trip":true,"neurons_sum":"34","rank_bits":6,"raw_bits":12,"entropy_bits":8.755,"erased_bits":1}}
 {"n":31,"name":"thermo_store","input":["{\"pick\":\"MNN\",\"why\":\"the fastest on this goal\"}",64],"output":{"bytes":86,"chars":47,"round_trip":true}}
 {"n":32,"name":"thermo_prove","input":[["a"],3],"output":["thermo_round_trip: {\"domain\":[[\"a\"],3],\"count\":4}","thermo_bijection: {\"typeClasses\":4,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\"],3],\"count\":4}","thermo_entropy_bound: {\"domain\":[[\"a\"],3],\"count\":4}","thermo_landauer: 0"]}
@@ -40,7 +40,7 @@
 {"n":40,"name":"purity","input":["double"],"output":{"pure":["dbl/2","dbls/2"],"writes":[],"order":["dbl/2","dbls/2"]}}
 {"n":41,"name":"parse_range","input":["3..14 by 3"],"output":[3,6,9,12]}
 {"n":42,"name":"fit_growth","input":[0,[{"x":2,"y":1},{"x":5,"y":1},{"x":8,"y":1},{"x":11,"y":1},{"x":14,"y":1},{"x":17,"y":1}]],"output":{"label":"O(1)","k":0}}
-{"n":43,"name":"interpreter_swipl","input":[["-g","main","-t","halt","nrev.pl"]],"output":{"exit":0,"output":"30\n","errors":""}}
+{"n":43,"name":"interpreter_swipl","input":[["-g","run_tests","-t","halt","units.pl"]],"output":{"exit":1,"output":"","errors":"ERROR: test a:two: failed\n% 1 tests failed\n% 1 tests passed\nWarning: goal (run_tests) failed\n"}}
 {"n":44,"name":"thermo_code","input":["aaaa"],"output":{"alphabet":"a","counts":[4],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":0,"raw_bits":0,"entropy_bits":0,"erased_bits":0}}
 {"n":45,"name":"thermo_store","input":["a",128],"output":{"bytes":8,"chars":1,"round_trip":true}}
 {"n":46,"name":"thermo_prove","input":[["a","b"],5],"output":["thermo_round_trip: {\"domain\":[[\"a\",\"b\"],5],\"count\":63}","thermo_bijection: {\"typeClasses\":21,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\"],5],\"count\":63}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\"],5],\"count\":63}","thermo_landauer: 0"]}
@@ -54,7 +54,7 @@
 {"n":54,"name":"purity","input":["member"],"output":{"pure":["mem/2"],"writes":[],"order":["mem/2"]}}
 {"n":55,"name":"parse_range","input":["2..29 by 2"],"output":[2,4,6,8,10,12,14,16,18,20,22,24,26,28]}
 {"n":56,"name":"fit_growth","input":[3,[{"x":2,"y":24},{"x":5,"y":375},{"x":8,"y":1536},{"x":11,"y":3993},{"x":14,"y":8232},{"x":17,"y":14739}]],"output":{"label":"O(n³)","k":3}}
-{"n":57,"name":"interpreter_swipl","input":[["-g","main","-t","halt","json.pl"]],"output":{"exit":0,"output":"Ann 6\n","errors":""}}
+{"n":57,"name":"interpreter_swipl","input":[["-g","main","-t","halt","strings.pl"]],"output":{"exit":0,"output":"4 hel [\"a\",\"b\",\"\",\"c\"]\n","errors":""}}
 {"n":58,"name":"thermo_code","input":["thermodynamic"],"output":{"alphabet":"acdehimnorty","counts":[1,1,1,1,1,1,2,1,1,1,1,1],"rank":"2721350141","round_trip":true,"neurons_sum":"2721350141","rank_bits":32,"raw_bits":52,"entropy_bits":46.106,"erased_bits":0}}
 {"n":59,"name":"thermo_store","input":["",128],"output":{"bytes":6,"chars":0,"round_trip":true}}
 {"n":60,"name":"thermo_prove","input":[["a"],2],"output":["thermo_round_trip: {\"domain\":[[\"a\"],2],\"count\":3}","thermo_bijection: {\"typeClasses\":3,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\"],2],\"count\":3}","thermo_entropy_bound: {\"domain\":[[\"a\"],2],\"count\":3}","thermo_landauer: 0"]}
@@ -68,7 +68,7 @@
 {"n":68,"name":"purity","input":["grade"],"output":{"pure":[],"writes":[],"order":["grade/2"]}}
 {"n":69,"name":"parse_range","input":["0"],"output":[0]}
 {"n":70,"name":"fit_growth","input":[2,[{"x":2,"y":28},{"x":5,"y":175},{"x":8,"y":448},{"x":11,"y":847},{"x":14,"y":1372},{"x":17,"y":2023}]],"output":{"label":"O(n²)","k":2}}
-{"n":71,"name":"interpreter_swipl","input":[["-g","main","-t","halt","nrev.pl"]],"output":{"exit":0,"output":"30\n","errors":""}}
+{"n":71,"name":"interpreter_swipl","input":[["-g","put","-g","show","-g","cyc","-t","halt","live.pl"]],"output":{"exit":0,"output":"1\ncyclic_ok\n","errors":""}}
 {"n":72,"name":"thermo_code","input":["ab"],"output":{"alphabet":"ab","counts":[1,1],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":1,"raw_bits":2,"entropy_bits":2,"erased_bits":0}}
 {"n":73,"name":"thermo_store","input":["",64],"output":{"bytes":5,"chars":0,"round_trip":true}}
 {"n":74,"name":"thermo_prove","input":[["a","b","c"],1],"output":["thermo_round_trip: {\"domain\":[[\"a\",\"b\",\"c\"],1],\"count\":4}","thermo_bijection: {\"typeClasses\":4,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\",\"c\"],1],\"count\":4}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\",\"c\"],1],\"count\":4}","thermo_landauer: 0"]}
@@ -82,7 +82,7 @@
 {"n":82,"name":"purity","input":["member"],"output":{"pure":["mem/2"],"writes":[],"order":["mem/2"]}}
 {"n":83,"name":"parse_range","input":[""],"output":[]}
 {"n":84,"name":"fit_growth","input":[2,[{"x":2,"y":24},{"x":5,"y":150},{"x":8,"y":384},{"x":11,"y":726},{"x":14,"y":1176},{"x":17,"y":1734}]],"output":{"label":"O(n²)","k":2}}
-{"n":85,"name":"interpreter_swipl","input":[["-g","main","-t","halt","files.pl"]],"output":{"exit":0,"output":"line 1\n","errors":""}}
+{"n":85,"name":"interpreter_swipl","input":[["-q","-g","main","-t","halt","lambda.pl"]],"output":{"exit":0,"output":"[1,4,9]-14\n","errors":""}}
 {"n":86,"name":"thermo_code","input":[""],"output":{"alphabet":"","counts":[],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":0,"raw_bits":0,"entropy_bits":0,"erased_bits":0}}
 {"n":87,"name":"thermo_store","input":["ünïcödé • text",128],"output":{"bytes":39,"chars":14,"round_trip":true}}
 {"n":88,"name":"thermo_prove","input":[["a","b"],4],"output":["thermo_round_trip: {\"domain\":[[\"a\",\"b\"],4],\"count\":31}","thermo_bijection: {\"typeClasses\":15,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\"],4],\"count\":31}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\"],4],\"count\":31}","thermo_landauer: 0"]}
@@ -96,7 +96,7 @@
 {"n":96,"name":"purity","input":["member"],"output":{"pure":["mem/2"],"writes":[],"order":["mem/2"]}}
 {"n":97,"name":"parse_range","input":["5 9 x 9"],"output":[5,9,9]}
 {"n":98,"name":"fit_growth","input":[0,[{"x":2,"y":6},{"x":5,"y":6},{"x":8,"y":6},{"x":11,"y":6},{"x":14,"y":6},{"x":17,"y":6}]],"output":{"label":"O(1)","k":0}}
-{"n":99,"name":"interpreter_swipl","input":[["halt.pl"]],"output":{"exit":3,"output":"start\n","errors":""}}
+{"n":99,"name":"interpreter_swipl","input":[["-g","main","-t","halt","neg.pl"]],"output":{"exit":0,"output":"2/ -3\n","errors":""}}
 {"n":100,"name":"thermo_code","input":[""],"output":{"alphabet":"","counts":[],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":0,"raw_bits":0,"entropy_bits":0,"erased_bits":0}}
 {"n":101,"name":"thermo_store","input":["hello world",128],"output":{"bytes":28,"chars":11,"round_trip":true}}
 {"n":102,"name":"thermo_prove","input":[["a"],2],"output":["thermo_round_trip: {\"domain\":[[\"a\"],2],\"count\":3}","thermo_bijection: {\"typeClasses\":3,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\"],2],\"count\":3}","thermo_entropy_bound: {\"domain\":[[\"a\"],2],\"count\":3}","thermo_landauer: 0"]}
@@ -110,7 +110,7 @@
 {"n":110,"name":"purity","input":["append"],"output":{"pure":["app/3"],"writes":[],"order":["app/3"]}}
 {"n":111,"name":"parse_range","input":["2..14 by 2"],"output":[2,4,6,8,10,12,14]}
 {"n":112,"name":"fit_growth","input":[0,[{"x":2,"y":8},{"x":5,"y":8},{"x":8,"y":8},{"x":11,"y":8},{"x":14,"y":8},{"x":17,"y":8}]],"output":{"label":"O(1)","k":0}}
-{"n":113,"name":"interpreter_swipl","input":[["-g","main","-t","halt","fail.pl"]],"output":{"exit":1,"output":"","errors":"Warning: goal (main) failed\n"}}
+{"n":113,"name":"interpreter_swipl","input":[["-g","nrev([a,b,c], R), print(R), nl","-t","halt","nrev.pl"]],"output":{"exit":0,"output":"[c,b,a]\n","errors":""}}
 {"n":114,"name":"thermo_code","input":["abracadabra"],"output":{"alphabet":"abcdr","counts":[5,2,1,1,2],"rank":"21519","round_trip":true,"neurons_sum":"21519","rank_bits":17,"raw_bits":33,"entropy_bits":22.444,"erased_bits":5}}
 {"n":115,"name":"thermo_store","input":["",16],"output":{"bytes":5,"chars":0,"round_trip":true}}
 {"n":116,"name":"thermo_prove","input":[["a","b"],3],"output":["thermo_round_trip: {\"domain\":[[\"a\",\"b\"],3],\"count\":15}","thermo_bijection: {\"typeClasses\":10,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\"],3],\"count\":15}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\"],3],\"count\":15}","thermo_landauer: 0"]}
@@ -124,7 +124,7 @@
 {"n":124,"name":"purity","input":["append"],"output":{"pure":["app/3"],"writes":[],"order":["app/3"]}}
 {"n":125,"name":"parse_range","input":["4..18 by 5"],"output":[4,9,14]}
 {"n":126,"name":"fit_growth","input":[3,[{"x":2,"y":56},{"x":5,"y":875},{"x":8,"y":3584},{"x":11,"y":9317},{"x":14,"y":19208},{"x":17,"y":34391}]],"output":{"label":"O(n³)","k":3}}
-{"n":127,"name":"interpreter_swipl","input":[["-g","main","-t","halt","nrev.pl"]],"output":{"exit":0,"output":"30\n","errors":""}}
+{"n":127,"name":"interpreter_swipl","input":[["-g","put","-g","show","-g","cyc","-t","halt","live.pl"]],"output":{"exit":0,"output":"1\ncyclic_ok\n","errors":""}}
 {"n":128,"name":"thermo_code","input":["banana"],"output":{"alphabet":"abn","counts":[3,1,2],"rank":"34","round_trip":true,"neurons_sum":"34","rank_bits":6,"raw_bits":12,"entropy_bits":8.755,"erased_bits":1}}
 {"n":129,"name":"thermo_store","input":["append([], L, L).\nappend([H|T], L, [H|R]) :- append(T, L, R).\n",64],"output":{"bytes":86,"chars":62,"round_trip":true}}
 {"n":130,"name":"thermo_prove","input":[["x","y","z","w"],3],"output":["thermo_round_trip: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],3],\"count\":85}","thermo_bijection: {\"typeClasses\":35,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],3],\"count\":85}","thermo_entropy_bound: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],3],\"count\":85}","thermo_landauer: 0"]}
@@ -152,7 +152,7 @@
 {"n":152,"name":"purity","input":["append"],"output":{"pure":["app/3"],"writes":[],"order":["app/3"]}}
 {"n":153,"name":"parse_range","input":[""],"output":[]}
 {"n":154,"name":"fit_growth","input":["exp",[{"x":2,"y":4},{"x":5,"y":32},{"x":8,"y":256},{"x":11,"y":2048},{"x":14,"y":16384},{"x":17,"y":131072}]],"output":{"label":"O(2.00^n)","k":4.71}}
-{"n":155,"name":"interpreter_swipl","input":[["-g","nrev([a,b,c], R), print(R), nl","-t","halt","nrev.pl"]],"output":{"exit":0,"output":"[c,b,a]\n","errors":""}}
+{"n":155,"name":"interpreter_swipl","input":[["-g","main","-t","halt","gcd.pl"]],"output":{"exit":0,"output":"2\n","errors":""}}
 {"n":156,"name":"thermo_code","input":[""],"output":{"alphabet":"","counts":[],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":0,"raw_bits":0,"entropy_bits":0,"erased_bits":0}}
 {"n":157,"name":"thermo_store","input":["hello world",16],"output":{"bytes":28,"chars":11,"round_trip":true}}
 {"n":158,"name":"thermo_prove","input":[["x","y","z","w"],1],"output":["thermo_round_trip: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],1],\"count\":5}","thermo_bijection: {\"typeClasses\":5,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],1],\"count\":5}","thermo_entropy_bound: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],1],\"count\":5}","thermo_landauer: 0"]}
@@ -166,7 +166,7 @@
 {"n":166,"name":"purity","input":["last"],"output":{"pure":[],"writes":[],"order":["last/2"]}}
 {"n":167,"name":"parse_range","input":[""],"output":[]}
 {"n":168,"name":"fit_growth","input":[3,[{"x":2,"y":24},{"x":5,"y":375},{"x":8,"y":1536},{"x":11,"y":3993},{"x":14,"y":8232},{"x":17,"y":14739}]],"output":{"label":"O(n³)","k":3}}
-{"n":169,"name":"interpreter_swipl","input":[["-g","main","-t","halt","files.pl"]],"output":{"exit":0,"output":"line 1\n","errors":""}}
+{"n":169,"name":"interpreter_swipl","input":[["halt.pl"]],"output":{"exit":3,"output":"start\n","errors":""}}
 {"n":170,"name":"thermo_code","input":["ab"],"output":{"alphabet":"ab","counts":[1,1],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":1,"raw_bits":2,"entropy_bits":2,"erased_bits":0}}
 {"n":171,"name":"thermo_store","input":["{\"pick\":\"MNN\",\"why\":\"the fastest on this goal\"}",64],"output":{"bytes":86,"chars":47,"round_trip":true}}
 {"n":172,"name":"thermo_prove","input":[["a","b","c"],4],"output":["thermo_round_trip: {\"domain\":[[\"a\",\"b\",\"c\"],4],\"count\":121}","thermo_bijection: {\"typeClasses\":35,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\",\"c\"],4],\"count\":121}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\",\"c\"],4],\"count\":121}","thermo_landauer: 0"]}
@@ -180,7 +180,7 @@
 {"n":180,"name":"purity","input":["length"],"output":{"pure":["len/2"],"writes":[],"order":["len/2"]}}
 {"n":181,"name":"parse_range","input":["6"],"output":[6]}
 {"n":182,"name":"fit_growth","input":[2,[{"x":2,"y":36},{"x":5,"y":225},{"x":8,"y":576},{"x":11,"y":1089},{"x":14,"y":1764},{"x":17,"y":2601}]],"output":{"label":"O(n²)","k":2}}
-{"n":183,"name":"interpreter_swipl","input":[["-q","-g","main","-t","halt","lambda.pl"]],"output":{"exit":0,"output":"[1,4,9]-14\n","errors":""}}
+{"n":183,"name":"interpreter_swipl","input":[["-g","run_tests","-t","halt","units.pl"]],"output":{"exit":1,"output":"","errors":"ERROR: test a:two: failed\n% 1 tests failed\n% 1 tests passed\nWarning: goal (run_tests) failed\n"}}
 {"n":184,"name":"thermo_code","input":["banana"],"output":{"alphabet":"abn","counts":[3,1,2],"rank":"34","round_trip":true,"neurons_sum":"34","rank_bits":6,"raw_bits":12,"entropy_bits":8.755,"erased_bits":1}}
 {"n":185,"name":"thermo_store","input":["",16],"output":{"bytes":5,"chars":0,"round_trip":true}}
 {"n":186,"name":"thermo_prove","input":[["a","b","c"],3],"output":["thermo_round_trip: {\"domain\":[[\"a\",\"b\",\"c\"],3],\"count\":40}","thermo_bijection: {\"typeClasses\":20,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"a\",\"b\",\"c\"],3],\"count\":40}","thermo_entropy_bound: {\"domain\":[[\"a\",\"b\",\"c\"],3],\"count\":40}","thermo_landauer: 0"]}
@@ -194,7 +194,7 @@
 {"n":194,"name":"purity","input":["length"],"output":{"pure":["len/2"],"writes":[],"order":["len/2"]}}
 {"n":195,"name":"parse_range","input":[""],"output":[]}
 {"n":196,"name":"fit_growth","input":[3,[{"x":2,"y":72},{"x":5,"y":1125},{"x":8,"y":4608},{"x":11,"y":11979},{"x":14,"y":24696},{"x":17,"y":44217}]],"output":{"label":"O(n³)","k":3}}
-{"n":197,"name":"interpreter_swipl","input":[["-g","nrev([a,b,c], R), print(R), nl","-t","halt","nrev.pl"]],"output":{"exit":0,"output":"[c,b,a]\n","errors":""}}
+{"n":197,"name":"interpreter_swipl","input":[["-g","main","-t","halt","gcd.pl"]],"output":{"exit":0,"output":"2\n","errors":""}}
 {"n":198,"name":"thermo_code","input":[""],"output":{"alphabet":"","counts":[],"rank":"0","round_trip":true,"neurons_sum":"0","rank_bits":0,"raw_bits":0,"entropy_bits":0,"erased_bits":0}}
 {"n":199,"name":"thermo_store","input":["{\"pick\":\"MNN\",\"why\":\"the fastest on this goal\"}",64],"output":{"bytes":86,"chars":47,"round_trip":true}}
 {"n":200,"name":"thermo_prove","input":[["x","y","z","w"],3],"output":["thermo_round_trip: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],3],\"count\":85}","thermo_bijection: {\"typeClasses\":35,\"ranks\":\"exact\"}","thermo_neuron_sum: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],3],\"count\":85}","thermo_entropy_bound: {\"domain\":[[\"w\",\"x\",\"y\",\"z\"],3],\"count\":85}","thermo_landauer: 0"]}

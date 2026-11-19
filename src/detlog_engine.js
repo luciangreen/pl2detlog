@@ -18,6 +18,7 @@
   }
   DetEngine.prototype.bind = function (v, t) { v.ref = t; this.trail.push(v); };
   DetEngine.prototype.undo = function (mark) { const tr = this.trail; while (tr.length > mark) tr.pop().ref = null; };
+  DetEngine.prototype.mark = function () { return this.trail.length; }; // every binding is trailed here
   DetEngine.prototype.unify = P.Engine.prototype.unify;
   DetEngine.prototype.write = function (s) { this.out += s; };
   DetEngine.prototype.tick = function (n) { this.steps += n || 1; if (this.steps > this.stepLimit) throw new P.LimitError('step limit (' + this.stepLimit + ') exceeded'); };

@@ -247,22 +247,24 @@ details > summary { cursor: pointer; font-weight: 600; }
     map = map || new Map();
     t = deref(t);
     if (t.gr) return t;
-    if (t.t === 'v') { let v = map.get(t); if (!v) { v = Var(t.name); map.set(t, v); } return v; }
+    if (t.t === 'v') { let v = map.get(t); if (!v) { v = Var(t.name); map.set(t, v); } else if (v === t) map.kept = (map.kept || 0) + 1; return v; }
     if (t.t === 'c') {
       if (t.f === '.' && t.a.length === 2) { // iterate along list spines
-        const heads = [], cells = []; let x = t;
-        while (x.t === 'c' && x.f === '.' && x.a.length === 2 && !x.gr) { cells.push(x); heads.push(copy(x.a[0], map)); x = deref(x.a[1]); }
-        let r = copy(x, map);
+        // a variable the caller mapped to itself (kept shared, e.g. yall Free) is copied as itself: the
+        // cell is unchanged but not ground, so it is shared without the ground mark
+        const heads = [], cells = [], kept = []; let x = t;
+        while (x.t === 'c' && x.f === '.' && x.a.length === 2 && !x.gr) { cells.push(x); const k0 = map.kept || 0; heads.push(copy(x.a[0], map)); kept.push((map.kept || 0) !== k0); x = deref(x.a[1]); }
+        const k1 = map.kept || 0; let r = copy(x, map); let g = (map.kept || 0) === k1;
         for (let i = heads.length - 1; i >= 0; i--) {
-          const c = cells[i];
-          if (r === c.a[1] && heads[i] === c.a[0]) { c.gr = true; r = c; } // unchanged suffix: share (deref'd tail identical)
+          const c = cells[i]; g = g && !kept[i];
+          if (r === c.a[1] && heads[i] === c.a[0]) { if (g) c.gr = true; r = c; } // unchanged suffix: share (deref'd tail identical)
           else r = { t: 'c', f: '.', a: [heads[i], r] };
         }
         return r;
       }
-      const a = new Array(t.a.length); let same = true;
+      const a = new Array(t.a.length); let same = true; const k0 = map.kept || 0;
       for (let i = 0; i < a.length; i++) { a[i] = copy(t.a[i], map); if (a[i] !== t.a[i]) same = false; }
-      if (same) { t.gr = true; return t; }
+      if (same) { if ((map.kept || 0) === k0) t.gr = true; return t; }
       return { t: 'c', f: t.f, a };
     }
     return t;
@@ -293,17 +295,24 @@ details > summary { cursor: pointer; font-weight: 600; }
   }
   function termVars(t, acc, seen) {
     acc = acc || []; seen = seen || new Set();
-    const st = [t];
+    const st = [t]; let n = 0, done = null;
     while (st.length) {
       let x = deref(st.pop());
       if (x.t === 'v') { if (!seen.has(x)) { seen.add(x); acc.push(x); } }
-      else if (x.t === 'c') for (let i = x.a.length - 1; i >= 0; i--) st.push(x.a[i]);
+      else if (x.t === 'c' && !x.gr) {
+        // a large term may share subterms (or be cyclic): after many steps each compound is visited once
+        if (++n > 50000) { done = done || new Set(); if (done.has(x)) continue; done.add(x); }
+        for (let i = x.a.length - 1; i >= 0; i--) st.push(x.a[i]);
+      }
     }
     return acc;
   }
   function isGround(t) {
-    const st = [t];
-    while (st.length) { const x = deref(st.pop()); if (x.t === 'v') return false; if (x.t === 'c') for (const y of x.a) st.push(y); }
+    const st = [t]; let n = 0, done = null;
+    while (st.length) {
+      const x = deref(st.pop()); if (x.t === 'v') return false;
+      if (x.t === 'c' && !x.gr) { if (++n > 50000) { done = done || new Set(); if (done.has(x)) continue; done.add(x); } for (const y of x.a) st.push(y); }
+    }
     return true;
   }
 
@@ -532,6 +541,9 @@ details > summary { cursor: pointer; font-weight: 600; }
       const op = ops.prefix.get(nm);
       const nx = this.peek();
       let operand = isTermStart(nx);
+      // an infix-operator name written as a functor (-div(X, Y), -mod(A, B)) starts an operand
+      const nxFunctor = nx && nx.k === 'atom' && this.toks[this.i + 1] && this.toks[this.i + 1].k === 'punct' && this.toks[this.i + 1].v === '(' && !this.toks[this.i + 1].lb;
+      if (nxFunctor) operand = true;
       if (operand && nx.k === 'atom' && ops.infix.has(nx.v)) {
         // `- = x` : prefix op followed by an infix op -> treat as atom, unless the infix atom is a term itself (f( or prefix op)
         const n2 = this.toks[this.i + 1];
@@ -640,13 +652,13 @@ details > summary { cursor: pointer; font-weight: 600; }
     // SWI-Prolog writes a variable as _N, never by its name in the source (two copies of a clause
     // must not print the same name)
     const vn = opts.varName || (swi ? (v => '_G' + v.id) : vn0);
-    function w(t, maxP) {
+    function w(t, maxP, operand = false) {
       t = deref(t);
       switch (t.t) {
         case 'v': return vn(t);
         case 'n': { const s = fmtNum(t); return s; }
         case 's': return q ? JSON.stringify(t.v) : t.v;
-        case 'a': { const s = fmtAtom(t.n, q); if ((ops.infix.has(t.n) || ops.prefix.has(t.n)) && maxP < 1200 && t.n !== '[]' && t.n !== '{}' && t.n !== '!' && t.n !== ';') { const p = Math.max(ops.infix.has(t.n) ? ops.infix.get(t.n).p : 0, ops.prefix.has(t.n) ? ops.prefix.get(t.n).p : 0); if (p > maxP) return '(' + s + ')'; } return s; }
+        case 'a': { const s = fmtAtom(t.n, q); const isOp = ops.infix.has(t.n) || ops.prefix.has(t.n) || ops.postfix.has(t.n) || t.n === ';' || t.n === '|'; if (isOp && t.n !== '[]' && t.n !== '{}' && t.n !== '!') { if (operand) return '(' + s + ')'; const p = Math.max(ops.infix.has(t.n) ? ops.infix.get(t.n).p : 0, ops.prefix.has(t.n) ? ops.prefix.get(t.n).p : 0, t.n === ';' || t.n === '|' ? 1100 : 0); if (p > maxP) return '(' + s + ')'; } return s; }
         case 'c': {
           if (t.f === '$VAR' && t.a.length === 1 && opts.numbervars !== false) { const n = deref(t.a[0]); if (n.t === 'n' && !n.f && n.v >= 0) return String.fromCharCode(65 + n.v % 26) + (n.v >= 26 ? Math.floor(n.v / 26) : ''); if (n.t === 'a') return n.n; if (n.t === 's') return n.v; }
           if (t.f === 'dict' && t.a.length === 2) { const ps = dictPairs(t); if (ps) { const tg = deref(t.a[0]); return (tg.t === 'v' ? '_' : w(tg, 0)) + '{' + ps.map(([k, v]) => w(k, 0) + ':' + w(v, 599)).join(sep) + '}'; } }
@@ -658,10 +670,11 @@ details > summary { cursor: pointer; font-weight: 600; }
             return s + ']';
           }
           if (t.f === '{}' && t.a.length === 1) return '{' + w(t.a[0], 1200) + '}';
-          if (!opts.ignoreOps && t.a.length === 2 && ops.infix.has(t.f)) {
+          if (!opts.ignoreOps && t.a.length === 2 && ops.infix.has(t.f) && t.f !== '|') { // '|'(A, B) is written as a compound
             const op = ops.infix.get(t.f); const p = op.p;
             const lp = op.type[0] === 'y' ? p : p - 1, rp = op.type[2] === 'y' ? p : p - 1;
-            let l = w(t.a[0], lp), r = w(t.a[1], rp);
+            // an operator atom as an operand is bracketed: (is) = (-), \+ (;)
+            let l = w(t.a[0], lp, true), r = w(t.a[1], rp, true);
             let s;
             if (t.f === ',') s = l + sep + r;
             else if (swi && !/^[a-z]/.test(t.f)) { const ft = fmtAtom(t.f, q); const glueR = isSym(ft[ft.length - 1]) && (isSym(r[0]) || /^-?\d/.test(r) && r[0] === '-'); const glueL = isSym(ft[0]) && isSym(l[l.length - 1]); s = l + (glueL ? ' ' : '') + ft + (glueR ? ' ' : '') + r; }
@@ -680,7 +693,9 @@ details > summary { cursor: pointer; font-weight: 600; }
             if (op) {
               const p = op.p; const ap = op.type === 'fy' ? p : p - 1;
               const a0 = deref(t.a[0]);
-              let as = w(a0, ap);
+              // a prefix operator term or an operator atom as the operand is bracketed: -(+a), \+ (is)
+              const a0op = a0.t === 'c' && a0.a.length === 1 && ops.prefix.has(a0.f) && !(a0.f === '-' || a0.f === '+') ? false : a0.t === 'c' && a0.a.length <= 2 && (a0.a.length === 1 ? ops.prefix.has(a0.f) : false);
+              let as = a0op ? '(' + w(a0, 1200) + ')' : w(a0, ap, true);
               const ft = fmtAtom(t.f, q);
               const needSpace = /^[a-z]/i.test(ft) || !swi && ft === '\\+' || isSym(ft[ft.length - 1]) && (isSym(as[0]) || a0.t === 'n') || as[0] === '(';
               const s = ft + (needSpace ? ' ' : '') + as;
@@ -753,6 +768,7 @@ details > summary { cursor: pointer; font-weight: 600; }
     return showBody(b, d + 1, o).replace(/^\s+/, '');
   }
 
+  P.varCount = () => varCounter;
   Object.assign(P, { mkDict, dictPairs, applyOpDirective,
     Atom, Num, Int, Str, Var, Cmp, NIL, TRUE, FAIL, cons, list, deref, isCons, isNil, listToArray,
     name, arity, key, args, copy, resolve, termVars, isGround, compare, variantKey,
@@ -1012,10 +1028,10 @@ details > summary { cursor: pointer; font-weight: 600; }
 
   function Engine(prog, opts) {
     this.prog = prog; opts = opts || {};
-    this.trail = [];
+    this.trail = []; this.markVid = Infinity;
     this.steps = 0; this.cpCreated = 0; this.maxCP = 0; this.out = '';
     this.stepLimit = opts.stepLimit || 5e6;
-    this.globals = new Map();
+    this.globals = opts.globals || new Map();
     this.onOut = opts.onOut || null;
     // SWI-Prolog's I/O (src/swi.js): io = { out(s), err(s), readFile(p), writeFile(p, s, append), stat(p), list(p), stdin, argv, cwd }
     this.accel = opts.accel || null;
@@ -1023,14 +1039,27 @@ details > summary { cursor: pointer; font-weight: 600; }
     this.flags = { occurs_check: false };
     this.depth = 0;
   }
-  Engine.prototype.bind = function (v, t) { v.ref = t; this.trail.push(v); };
+  // a binding is trailed only when the variable is older than the newest mark (a choicepoint or a
+  // builtin's undo point): a newer one is unreachable once older bindings are undone (as in the WAM),
+  // so deterministic code does not grow the trail. Marks are taken with mark().
+  Engine.prototype.bind = function (v, t) { v.ref = t; if (!(v.id > this.markVid)) this.trail.push(v); };
+  Engine.prototype.mark = function () { this.markVid = P.varCount(); return this.trail.length; };
   Engine.prototype.undo = function (mark) { const tr = this.trail; while (tr.length > mark) tr.pop().ref = null; };
   Engine.prototype.unify = function (a, b) {
-    const st = [a, b];
+    const st = [a, b]; let n = 0, seen = null;
     while (st.length) {
       let y = deref(st.pop()), x = deref(st.pop());
       if (x === y) continue;
-      if (x.t === 'v') { this.bind(x, y); continue; }
+      // cyclic (rational) terms, as SWI-Prolog unifies them: after many steps, a pair of compounds
+      // already being unified is taken as unified (co-induction), so the loop ends
+      if (++n > 100000 && x.t === 'c' && y.t === 'c') {
+        seen = seen || new Map(); let ys = seen.get(x);
+        if (ys && ys.has(y)) continue;
+        if (!ys) seen.set(x, ys = new Set()); ys.add(y);
+      }
+      // two variables: the newer is bound to the older (as in SWI-Prolog), so the standard order
+      // of the older stays as it was, and the binding is less often trailed
+      if (x.t === 'v') { if (y.t === 'v' && y.id > x.id) this.bind(y, x); else this.bind(x, y); continue; }
       if (y.t === 'v') { this.bind(y, x); continue; }
       if (x.t !== y.t) return false;
       switch (x.t) {
@@ -1091,7 +1120,7 @@ details > summary { cursor: pointer; font-weight: 600; }
       }
       const fr = goals; goals = fr.next;
       let g = deref(fr.g);
-      if (++self.steps > self.stepLimit) throw new LimitError('step limit (' + self.stepLimit + ') exceeded');
+      if (++self.steps > self.stepLimit) throw new LimitError('step limit (' + String(self.stepLimit) + ') exceeded');
       try {
         if (g.t === 'v') throw instErr();
         let f, n, a;
@@ -1108,23 +1137,23 @@ details > summary { cursor: pointer; font-weight: 600; }
             const l = deref(a[0]);
             if (l.t === 'c' && l.f === '->' && l.a.length === 2) {
               const B = cps.length;
-              push({ kind: 'alt', goals: { g: a[1], cb: fr.cb, next: goals }, trail: self.trail.length });
+              push({ kind: 'alt', goals: { g: a[1], cb: fr.cb, next: goals }, trail: self.mark() });
               goals = { g: l.a[0], cb: cps.length, next: { g: Cmp('$ite', [Int(B)]), cb: fr.cb, next: { g: l.a[1], cb: fr.cb, next: goals } } };
               continue;
             }
             if (l.t === 'c' && l.f === '*->' && l.a.length === 2) {
-              const alt = { kind: 'alt', goals: { g: a[1], cb: fr.cb, next: goals }, trail: self.trail.length };
+              const alt = { kind: 'alt', goals: { g: a[1], cb: fr.cb, next: goals }, trail: self.mark() };
               push(alt);
               goals = { g: l.a[0], cb: cps.length, next: { g: Cmp('$softcut', [{ t: 'n', v: 0, cp: alt }]), cb: fr.cb, next: { g: l.a[1], cb: fr.cb, next: goals } } };
               continue;
             }
-            push({ kind: 'alt', goals: { g: a[1], cb: fr.cb, next: goals }, trail: self.trail.length });
+            push({ kind: 'alt', goals: { g: a[1], cb: fr.cb, next: goals }, trail: self.mark() });
             goals = { g: a[0], cb: fr.cb, next: goals };
             continue;
           }
           case '->/2': {
             const B = cps.length;
-            push({ kind: 'barrier', trail: self.trail.length });
+            push({ kind: 'barrier', trail: self.mark() });
             goals = { g: a[0], cb: cps.length, next: { g: Cmp('$ite', [Int(B)]), cb: fr.cb, next: { g: a[1], cb: fr.cb, next: goals } } };
             continue;
           }
@@ -1133,31 +1162,31 @@ details > summary { cursor: pointer; font-weight: 600; }
           case '$softcut/1': { const alt = a[0].cp; const i = cps.indexOf(alt); if (i >= 0) cps[i] = { kind: 'barrier', trail: alt.trail }; continue; }
           case '\\+/1': case 'not/1': {
             const B = cps.length;
-            push({ kind: 'alt', goals: goals, trail: self.trail.length });
+            push({ kind: 'alt', goals: goals, trail: self.mark() });
             goals = { g: a[0], cb: cps.length, next: { g: Cmp('$ite', [Int(B)]), cb: fr.cb, next: { g: P.FAIL, cb: fr.cb, next: null } } };
             continue;
           }
           case 'call/1': goals = { g: a[0], cb: cps.length, next: goals }; continue;
           case 'once/1': {
             const B = cps.length;
-            push({ kind: 'barrier', trail: self.trail.length });
+            push({ kind: 'barrier', trail: self.mark() });
             goals = { g: a[0], cb: cps.length, next: { g: Cmp('$ite', [Int(B)]), cb: fr.cb, next: goals } };
             continue;
           }
           case 'ignore/1': {
             const B = cps.length;
-            push({ kind: 'alt', goals: goals, trail: self.trail.length });
+            push({ kind: 'alt', goals: goals, trail: self.mark() });
             goals = { g: a[0], cb: cps.length, next: { g: Cmp('$ite', [Int(B)]), cb: fr.cb, next: goals } };
             continue;
           }
           case 'forall/2': {
-            let ok = true; const mark = self.trail.length;
-            self.solve(a[0], () => { let s = false; const m2 = self.trail.length; self.solve(a[1], () => { s = true; return false; }); self.undo(m2); if (!s) { ok = false; return false; } return true; });
+            let ok = true; const mark = self.mark();
+            self.solve(a[0], () => { let s = false; const m2 = self.mark(); self.solve(a[1], () => { s = true; return false; }); self.undo(m2); if (!s) { ok = false; return false; } return true; });
             self.undo(mark);
             if (!ok && !backtrack()) return false; continue;
           }
           case 'findall/3': case 'findall/4': {
-            const res = []; const mark = self.trail.length;
+            const res = []; const mark = self.mark();
             self.solve(a[1], () => { res.push(copy(a[0])); return true; });
             self.undo(mark);
             if (!self.unify(a[2], list(res, n === 4 ? a[3] : NIL))) { if (!backtrack()) return false; }
@@ -1170,7 +1199,7 @@ details > summary { cursor: pointer; font-weight: 600; }
             const tv = termVars(a[0]); const ex = new Set(tv.concat(exVars));
             const free = termVars(gl).filter(v => !ex.has(v));
             const W = list(free);
-            const res = []; const mark = self.trail.length;
+            const res = []; const mark = self.mark();
             self.solve(gl, () => { res.push(copy(Cmp('-', [W, a[0]]))); return true; });
             self.undo(mark);
             if (!res.length) { if (!backtrack()) return false; continue; }
@@ -1190,7 +1219,7 @@ details > summary { cursor: pointer; font-weight: 600; }
             continue;
           }
           case 'aggregate_all/3': {
-            const spec = deref(a[0]); const res = []; const mark = self.trail.length;
+            const spec = deref(a[0]); const res = []; const mark = self.mark();
             const sk = P.key(spec);
             const tmpl = sk === 'count/0' ? P.TRUE : spec.t === 'c' ? spec.a[0] : P.TRUE;
             self.solve(a[1], () => { res.push(copy(tmpl)); return true; });
@@ -1210,14 +1239,14 @@ details > summary { cursor: pointer; font-weight: 600; }
             continue;
           }
           case 'catch/3': {
-            push({ kind: 'catch', catcher: a[1], recovery: a[2], next: goals, cb: fr.cb, trail: self.trail.length });
+            push({ kind: 'catch', catcher: a[1], recovery: a[2], next: goals, cb: fr.cb, trail: self.mark() });
             goals = { g: a[0], cb: cps.length, next: goals };
             continue;
           }
           case 'throw/1': throw new PlError(copy(a[0]));
           case 'with_output_to/2': {
-            const save = self.out; self.out = ''; let ok = false; const mark = self.trail.length;
-            try { self.solve(a[1], () => { ok = true; return false; }); } finally { var txt = self.out; self.out = save; }
+            const save = self.out, saveOn = self.onOut; self.out = ''; self.onOut = null; let ok = false; const mark = self.mark();
+            try { self.solve(a[1], () => { ok = true; return false; }); } finally { var txt = self.out; self.out = save; self.onOut = saveOn; }
             const sk = deref(a[0]);
             if (!ok) { self.undo(mark); if (!backtrack()) return false; continue; }
             const v = sk.f === 'atom' ? Atom(txt) : sk.f === 'string' ? Str(txt) : sk.f === 'codes' ? P.codesList(txt) : P.charsList(txt);
@@ -1234,12 +1263,13 @@ details > summary { cursor: pointer; font-weight: 600; }
           goals = { g: ng, cb: cps.length, next: goals };
           continue;
         }
-        const clauses = self.prog.preds.get(k);
+        // lib: a library call (lists:reverse(..)) goes to the built-in even when a module exports the name
+        const clauses = g.lib ? null : self.prog.preds.get(k);
         // a faster route for this call (the interpreter's: src/interp.js), as a generator of its answers
         if (clauses && self.accel) {
           const it = self.accel(k, g, self);
           if (it) {
-            const mark = self.trail.length;
+            const mark = self.mark();
             const r = it.next();
             if (r.done) { self.undo(mark); if (!backtrack()) return false; continue; }
             if (r.value !== 'last') push({ kind: 'gen', it, next: goals, trail: mark });
@@ -1256,7 +1286,7 @@ details > summary { cursor: pointer; font-weight: 600; }
         if (bi) {
           if (bi.nondet) {
             const it = bi.fn(a, self, g);
-            const mark = self.trail.length;
+            const mark = self.mark();
             const r = it.next();
             if (r.done) { self.undo(mark); if (!backtrack()) return false; continue; }
             if (r.value === 'last') continue; // deterministic exit
@@ -1269,7 +1299,7 @@ details > summary { cursor: pointer; font-weight: 600; }
             goals = { g: ng, cb: cps.length, next: goals };
             continue;
           }
-          const mark = self.trail.length;
+          const mark = self.trail.length; // a failed builtin backtracks anyway: no new mark needed
           if (!bi.fn(a, self, g)) { self.undo(mark); if (!backtrack()) return false; }
           continue;
         }
@@ -1278,6 +1308,8 @@ details > summary { cursor: pointer; font-weight: 600; }
         if (self.prog.privates && self.prog.privates.has(k)) { const nm = self.prog.privates.get(k)[0]; goals = { g: g.t === 'a' ? Atom(nm) : Cmp(nm, a), cb: cps.length, next: goals }; continue; }
         throw existErr(k);
       } catch (e) {
+        // a syntax error from reading text (term_string/2, read_term/2, ...) is a Prolog error that catch/3 sees
+        if (e && e.prolog && !(e instanceof PlError) && /^Syntax error/.test(e.message)) e = new PlError(P.Cmp('error', [P.Cmp('syntax_error', [P.Atom(String(e.message).replace(/^Syntax error( \(line \d+\))?: /, ''))]), P.Var()]));
         if (!(e instanceof PlError)) throw e;
         // find catch frame
         let handled = false;
@@ -1285,7 +1317,7 @@ details > summary { cursor: pointer; font-weight: 600; }
           const cp = cps.pop();
           if (cp.kind === 'catch') {
             self.undo(cp.trail);
-            const mark = self.trail.length;
+            const mark = self.mark();
             const ball = copy(e.term);
             if (self.unify(cp.catcher, ball)) { goals = { g: cp.recovery, cb: cp.cb, next: cp.next }; handled = true; break; }
             self.undo(mark);
@@ -1322,10 +1354,12 @@ details > summary { cursor: pointer; font-weight: 600; }
       const hasMore = j < clauses.length;
       const cb = cp ? cp.cb : cps.length;
       if (cp) { if (hasMore) { cp.idx = j; } else cps.pop(); }
-      else if (hasMore) { cp = { kind: 'clauses', goal: g, clauses, idx: j, next, cb, trail: self.trail.length }; push(cp); }
+      else if (hasMore) { cp = { kind: 'clauses', goal: g, clauses, idx: j, next, cb, trail: self.mark() }; push(cp); }
       const cl = clauses[i];
       const m = new Map();
       const h = copy(cl.head, m);
+      // the goal's variables are older than this call's choicepoint (or need no undo without one):
+      // the trail's length is enough to undo a failed head unification
       const mark = self.trail.length;
       if (self.unify(h, g)) {
         const body = deref(cl.body);
@@ -1361,7 +1395,7 @@ details > summary { cursor: pointer; font-weight: 600; }
         answers.push({ text }); events.push({ k: 'row', text });
         return answers.length < maxAnswers;
       });
-    } catch (e) { if (e && e.halt) { halted = e.code; } else error = e.limit ? e.message : e.prolog ? (e.term ? errText(e.term) : e.message) : e.message; limit = !!e.limit; if (!e.prolog && !e.limit && opts.debug) console.error(e); }
+    } catch (e) { if (e && e.halt) { halted = e.code; } else error = e.limit ? e.message : e.prolog ? (e.term ? errText(e.term) : e.message) : e.message; limit = !!e.limit; if (!e.prolog && !e.limit && (opts.debug || (typeof process !== "undefined" && process.env && process.env.PL2DETLOG_DEBUG))) console.error(e); }
     const t1 = now();
     eng.undo(0); // leave the (possibly reused) query term unbound
     if (eng.out.length > lastOut) events.push({ k: 'out', text: eng.out.slice(lastOut) });
@@ -1407,7 +1441,7 @@ details > summary { cursor: pointer; font-weight: 600; }
 
   // unification / comparison
   det('=/2', (a, e) => e.unify(a[0], a[1]));
-  det('\\=/2', (a, e) => { const m = e.trail.length; const r = e.unify(a[0], a[1]); e.undo(m); return !r; });
+  det('\\=/2', (a, e) => { const m = e.mark(); const r = e.unify(a[0], a[1]); e.undo(m); return !r; });
   det('unify_with_occurs_check/2', (a, e) => e.unify(a[0], a[1]));
   det('==/2', a => compare(a[0], a[1]) === 0);
   det('\\==/2', a => compare(a[0], a[1]) !== 0);
@@ -1437,7 +1471,7 @@ details > summary { cursor: pointer; font-weight: 600; }
     const n = D(a[0]), t = D(a[1]);
     if (t.t !== 'c') throw typeError('compound', t);
     if (n.t === 'n') { if (n.v >= 1 && n.v <= t.a.length && e.unify(a[2], t.a[n.v - 1])) yield 'last'; return; }
-    for (let i = 0; i < t.a.length; i++) { const m = e.trail.length; if (e.unify(n, Int(i + 1)) && e.unify(a[2], t.a[i])) yield; e.undo(m); }
+    for (let i = 0; i < t.a.length; i++) { const m = e.mark(); if (e.unify(n, Int(i + 1)) && e.unify(a[2], t.a[i])) yield; e.undo(m); }
   });
   det('=../2', (a, e) => {
     const t = D(a[0]);
@@ -1528,20 +1562,20 @@ details > summary { cursor: pointer; font-weight: 600; }
     if (x.t !== 'v') { const p = textOf(x); if (z.startsWith(p) && e.unify(y, Str(z.slice(p.length)))) yield 'last'; return; }
     if (y.t !== 'v') { const q = textOf(y); if (z.endsWith(q) && e.unify(x, Str(z.slice(0, z.length - q.length)))) yield 'last'; return; }
     const cs = [...z];
-    for (let i = 0; i <= cs.length; i++) { const m = e.trail.length; if (e.unify(x, Str(cs.slice(0, i).join(''))) && e.unify(y, Str(cs.slice(i).join('')))) yield; e.undo(m); }
+    for (let i = 0; i <= cs.length; i++) { const m = e.mark(); if (e.unify(x, Str(cs.slice(0, i).join(''))) && e.unify(y, Str(cs.slice(i).join('')))) yield; e.undo(m); }
   });
   nondet('atom_concat/3', function* (a, e) {
     const x = D(a[0]), y = D(a[1]);
     if (x.t !== 'v' && y.t !== 'v') { if (e.unify(a[2], Atom(textOf(x) + textOf(y)))) yield 'last'; return; }
     const z = [...textOf(a[2])];
-    for (let i = 0; i <= z.length; i++) { const m = e.trail.length; if (e.unify(x, Atom(z.slice(0, i).join(''))) && e.unify(y, Atom(z.slice(i).join('')))) yield; e.undo(m); }
+    for (let i = 0; i <= z.length; i++) { const m = e.mark(); if (e.unify(x, Atom(z.slice(0, i).join(''))) && e.unify(y, Atom(z.slice(i).join('')))) yield; e.undo(m); }
   });
   function* subText(a, e, mk) {
     const s = [...textOf(a[0])]; const n = s.length;
     const Bf = D(a[1]), L = D(a[2]), Af = D(a[3]), Sub = D(a[4]);
     if (Sub.t !== 'v') {
       const sub = [...textOf(Sub)]; const k = sub.length; const subs = sub.join('');
-      for (let i = 0; i + k <= n; i++) if (s.slice(i, i + k).join('') === subs) { const m = e.trail.length; if (e.unify(Bf, Int(i)) && e.unify(L, Int(k)) && e.unify(Af, Int(n - i - k))) yield; e.undo(m); }
+      for (let i = 0; i + k <= n; i++) if (s.slice(i, i + k).join('') === subs) { const m = e.mark(); if (e.unify(Bf, Int(i)) && e.unify(L, Int(k)) && e.unify(Af, Int(n - i - k))) yield; e.undo(m); }
       return;
     }
     for (let i = 0; i <= n; i++) {
@@ -1549,7 +1583,7 @@ details > summary { cursor: pointer; font-weight: 600; }
       for (let k = 0; i + k <= n; k++) {
         if (L.t === 'n' && L.v !== k) continue;
         if (Af.t === 'n' && Af.v !== n - i - k) continue;
-        const m = e.trail.length;
+        const m = e.mark();
         if (e.unify(Bf, Int(i)) && e.unify(L, Int(k)) && e.unify(Af, Int(n - i - k)) && e.unify(Sub, mk(s.slice(i, i + k).join('')))) yield;
         e.undo(m);
       }
@@ -1587,22 +1621,22 @@ details > summary { cursor: pointer; font-weight: 600; }
     const lo = evalArith(a[0]).v, hiT = D(a[1]); const hi = hiT.t === 'a' && (hiT.n === 'inf' || hiT.n === 'infinite') ? Infinity : evalArith(hiT).v;
     const x = D(a[2]);
     if (x.t === 'n') { if (x.v >= lo && x.v <= hi) yield 'last'; return; }
-    for (let i = lo; i <= hi; i++) { const m = e.trail.length; if (e.unify(x, Int(i))) yield i === hi ? 'last' : undefined; e.undo(m); }
+    for (let i = lo; i <= hi; i++) { const m = e.mark(); if (e.unify(x, Int(i))) yield i === hi ? 'last' : undefined; e.undo(m); }
   });
   nondet('member/2', function* (a, e) {
     let l = D(a[1]);
     while (isCons(l)) {
       const nx = D(l.a[1]);
-      const m = e.trail.length;
+      const m = e.mark();
       if (e.unify(a[0], l.a[0])) yield (isNil(nx) ? 'last' : undefined);
       e.undo(m);
       l = nx;
     }
     if (l.t === 'v') { // partial list: generate
-      for (;;) { const h = Var(), t = Var(); const m = e.trail.length; e.bind(l, cons(h, t)); if (e.unify(a[0], h)) yield; e.undo(m); const h2 = Var(); e.bind(l, cons(h2, t)); l = t; }
+      for (;;) { const h = Var(), t = Var(); const m = e.mark(); e.bind(l, cons(h, t)); if (e.unify(a[0], h)) yield; e.undo(m); const h2 = Var(); e.bind(l, cons(h2, t)); l = t; }
     }
   });
-  det('memberchk/2', (a, e) => { let l = D(a[1]); while (isCons(l)) { const m = e.trail.length; if (e.unify(a[0], l.a[0])) return true; e.undo(m); l = D(l.a[1]); } if (l.t === 'v') { return e.unify(l, cons(a[0], Var())); } return false; });
+  det('memberchk/2', (a, e) => { let l = D(a[1]); while (isCons(l)) { const m = e.mark(); if (e.unify(a[0], l.a[0])) return true; e.undo(m); l = D(l.a[1]); } if (l.t === 'v') { return e.unify(l, cons(a[0], Var())); } return false; });
   nondet('append/3', function* (a, e) {
     const xs = listToArray(a[0]);
     if (xs) { if (e.unify(a[2], list(xs, a[1]))) yield 'last'; return; }
@@ -1611,7 +1645,7 @@ details > summary { cursor: pointer; font-weight: 600; }
     // enumerate prefixes of a[2]
     let z = D(a[2]); const pre = [];
     for (;;) {
-      const m = e.trail.length;
+      const m = e.mark();
       if (e.unify(a[0], list(pre)) && e.unify(a[1], z)) yield (isNil(z) ? 'last' : undefined);
       e.undo(m);
       if (isCons(z)) { pre.push(z.a[0]); z = D(z.a[1]); continue; }
@@ -1627,7 +1661,7 @@ details > summary { cursor: pointer; font-weight: 600; }
     if (l.t !== 'v') return;
     const N = D(a[1]);
     if (N.t === 'n') { if (N.v < n) return; const vs = []; for (let i = n; i < N.v; i++) vs.push(Var()); if (e.unify(l, list(vs))) yield 'last'; return; }
-    for (let k = n; ; k++) { const vs = []; for (let i = n; i < k; i++) vs.push(Var()); const m = e.trail.length; if (e.unify(l, list(vs)) && e.unify(N, Int(k))) yield; e.undo(m); }
+    for (let k = n; ; k++) { const vs = []; for (let i = n; i < k; i++) vs.push(Var()); const m = e.mark(); if (e.unify(l, list(vs)) && e.unify(N, Int(k))) yield; e.undo(m); }
   });
   det('reverse/2', (a, e) => e.unify(a[1], list(arr(a[0]).slice().reverse())));
   nondet('nth0/3', function* (a, e) { yield* nth(a, e, 0); });
@@ -1635,7 +1669,7 @@ details > summary { cursor: pointer; font-weight: 600; }
   function* nth(a, e, base) {
     const i = D(a[0]); const l = arr(a[1]);
     if (i.t === 'n') { if (typeof i.v !== 'number') return; const k = i.v - base; if (k >= 0 && k < l.length && e.unify(a[2], l[k])) yield 'last'; return; }
-    for (let k = 0; k < l.length; k++) { const m = e.trail.length; if (e.unify(i, Int(k + base)) && e.unify(a[2], l[k])) yield; e.undo(m); }
+    for (let k = 0; k < l.length; k++) { const m = e.mark(); if (e.unify(i, Int(k + base)) && e.unify(a[2], l[k])) yield; e.undo(m); }
   }
   nondet('last/2', function* (a, e) { const l = arr(a[0]); if (l.length && e.unify(a[1], l[l.length - 1])) yield 'last'; });
   det('msort/2', (a, e) => e.unify(a[1], list(arr(a[0]).slice().sort(compare))));
@@ -1643,7 +1677,7 @@ details > summary { cursor: pointer; font-weight: 600; }
   det('predsort/3', () => { throw new Error('predsort/3 is not supported'); });
   det('sort/4', (a, e) => {
     const k = D(a[0]).v; const ord = D(a[1]).n; let l = arr(a[2]).slice();
-    const kf = x => k === 0 ? x : D(x).a[k - 1];
+    const kf = x => { if (k === 0) return x; const t = D(x); if (t.t !== 'c' || t.a.length < k) throw new PlError(Cmp('error', [Cmp('type_error', [Atom('compound'), t]), Var()])); return t.a[k - 1]; };
     const cmp = (x, y) => compare(kf(x), kf(y));
     if (ord === '@<' || ord === '@=<') l.sort(cmp); else l.sort((x, y) => -cmp(x, y));
     if (ord === '@<' || ord === '@>') { const o = []; for (const x of l) if (!o.length || cmp(o[o.length - 1], x) !== 0) o.push(x); l = o; }
@@ -1659,27 +1693,27 @@ details > summary { cursor: pointer; font-weight: 600; }
   det('min_member/2', (a, e) => { const l = arr(a[1]); if (!l.length) return false; return e.unify(a[0], l.reduce((m, x) => compare(x, m) < 0 ? x : m)); });
   // the list is ground: its cells are marked so (copies and groundness checks of it are then O(1))
   det('numlist/3', (a, e) => { const lo = evalArith(a[0]).v, hi = evalArith(a[1]).v; let l = P.NIL; for (let i = hi; i >= lo; i--) l = { t: 'c', f: '.', a: [Int(i), l], gr: true }; return e.unify(a[2], l); });
-  det('delete/3', (a, e) => { const o = arr(a[0]).filter(x => { const m = e.trail.length; const r = e.unify(x, a[1]); e.undo(m); return !r; }); return e.unify(a[2], list(o)); });
+  det('delete/3', (a, e) => { const o = arr(a[0]).filter(x => { const m = e.mark(); const r = e.unify(x, a[1]); e.undo(m); return !r; }); return e.unify(a[2], list(o)); });
   det('exclude_eq/3', () => false);
-  det('subtract/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => !b.some(y => { const m = e.trail.length; const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o)); });
-  det('intersection/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => b.some(y => { const m = e.trail.length; const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o)); });
-  det('union/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => !b.some(y => { const m = e.trail.length; const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o.concat(b))); });
+  det('subtract/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => !b.some(y => { const m = e.mark(); const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o)); });
+  det('intersection/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => b.some(y => { const m = e.mark(); const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o)); });
+  det('union/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => !b.some(y => { const m = e.mark(); const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o.concat(b))); });
   det('flatten/2', (a, e) => { const o = []; (function f(t) { t = D(t); if (isNil(t)) return; if (isCons(t)) { f(t.a[0]); f(t.a[1]); return; } o.push(t); })(a[0]); return e.unify(a[1], list(o)); });
   det('sumlist/3', () => false);
   det('exclude/3', null); delete B['exclude/3'];
   nondet('select/3', function* (a, e) {
     const l = listToArray(a[1]);
-    if (l) { for (let i = 0; i < l.length; i++) { const m = e.trail.length; if (e.unify(a[0], l[i]) && e.unify(a[2], list(l.slice(0, i).concat(l.slice(i + 1))))) yield; e.undo(m); } return; }
+    if (l) { for (let i = 0; i < l.length; i++) { const m = e.mark(); if (e.unify(a[0], l[i]) && e.unify(a[2], list(l.slice(0, i).concat(l.slice(i + 1))))) yield; e.undo(m); } return; }
     const r = listToArray(a[2]); if (!r) throw instErr();
-    for (let i = 0; i <= r.length; i++) { const m = e.trail.length; if (e.unify(a[1], list(r.slice(0, i).concat([a[0]], r.slice(i))))) yield; e.undo(m); }
+    for (let i = 0; i <= r.length; i++) { const m = e.mark(); if (e.unify(a[1], list(r.slice(0, i).concat([a[0]], r.slice(i))))) yield; e.undo(m); }
   });
-  det('selectchk/3', (a, e) => { const l = arr(a[1]); for (let i = 0; i < l.length; i++) { const m = e.trail.length; if (e.unify(a[0], l[i]) && e.unify(a[2], list(l.slice(0, i).concat(l.slice(i + 1))))) return true; e.undo(m); } return false; });
+  det('selectchk/3', (a, e) => { const l = arr(a[1]); for (let i = 0; i < l.length; i++) { const m = e.mark(); if (e.unify(a[0], l[i]) && e.unify(a[2], list(l.slice(0, i).concat(l.slice(i + 1))))) return true; e.undo(m); } return false; });
   nondet('permutation/2', function* (a, e) {
     const l = listToArray(a[0]) || (listToArray(a[1]) ? null : null);
     let src = l, other = a[1];
     if (!src) { src = arr(a[1]); other = a[0]; }
     const perm = function* (xs) { if (!xs.length) { yield []; return; } for (let i = 0; i < xs.length; i++) for (const r of perm(xs.slice(0, i).concat(xs.slice(i + 1)))) yield [xs[i]].concat(r); };
-    for (const p of perm(src)) { const m = e.trail.length; if (e.unify(other, list(p))) yield; e.undo(m); }
+    for (const p of perm(src)) { const m = e.mark(); if (e.unify(other, list(p))) yield; e.undo(m); }
   });
   det('exclude_dummy/0', () => true); delete B['exclude_dummy/0'];
   det('pairs_keys_values/3', (a, e) => { const l = listToArray(a[0]); if (l) return e.unify(a[1], list(l.map(x => D(x).a[0]))) && e.unify(a[2], list(l.map(x => D(x).a[1]))); const ks = arr(a[1]), vs = arr(a[2]); return e.unify(a[0], list(ks.map((k, i) => Cmp('-', [k, vs[i]])))); });
@@ -1758,15 +1792,25 @@ details > summary { cursor: pointer; font-weight: 600; }
   nondet('retract/1', function* (a, e) {
     let t = D(a[0]); let h = t, b = P.TRUE; if (t.t === 'c' && t.f === ':-') { h = D(t.a[0]); b = t.a[1]; }
     const cls = e.prog.preds.get(P.key(h)); if (!cls) return;
-    for (const cl of cls.slice()) { const m = e.trail.length; const mp = new Map(); if (e.unify(h, copy(cl.head, mp)) && e.unify(b, copy(cl.body, mp))) { const i = cls.indexOf(cl); if (i >= 0) cls.splice(i, 1); yield; } e.undo(m); }
+    for (const cl of cls.slice()) { const m = e.mark(); const mp = new Map(); if (e.unify(h, copy(cl.head, mp)) && e.unify(b, copy(cl.body, mp))) { const i = cls.indexOf(cl); if (i >= 0) cls.splice(i, 1); yield; } e.undo(m); }
   });
-  det('retractall/1', (a, e) => { const h = D(a[0]); const k = P.key(h); const cls = e.prog.preds.get(k); if (!cls) { e.prog.preds.set(k, []); e.prog.dynamic.add(k); return true; } for (const cl of cls.slice()) { const m = e.trail.length; if (e.unify(h, copy(cl.head))) cls.splice(cls.indexOf(cl), 1); e.undo(m); } return true; });
+  det('retractall/1', (a, e) => { const h = D(a[0]); const k = P.key(h); const cls = e.prog.preds.get(k); if (!cls) { e.prog.preds.set(k, []); e.prog.dynamic.add(k); return true; } for (const cl of cls.slice()) { const m = e.mark(); if (e.unify(h, copy(cl.head))) cls.splice(cls.indexOf(cl), 1); e.undo(m); } return true; });
   det('nb_setval/2', (a, e) => { e.globals.set(textOf(a[0]), copy(a[1])); return true; });
   det('b_setval/2', B['nb_setval/2'].fn);
   det('nb_getval/2', (a, e) => { const v = e.globals.get(textOf(a[0])); if (!v) throw new PlError(Cmp('error', [Cmp('existence_error', [Atom('variable'), a[0]]), Var()])); return e.unify(a[1], v); });
   det('b_getval/2', B['nb_getval/2'].fn);
   det('garbage_collect/0', () => true);
-  det('statistics/2', (a, e) => e.unify(a[1], list([Int(Math.round(P.now())), Int(0)])));
+  // statistics/2 as in SWI-Prolog: cputime and process_cputime/real_time/epoch/inferences are numbers,
+  // runtime/walltime/system_time are [Total, SinceLast] in milliseconds
+  det('statistics/2', (a, e) => {
+    const k = P.textOf(a[0]), ms = P.now(); e.statLast = e.statLast || {};
+    if (k === 'cputime' || k === 'process_cputime') return e.unify(a[1], Num(ms / 1000, true));
+    if (k === 'inferences') return e.unify(a[1], Int(e.steps));
+    if (k === 'epoch') return e.unify(a[1], Num(Date.now() / 1000 - ms / 1000, true));
+    if (k === 'real_time') return e.unify(a[1], Int(Math.floor(Date.now() / 1000)));
+    const last = e.statLast[k] || 0; e.statLast[k] = ms;
+    return e.unify(a[1], list([Int(Math.round(ms)), Int(Math.round(ms - last))]));
+  });
   det('get_time/1', (a, e) => e.unify(a[0], Num(Date.now() / 1000, true)));
   det('random/1', (a, e) => e.unify(a[0], Num(Math.random(), true)));
   det('random_between/3', (a, e) => { const lo = evalArith(a[0]).v, hi = evalArith(a[1]).v; return e.unify(a[2], Int(lo + Math.floor(Math.random() * (hi - lo + 1)))); });
@@ -1822,7 +1866,7 @@ details > summary { cursor: pointer; font-weight: 600; }
   nondet('get_dict/3', function* (a, e) {
     const ps = dictOf(a[1]), k = D(a[0]);
     if (k.t !== 'v') { const p = ps.find(([kk]) => compare(kk, k) === 0); if (p && e.unify(a[2], p[1])) yield 'last'; return; }
-    for (const [kk, v] of ps) { const m = e.trail.length; if (e.unify(k, kk) && e.unify(a[2], v)) yield; e.undo(m); }
+    for (const [kk, v] of ps) { const m = e.mark(); if (e.unify(k, kk) && e.unify(a[2], v)) yield; e.undo(m); }
   });
   det('put_dict/4', (a, e) => { const ps = dictOf(a[1]).filter(([k]) => compare(k, D(a[0])) !== 0); ps.push([D(a[0]), a[2]]); return e.unify(a[3], mk(D(a[1]).a[0], ps)); });
   det('put_dict/3', (a, e) => {
@@ -2114,24 +2158,63 @@ details > summary { cursor: pointer; font-weight: 600; }
   }
   P.messageText = messageText;
   det('message_to_codes/3', (a, e) => e.unify(a[2], P.codesList(messageText(a[0]))));
+  // '$messages':translate_message//1 and print_message_lines/3, as print_message/2 uses them
+  det('translate_message/3', (a, e) => e.unify(a[1], P.cons(Cmp('-', [Atom('~w'), list([Str(messageText(a[0]))])]), a[2])));
+  det('print_message_lines/3', (a, e) => {
+    const pre = textOf(a[1]); let line = '', outText = '';
+    for (const x of listToArray(a[2]) || []) { const t = D(x); if (t.t === 'a' && t.n === 'nl') { outText += pre + line + '\n'; line = ''; } else if (t.t === 'c' && t.f === '-' && t.a.length === 2) line += P.format(t.a[0], t.a[1]); else if (t.t === 'c' && t.f === 'ansi' && t.a.length === 3) line += P.format(t.a[1], t.a[2]); else line += textOf(t); }
+    if (line) outText += pre + line + '\n';
+    put(e, a[0], outText); return true;
+  });
+  // library(csv): rows as row(F1, ...), numbers converted unless convert(false)
+  function parseCSV(text, sep) {
+    const rows = []; let row = [], f = '', q = false, quoted = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; continue; }
+      if (c === '"' && f === '') { q = true; quoted = true; continue; }
+      if (c === sep) { row.push({ f, quoted }); f = ''; quoted = false; continue; }
+      if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push({ f, quoted }); rows.push(row); row = []; f = ''; quoted = false; continue; }
+      f += c;
+    }
+    if (f !== '' || quoted || row.length) { row.push({ f, quoted }); rows.push(row); }
+    return rows;
+  }
+  function csvRows(text, opts) {
+    let functor = 'row', convert = true, sep = ',', strip = false;
+    for (const o of listToArray(opts) || []) { const t = D(o); if (t.t !== 'c' || t.a.length !== 1) continue; const v = D(t.a[0]); if (t.f === 'functor') functor = textOf(v); if (t.f === 'convert') convert = v.n !== 'false'; if (t.f === 'separator') sep = String.fromCharCode(Number(v.v)); if (t.f === 'strip') strip = v.n === 'true'; }
+    return parseCSV(text, sep).map((r) => Cmp(functor, r.map(({ f, quoted }) => { if (strip) f = f.trim(); if (convert && !quoted && /^[+-]?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(f)) return /[.eE]/.test(f) ? Num(parseFloat(f), true) : Int(Number(f)); return Atom(f); })));
+  }
+  det('csv_read_file/2', (a, e) => e.unify(a[1], list(csvRows(fileText(e, resolvePath(e, textOf(a[0]))), NIL))));
+  det('csv_read_file/3', (a, e) => e.unify(a[1], list(csvRows(fileText(e, resolvePath(e, textOf(a[0]))), a[2]))));
+  det('csv_read_file_row/3', () => false); delete B['csv_read_file_row/3'];
+  const csvField = (t) => { const s = textOf(t); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  det('csv_write_file/2', (a, e) => { const x = io(e); const txt = (listToArray(a[1]) || []).map((r) => D(r).a.map(csvField).join(',') + '\r\n').join(''); x.writeFile(resolvePath(e, textOf(a[0])), txt, false); return true; });
+  det('csv_write_file/3', (a, e) => B['csv_write_file/2'].fn([a[0], a[1]], e));
 
   // ---------------------------------------------------------------- the program and the system
   nondet('clause/2', function* (a, e) {
     let h = D(a[0]); if (h.t === 'c' && h.f === ':' && h.a.length === 2) h = D(h.a[1]);
     if (h.t === 'v') throw P.instErr();
     const cls = e.prog.preds.get(P.key(h)); if (!cls) return;
-    for (const cl of cls.slice()) { const m = e.trail.length; const mp = new Map(); if (e.unify(h, copy(cl.head, mp)) && e.unify(a[1], copy(cl.body, mp))) yield; e.undo(m); }
+    for (const cl of cls.slice()) { const m = e.mark(); const mp = new Map(); if (e.unify(h, copy(cl.head, mp)) && e.unify(a[1], copy(cl.body, mp))) yield; e.undo(m); }
   });
   nondet('current_predicate/1', function* (a, e) {
-    let s = D(a[0]); if (s.t === 'c' && s.f === ':' && s.a.length === 2) s = D(s.a[1]);
-    for (const k of e.prog.order) { if (!e.prog.preds.get(k).length && !e.prog.dynamic.has(k)) continue; const i = k.lastIndexOf('/'); const m = e.trail.length; if (e.unify(s, Cmp('/', [Atom(k.slice(0, i)), Int(+k.slice(i + 1))]))) yield; e.undo(m); }
+    let s = D(a[0]);
+    if (s.t === 'c' && s.f === ':' && s.a.length === 2) {
+      const m = D(s.a[0]), fa = D(s.a[1]);
+      // Module:Name/Arity: the module's own (renamed) predicate, or the plain one it exports
+      if (m.t === 'a' && fa.t === 'c' && fa.f === '/' && D(fa.a[0]).t === 'a' && D(fa.a[1]).t === 'n') { const k1 = m.n + ':' + D(fa.a[0]).n + '/' + D(fa.a[1]).v, k2 = D(fa.a[0]).n + '/' + D(fa.a[1]).v; if ((e.prog.preds.get(k1) || []).length || (e.prog.preds.get(k2) || []).length || e.prog.dynamic.has(k1) || e.prog.dynamic.has(k2)) yield 'last'; return; }
+      s = fa;
+    }
+    for (const k of e.prog.order) { if (!e.prog.preds.get(k).length && !e.prog.dynamic.has(k)) continue; const i = k.lastIndexOf('/'); const m = e.mark(); if (e.unify(s, Cmp('/', [Atom(k.slice(0, i)), Int(+k.slice(i + 1))]))) yield; e.undo(m); }
   });
   det('current_predicate/2', (a, e) => { const h = D(a[1]); if (h.t === 'v') return false; return e.prog.preds.has(P.key(h)) && e.unify(a[0], Atom(P.name(h))); });
   det('predicate_property/2', (a, e) => { let h = D(a[0]); if (h.t === 'c' && h.f === ':') h = D(h.a[1]); if (h.t === 'v') return false; const k = P.key(h); if (B[k] || P.CONTROL.has(k)) return e.unify(a[1], Atom('built_in')) || e.unify(a[1], Atom('defined')); if (!e.prog.preds.has(k)) return false; const p = D(a[1]); if (p.t === 'v') return e.unify(p, Atom('defined')); if (p.t === 'a' && p.n === 'dynamic') return e.prog.dynamic.has(k); if (p.t === 'c' && p.f === 'number_of_clauses') return e.unify(p.a[0], Int(e.prog.preds.get(k).length)); return p.t === 'a' && (p.n === 'defined' || p.n === 'visible'); });
   nondet('current_prolog_flag/2', function* (a, e) {
     const x = io(e) || {};
     const flags = [['argv', list((x.argv || []).map((s) => Atom(s)))], ['bounded', Atom('false')], ['dialect', Atom('swi')], ['version', Int(90000)], ['max_tagged_integer', Int(1152921504606846975)], ['min_tagged_integer', Int(-1152921504606846976)], ['double_quotes', Atom('codes')], ['os_argv', list(['swipl'].concat(x.argv || []).map((s) => Atom(s)))], ['executable', Atom('pl2detlog')], ['home', Atom('.')], ['unix', Atom('true')], ['encoding', Atom('utf8')]];
-    for (const [k, v] of flags) { const m = e.trail.length; if (e.unify(a[0], Atom(k)) && e.unify(a[1], v)) yield; e.undo(m); }
+    for (const [k, v] of flags) { const m = e.mark(); if (e.unify(a[0], Atom(k)) && e.unify(a[1], v)) yield; e.undo(m); }
   });
   det('prolog_load_context/2', (a, e) => { const x = io(e) || {}; const k = textOf(a[0]); if (k === 'directory') return e.unify(a[1], Atom(x.loadDir || x.cwd || '.')); if (k === 'module') return e.unify(a[1], Atom('user')); return false; });
   // loading files while the program runs (as mnnaction loads mnns): the clauses are added to the
@@ -2149,18 +2232,20 @@ details > summary { cursor: pointer; font-weight: 600; }
       const text = x.readFile(path), dir = path.replace(/\/[^/]*$/, '');
       const saveCwd = x.loadDir; x.loadDir = dir;
       try {
-        let cls = P.readProgram(text);
+        let cls = P.readProgram(text); const fwds = [];
         // the module directive: the first directive that is one, before any clause (after :- encoding(..) say)
         let md = null; for (const c of cls) { const t0 = D(c.term); if (!(t0.t === 'c' && t0.f === ':-' && t0.a.length === 1)) break; const d0 = D(t0.a[0]); if (d0.t === 'c' && d0.f === 'module' && d0.a.length === 2) { md = d0; break; } }
         if (md && md.t === 'c' && md.f === 'module' && md.a.length === 2) {
           const r = P.renameModule(cls.map((c) => c.term), P.textOf(md.a[0]), P.moduleExports(md));
           P.notePrivates(e.prog, P.textOf(md.a[0]), r.privates);
-          for (const fw of r.forwarders) if (!(e.prog.preds.get(fw.key) || []).length) e.prog.add(fw.clause);
+          for (const fw of r.forwarders) if (!(e.prog.preds.get(fw.key) || []).length) { const added = e.prog.add(fw.clause); if (added) fwds.push(added); }
           (e.prog.moduleFiles = e.prog.moduleFiles || new Map()).set(P.textOf(md.a[0]), path);
           cls = cls.map((c, i) => ({ term: r.terms[i], vars: c.vars }));
         }
-        e.loadedClauses = e.loadedClauses || new Map(); const mine = []; e.loadedClauses.set(path, mine);
+        e.loadedClauses = e.loadedClauses || new Map(); const mine = fwds; e.loadedClauses.set(path, mine);
         const inits = [];
+        // term_expansion/2 and goal_expansion/2, as SWI-Prolog applies them while it loads (Starlog's)
+        cls = expandClauses(e, cls);
         for (const c of cls) {
           const t = D(c.term);
           if (t.t === 'c' && t.f === ':-' && t.a.length === 1) {
@@ -2177,11 +2262,53 @@ details > summary { cursor: pointer; font-weight: 600; }
           }
           const added = e.prog.add(t, c.vars); if (added) mine.push(added);
         }
-        for (const g of inits) { const m = e.trail.length; e.solve(g, () => false); e.undo(m); }
+        for (const g of inits) { const m = e.mark(); e.solve(g, () => false); e.undo(m); }
       } finally { x.loadDir = saveCwd; }
     }
     return true;
   }
+  const hasClauses = (e, k) => (e.prog.preds.get(k) || []).length > 0;
+  function callOnce(e, goal, out) {
+    const m = e.mark(); let r = null;
+    try { e.solve(goal, () => { r = P.copy(P.resolve(out)); return false; }); } catch (x) { if (x && x.halt) throw x; r = null; }
+    e.undo(m); return r;
+  }
+  function expandGoals(e, g, depth = 0) {
+    g = D(g);
+    if (g.t === 'v' || depth > 40) return g;
+    const k = P.key(g); if (!k) return g;
+    if (GOAL_POS[k]) { const a = g.a.slice(); for (const i of GOAL_POS[k]) a[i] = expandGoals(e, a[i], depth); return { t: 'c', f: g.f, a }; }
+    const X = Var(), r = callOnce(e, Cmp('goal_expansion', [g, X]), Cmp('x', [g, X]));
+    if (r && !P.variant(D(r.a[1]), g)) { return expandGoals(e, D(r.a[1]), depth + 1); }
+    return g;
+  }
+  P.variant = (a, b) => P.variantKey(a) === P.variantKey(b);
+  function expandClauses(e, cls) {
+    const te = hasClauses(e, 'term_expansion/2'), ge = hasClauses(e, 'goal_expansion/2');
+    if (!te && !ge) return cls;
+    const out = [];
+    for (const c of cls) {
+      let ts = [c.term];
+      const t0 = D(c.term);
+      const directive = t0.t === 'c' && t0.f === ':-' && t0.a.length === 1;
+      if (te && !directive) {
+        const X = Var(); const r = callOnce(e, Cmp('term_expansion', [c.term, X]), Cmp('x', [c.term, X]));
+        if (r) { const x = D(r.a[1]); ts = listToArray(x) || [x]; }
+      }
+      for (let t of ts) {
+        t = D(t);
+        if (ge) {
+          if (t.t === 'c' && t.f === ':-' && t.a.length === 2) t = Cmp(':-', [t.a[0], expandGoals(e, t.a[1])]);
+          else if (t.t === 'c' && t.f === ':-' && t.a.length === 1) t = Cmp(':-', [expandGoals(e, t.a[0])]);
+        }
+        out.push({ term: t, vars: c.vars });
+      }
+    }
+    return out;
+  }
+  P.expandClauses = expandClauses;
+  det('expand_goal/2', (a, e) => e.unify(a[1], hasClauses(e, 'goal_expansion/2') ? expandGoals(e, a[0]) : a[0]));
+  det('expand_term/2', (a, e) => { if (!hasClauses(e, 'term_expansion/2')) return e.unify(a[1], a[0]); const X = Var(); const r = callOnce(e, Cmp('term_expansion', [a[0], X]), Cmp('x', [a[0], X])); return e.unify(a[1], r ? r.a[1] : a[0]); });
   det('consult/1', (a, e) => loadAtRun(e, a[0]));
   det('ensure_loaded/1', (a, e) => loadAtRun(e, a[0]));
   det('use_module/1', (a, e) => loadAtRun(e, a[0]));
@@ -2216,7 +2343,9 @@ details > summary { cursor: pointer; font-weight: 600; }
   delete B['assertion/1'];
   callb(':/2', (a, e) => {
     const m = D(a[0]), g = D(a[1]);
-    if (m.t === 'a' && (g.t === 'a' || g.t === 'c')) { const f = g.t === 'a' ? g.n : g.f, n = g.t === 'a' ? 0 : g.a.length; const pk = m.n + ':' + f + '/' + n; if (e.prog.preds.has(pk)) return g.t === 'a' ? Atom(m.n + ':' + f) : { t: 'c', f: m.n + ':' + f, a: g.a }; }
+    if (m.t === 'a' && (g.t === 'a' || g.t === 'c')) { const f = g.t === 'a' ? g.n : g.f, n = g.t === 'a' ? 0 : g.a.length; const pk = m.n + ':' + f + '/' + n; if (e.prog.preds.has(pk)) return g.t === 'a' ? Atom(m.n + ':' + f) : { t: 'c', f: m.n + ':' + f, a: g.a };
+      // a library module (lists, apply, ..: not one the program loaded): its built-in, not a user predicate of that name
+      if (g.t === 'c' && B[f + '/' + n] && m.n !== 'user' && !(e.prog.moduleFiles && e.prog.moduleFiles.has(m.n))) return { t: 'c', f: g.f, a: g.a, lib: true }; }
     return g;
   });
   callb('setup_call_cleanup/3', (a) => Cmp('$scc', [a[0], a[1], a[2]]));
@@ -2228,12 +2357,14 @@ details > summary { cursor: pointer; font-weight: 600; }
   // are renamed with them; Module:Goal calls Module's own; a goal built at run time that names a
   // private predicate finds it through prog.privates.
   const CLOSURE_EXTRA = { 'maplist/2': 1, 'maplist/3': 2, 'maplist/4': 3, 'maplist/5': 4, 'maplist/6': 5, 'maplist/7': 6, 'foldl/4': 3, 'foldl/5': 4, 'foldl/6': 5, 'foldl/7': 6, 'include/3': 1, 'exclude/3': 1, 'partition/4': 1, 'partition/6': 2, 'convlist/3': 2, 'max_member/3': 2, 'min_member/3': 2, 'predsort/3': 3, 'map_list_to_pairs/3': 2, 'call/2': 1, 'call/3': 2, 'call/4': 3, 'call/5': 4, 'call/6': 5, 'call/7': 6, 'call/8': 7, 'aggregate_all/3': -1 };
-  const GOAL_POS = { ',/2': [0, 1], ';/2': [0, 1], '->/2': [0, 1], '*->/2': [0, 1], '\\+/1': [0], 'not/1': [0], 'call/1': [0], 'once/1': [0], 'ignore/1': [0], 'findall/3': [1], 'findall/4': [1], 'forall/2': [0, 1], 'bagof/3': [1], 'setof/3': [1], 'aggregate_all/3': [1], 'aggregate_all/4': [2], 'catch/3': [0, 2], '^/2': [1], 'with_output_to/2': [1], 'setup_call_cleanup/3': [0, 1, 2], 'call_cleanup/2': [0, 1], 'time/1': [0], 'call_with_time_limit/2': [1], 'call_with_inference_limit/3': [0], 'with_mutex/2': [1], 'tabled_call/1': [0], 'phrase/2': [], 'phrase/3': [] };
+  const GOAL_POS = { ',/2': [0, 1], ';/2': [0, 1], '->/2': [0, 1], '*->/2': [0, 1], '\\+/1': [0], 'not/1': [0], 'call/1': [0], 'once/1': [0], 'ignore/1': [0], 'findall/3': [1], 'findall/4': [1], 'forall/2': [0, 1], 'bagof/3': [1], 'setof/3': [1], 'aggregate_all/3': [1], 'aggregate_all/4': [2], 'catch/3': [0, 2], '^/2': [1], 'with_output_to/2': [1], 'setup_call_cleanup/3': [0, 1, 2], 'call_cleanup/2': [0, 1], 'time/1': [0], 'call_with_time_limit/2': [1], 'call_with_inference_limit/3': [0], 'with_mutex/2': [1], 'tabled_call/1': [0], 'phrase/2': [], 'phrase/3': [], 'initialization/1': [0], 'initialization/2': [0] };
   const DBK = new Set(['assert/1', 'asserta/1', 'assertz/1', 'retract/1', 'retractall/1', 'clause/2', 'abolish/1']);
   function renameModule(terms, M, exportKeys) {
     const local = new Set();
     const headKey = (t) => { t = D(t); if (t.t === 'c' && t.f === ':-' && t.a.length === 2) t = D(t.a[0]); while (t.t === 'c' && t.f === ':' && t.a.length === 2) t = D(t.a[1]); if (t.t === 'c' && t.f === '-->' && t.a.length === 2) { let h = D(t.a[0]); if (h.t === 'c' && h.f === ',') h = D(h.a[0]); const k = P.key(h); if (!k) return null; const i = k.lastIndexOf('/'); return k.slice(0, i) + '/' + (+k.slice(i + 1) + 2); } return P.key(t); };
-    for (const t of terms) { const d = D(t); if (d.t === 'c' && d.f === ':-' && d.a.length === 1) { const g = D(d.a[0]); if (g.t === 'c' && (g.f === 'dynamic' || g.f === 'discontiguous' || g.f === 'table')) for (const x of P.commaList(g.a[0])) { const sd = D(x); if (sd.t === 'c' && sd.f === '/') local.add(P.name(sd.a[0]) + '/' + D(sd.a[1]).v); } continue; } const k = headKey(t); if (k) local.add(k); }
+    // a clause whose head names another module (user:term_expansion(..)) belongs to that module: it keeps its name
+    const foreign = (t) => { t = D(t); if (t.t === 'c' && t.f === ':-' && t.a.length === 2) t = D(t.a[0]); return t.t === 'c' && t.f === ':' && t.a.length === 2 && D(t.a[0]).t === 'a' && D(t.a[0]).n !== M; };
+    for (const t of terms) { if (foreign(t)) continue; const d = D(t); if (d.t === 'c' && d.f === ':-' && d.a.length === 1) { const g = D(d.a[0]); if (g.t === 'c' && (g.f === 'dynamic' || g.f === 'discontiguous' || g.f === 'table')) for (const x of P.commaList(g.a[0])) { const sd = D(x); if (sd.t === 'c' && sd.f === '/' && D(sd.a[0]).t !== 'c') local.add(P.name(sd.a[0]) + '/' + D(sd.a[1]).v); } continue; } const k = headKey(t); if (k) local.add(k); }
     // every predicate of the module is renamed (so the module always calls its own); an exported one
     // also gets a plain-named forwarder (the first module to export a name keeps it). Dynamic ones that
     // are exported keep their plain name, as other modules may assert them.
@@ -2242,7 +2373,7 @@ details > summary { cursor: pointer; font-weight: 600; }
     const priv = new Set([...local].filter((k) => !(exportKeys.has(k) && dyn.has(k))));
     if (!priv.size) return { terms, privates: [], forwarders: [] };
     const rn = (name) => M + ':' + name;
-    const renameHead = (h) => { h = D(h); while (h.t === 'c' && h.f === ':' && h.a.length === 2) h = D(h.a[1]); const k = P.key(h); if (!priv.has(k)) return h; return h.t === 'a' ? Atom(rn(h.n)) : { t: 'c', f: rn(h.f), a: h.a }; };
+    const renameHead = (h) => { h = D(h); if (h.t === 'c' && h.f === ':' && h.a.length === 2 && D(h.a[0]).t === 'a' && D(h.a[0]).n !== M) return D(h.a[1]); while (h.t === 'c' && h.f === ':' && h.a.length === 2) h = D(h.a[1]); const k = P.key(h); if (!priv.has(k)) return h; return h.t === 'a' ? Atom(rn(h.n)) : { t: 'c', f: rn(h.f), a: h.a }; };
     const closure = (c, extra) => {
       c = D(c);
       if (c.t === 'c' && c.f === '>>' && c.a.length === 2) return { t: 'c', f: '>>', a: [c.a[0], goal(c.a[1])] };
@@ -2332,7 +2463,7 @@ details > summary { cursor: pointer; font-weight: 600; }
     if (s.text !== undefined) props.push(Cmp('position', [Cmp('$stream_position', [Int(s.pos), Int(s.line || 1), Int(0), Int(s.pos)])]));
     if (s.mode === 'read') props.push(Atom('input')); else props.push(Atom('output'));
     props.push(Cmp('encoding', [Atom('utf8')]));
-    for (const p of props) { const m = e.trail.length; if (e.unify(a[1], p)) yield; e.undo(m); }
+    for (const p of props) { const m = e.mark(); if (e.unify(a[1], p)) yield; e.undo(m); }
   });
   det('stream_position_data/3', (a, e) => { const f = textOf(a[0]), p = D(a[1]); if (p.t !== 'c') return false; const i = { char_count: 0, line_count: 1, line_position: 2, byte_count: 3 }[f]; return i !== undefined && e.unify(a[2], p.a[i]); });
   det('set_stream_position/2', (a, e) => { const s = streamOf(e, a[0]); const p = D(a[1]); s.pos = Number(D(p.a[0]).v); s.line = Number(D(p.a[1]).v); return true; });
@@ -2348,21 +2479,21 @@ details > summary { cursor: pointer; font-weight: 600; }
   det('rename_file/2', (a, e) => { const x = io(e); if (!x || !x.rename) throw permErr('rename', 'file', a[0]); const p = resolvePath(e, textOf(a[0])); ioDo('rename', p, () => x.rename(p, resolvePath(e, textOf(a[1])))); return true; });
   det('unload_file/1', (a, e) => {
     const path = resolvePath(e, textOf(a[0])); const cls = e.loadedClauses && e.loadedClauses.get(path); if (!cls) return true;
-    for (const cl of cls) { const k = P.key(cl.head); const l = e.prog.preds.get(k); if (l) { const i = l.indexOf(cl); if (i >= 0) l.splice(i, 1); } }
+    for (const cl of cls) { const k = P.key(cl.head); const l = e.prog.preds.get(k); if (l) { const i = l.indexOf(cl); if (i >= 0) l.splice(i, 1); if (!l.length && !e.prog.dynamic.has(k)) { e.prog.preds.delete(k); const j = e.prog.order.indexOf(k); if (j >= 0) e.prog.order.splice(j, 1); } } }
     e.loadedClauses.delete(path); if (e.loaded) e.loaded.delete(path); return true;
   });
   nondet('sub_term/2', function* (a, e) {
     const all = []; (function walk(t) { t = D(t); all.push(t); if (t.t === 'c') t.a.forEach(walk); })(a[1]);
-    for (const t of all) { const m = e.trail.length; if (e.unify(a[0], t)) yield; e.undo(m); }
+    for (const t of all) { const m = e.mark(); if (e.unify(a[0], t)) yield; e.undo(m); }
   });
   det('compound_name_arguments/3', (a, e) => { const t = D(a[0]); if (t.t === 'c') return e.unify(a[1], Atom(t.f)) && e.unify(a[2], list(t.a)); const args = listToArray(a[2]) || []; return e.unify(t, { t: 'c', f: textOf(a[1]), a: args }); });
   det('compound_name_arity/3', (a, e) => { const t = D(a[0]); if (t.t === 'c') return e.unify(a[1], Atom(t.f)) && e.unify(a[2], Int(t.a.length)); const n = Number(D(a[2]).v); return e.unify(t, { t: 'c', f: textOf(a[1]), a: Array.from({ length: n }, () => Var()) }); });
   det('acyclic_term/1', () => true);
   det('cyclic_term/1', () => false);
-  nondet('current_module/1', function* (a, e) { for (const m of ['user', 'system']) { const k = e.trail.length; if (e.unify(a[0], Atom(m))) yield; e.undo(k); } });
+  nondet('current_module/1', function* (a, e) { for (const m of ['user', 'system']) { const k = e.mark(); if (e.unify(a[0], Atom(m))) yield; e.undo(k); } });
   nondet('module_property/2', function* (a, e) {
     const files = e.prog.moduleFiles || new Map(); const m = D(a[0]);
-    for (const [mod, f] of files) { if (m.t !== 'v' && m.n !== mod) continue; const k = e.trail.length; if (e.unify(a[0], Atom(mod)) && e.unify(a[1], Cmp('file', [Atom(f)]))) yield; e.undo(k); }
+    for (const [mod, f] of files) { if (m.t !== 'v' && m.n !== mod) continue; const k = e.mark(); if (e.unify(a[0], Atom(mod)) && e.unify(a[1], Cmp('file', [Atom(f)]))) yield; e.undo(k); }
   });
   det('set_random/1', () => true);
   det('directory_file_path/3', (a, e) => { const d = D(a[0]), f = D(a[1]); if (d.t !== 'v' && f.t !== 'v') return e.unify(a[2], Atom(P.joinPath(textOf(d), textOf(f)))); const p = textOf(a[2]); const i = p.lastIndexOf('/'); return e.unify(d, Atom(i < 0 ? '.' : p.slice(0, i))) && e.unify(f, Atom(p.slice(i + 1))); });
@@ -2467,7 +2598,7 @@ details > summary { cursor: pointer; font-weight: 600; }
   det('reset_gensym/0', (a, e) => { e.gensyms = new Map(); return true; });
   // limits: a nested run with its own step budget or deadline
   function limited(e, goal, budget, onLimit) {
-    const was = e.stepLimit, m = e.trail.length; let ok = false;
+    const was = e.stepLimit, m = e.mark(); let ok = false;
     e.stepLimit = budget;
     try { e.solve(goal, () => { ok = true; return false; }); }
     catch (x) { e.stepLimit = was; if (x instanceof P.LimitError && x.inner) { e.undo(m); return onLimit(); } throw x; }
@@ -2489,10 +2620,10 @@ details > summary { cursor: pointer; font-weight: 600; }
   nondet('limit/2', function* (a, e) {
     const n = Number(P.evalArith(a[0]).v), sols = [];
     const tmpl = Cmp('v', P.termVars(a[1]));
-    if (n > 0) { const m = e.trail.length; e.solve(a[1], () => { sols.push(P.copy(P.resolve(tmpl))); return sols.length < n; }); e.undo(m); }
-    for (const s1 of sols) { const m = e.trail.length; if (e.unify(tmpl, s1)) yield; e.undo(m); }
+    if (n > 0) { const m = e.mark(); e.solve(a[1], () => { sols.push(P.copy(P.resolve(tmpl))); return sols.length < n; }); e.undo(m); }
+    for (const s1 of sols) { const m = e.mark(); if (e.unify(tmpl, s1)) yield; e.undo(m); }
   });
-  det('subset/2', (a, e) => { const xs = listToArray(a[0]) || [], ys = listToArray(a[1]) || []; return xs.every((x) => ys.some((y) => { const m = e.trail.length; const r = e.unify(x, y); e.undo(m); return r; })); });
+  det('subset/2', (a, e) => { const xs = listToArray(a[0]) || [], ys = listToArray(a[1]) || []; return xs.every((x) => ys.some((y) => { const m = e.mark(); const r = e.unify(x, y); e.undo(m); return r; })); });
   // b_setval/2: a global that backtracking restores (an entry on the trail whose undo puts the old
   // value back); the value is not copied, as in SWI-Prolog
   det('b_setval/2', (a, e) => {
@@ -2502,17 +2633,19 @@ details > summary { cursor: pointer; font-weight: 600; }
     return true;
   });
   det('b_getval/2', (a, e) => { const k = textOf(a[0]); if (!e.globals.has(k)) throw existErr('variable', a[0]); return e.unify(a[1], e.globals.get(k)); });
+  // arithmetic functions as predicates (abs(X, Y) is Y is abs(X)), as SWI-Prolog 9 has them
+  for (const [f, n] of [['abs', 1], ['sign', 1], ['trunc', 1], ['max', 2], ['min', 2], ['truncate', 1], ['ceiling', 1], ['floor', 1], ['round', 1], ['sqrt', 1], ['sin', 1], ['cos', 1], ['tan', 1], ['asin', 1], ['acos', 1], ['atan', 1], ['log', 1], ['exp', 1], ['gcd', 2], ['msb', 1]]) if (!B[f + '/' + (n + 1)]) det(f + '/' + (n + 1), (a, e) => e.unify(a[n], P.evalArith(Cmp(f, a.slice(0, n)))));
   det('safe_goal/1', () => true); // library(sandbox): the interpreter runs programs in its own engine
   det('findnsols/4', (a, e) => {
     const n = Number(P.evalArith(a[0]).v), out = [];
-    const m = e.trail.length;
+    const m = e.mark();
     if (n > 0) e.solve(a[2], () => { out.push(P.copy(P.resolve(a[1]))); return out.length < n; });
     e.undo(m);
     return e.unify(a[3], list(out));
   });
   det('findnsols/5', (a, e) => {
     const n = Number(P.evalArith(a[0]).v), out = [];
-    const m = e.trail.length;
+    const m = e.mark();
     if (n > 0) e.solve(a[2], () => { out.push(P.copy(P.resolve(a[1]))); return out.length < n; });
     e.undo(m);
     return e.unify(a[3], list(out, a[4]));
@@ -2574,6 +2707,45 @@ assoc_to_values('$assoc'(L), Vs) :- pairs_values(L, Vs).
 max_assoc('$assoc'(L), K, V) :- last(L, K-V).
 min_assoc('$assoc'([K-V|_]), K, V).
 del_assoc(K, '$assoc'(L), V, '$assoc'(L2)) :- select(K0-V, L, L2), K0 == K, !.
+% plunit: the loader keeps test(Name[, Options]) :- Body between begin_tests/end_tests as '$plunit_test'/4
+:- dynamic('$plunit_test'/4).
+:- dynamic('$plunit_unit'/2).
+begin_tests(_).
+begin_tests(_, _).
+end_tests(_).
+run_tests :- '$run_tests'(_).
+run_tests(Spec) :- is_list(Spec), !, forall(member(S, Spec), run_tests(S)).
+run_tests(Spec) :- ( Spec = U:N -> true ; U = Spec ), '$run_tests'(U, N).
+'$run_tests'(U) :- '$run_tests'(U, _).
+'$run_tests'(U, N) :-
+    findall(U-N-O-I, ( clause('$plunit_test'(U, N, O, I), _), \\+ ( '$plunit_unit'(U, UO), '$unit_skip'(UO) ) ), Ts),
+    foldl('$run_test', Ts, 0-0, Pass-Fail),
+    Total is Pass + Fail,
+    ( Fail =:= 0 -> format(user_error, "% All ~w tests passed~n", [Total]) ; format(user_error, "% ~w tests failed~n% ~w tests passed~n", [Fail, Pass]), fail ).
+'$run_test'(U-N-O0-I, P0-F0, P-F) :-
+    ( is_list(O0) -> O = O0 ; O = [O0] ),
+    ( ( memberchk(blocked(_), O) ; memberchk(fixme(_), O) ; memberchk(condition(C), O), \+ catch(C, _, fail) ) -> P = P0, F = F0
+    ; ( memberchk(setup(S), O) -> catch(S, _, true) ; true ),
+      ( catch('$test_ok'(U, N, O, I), E, ( format(user_error, "ERROR: test ~w:~w: caught exception ~q~n", [U, N, E]), fail ))
+      -> P is P0 + 1, F = F0
+      ;  F is F0 + 1, P = P0, format(user_error, "ERROR: test ~w:~w: failed~n", [U, N]) ),
+      ( memberchk(cleanup(Cl), O) -> catch(Cl, _, true) ; true ) ).
+'$test_ok'(U, N, O, I) :-
+    ( memberchk(fail, O) -> \\+ '$plunit_test'(U, N, _, I)
+    ; memberchk(false, O) -> \\+ '$plunit_test'(U, N, _, I)
+    ; memberchk(throws(E), O) -> catch(('$plunit_test'(U, N, _, I), fail), X, subsumes_term(E, X))
+    ; memberchk(error(E), O) -> catch(('$plunit_test'(U, N, _, I), fail), X, subsumes_term(error(E, _), X))
+    ; memberchk(all(Cmp), O) -> Cmp =.. [Op, _, L], findall(T, ( '$plunit_test'(U, N, O1, I), '$opts'(O1, Os1), memberchk(all(C1), Os1), arg(1, C1, T) ), L1), call(Op, L1, L)
+    ; memberchk(set(Cmp), O) -> Cmp =.. [Op, _, L], findall(T, ( '$plunit_test'(U, N, O1, I), '$opts'(O1, Os1), memberchk(set(C1), Os1), arg(1, C1, T) ), L0), sort(L0, L1), sort(L, L2), call(Op, L1, L2)
+    ; once('$plunit_test'(U, N, O2, I)), '$opts'(O2, Os2), forall(( member(C, Os2), '$test_cond'(C, G) ), G) ).
+'$unit_skip'(UO) :- '$opts'(UO, Os), ( memberchk(blocked(_), Os) ; memberchk(condition(C), Os), \\+ catch(C, _, fail) ), !.
+'$opts'(O, Os) :- ( is_list(O) -> Os = O ; Os = [O] ).
+'$test_cond'(true(G), G) :- !.
+'$test_cond'(C, C) :- compound(C), functor(C, F, 2), memberchk(F, [==, =, =:=, =@=, \\==, \\=]).
+random_permutation(L, P) :- is_list(L), !, findall(K-X, (member(X, L), random(K)), KXs), keysort(KXs, S), pairs_values(S, P).
+random_permutation(L, P) :- random_permutation(P, L).
+random_member(X, L) :- length(L, N), N > 0, I is random(N), nth0(I, L, X).
+random_select(X, L, R) :- length(L, N), N > 0, I is random(N), nth0(I, L, X, R).
 list_to_ord_set(L, S) :- sort(L, S).
 ord_union(A, B, C) :- append(A, B, L), sort(L, C).
 ord_union(Ls, S) :- append(Ls, L), sort(L, S).
@@ -2758,7 +2930,19 @@ subsumes_term(G, S) :- \\+ \\+ ( term_variables(S, V1), G = S, term_variables(V1
       if (kind === 'partition' && ar !== 4) return null;
       const clo = D(g.a[0]);
       if (clo.t === 'v') throw convErr(ctx, kind + '/' + ar + ' with an unbound closure needs call/N');
-      const fv = termVars(clo);
+      let fv = termVars(clo);
+      // a yall lambda: its parameters and the variables only it has are its own, fresh at each call
+      // (yall copies the lambda); Free/Params>>Body shares Free; otherwise the variables the clause
+      // also has outside the lambda are passed in (its inputs)
+      if (clo.t === 'c' && clo.f === '>>' && clo.a.length === 2) {
+        const ps = D(clo.a[0]);
+        if (ps.t === 'c' && ps.f === '/' && ps.a.length === 2) { const free = new Set(termVars(ps.a[0])); fv = fv.filter((v) => free.has(v)); }
+        else if (ctx.clause) {
+          const count = (t, m) => { const st = [t]; while (st.length) { const x = D(st.pop()); if (x.t === 'v') m.set(x, (m.get(x) || 0) + 1); else if (x.t === 'c') for (const y of x.a) st.push(y); } return m; };
+          const inC = count(ctx.clause, new Map()), inL = count(clo, new Map());
+          fv = fv.filter((v) => (inC.get(v) || 0) > (inL.get(v) || 0));
+        }
+      }
       const cloKey = kind + ar + ':' + P.variantKey(Cmp('-', [list(fv), clo]));
       let nm = specs.get(cloKey);
       const nLists = kind === 'maplist' ? ar - 1 : kind === 'foldl' ? ar - 3 : 1;
@@ -2841,7 +3025,7 @@ subsumes_term(G, S) :- \\+ \\+ ( term_variables(S, V1), G = S, term_variables(V1
     }
     function convErr(ctx, msg) { const e = new Error((ctx && ctx.pred ? ctx.pred + ': ' : '') + msg); e.conv = true; e.pred = ctx && ctx.pred; return e; }
     function mkNormCtx(pred, cl) {
-      const ctx = { pred, rewrites: [], warn: m => out.warnings.push({ pred, msg: m }) };
+      const ctx = { pred, rewrites: [], warn: m => out.warnings.push({ pred, msg: m }), clause: Cmp(':-', [cl.head, cl.body]) };
       // variables that occur outside bagof/setof goals (for the free-variable check)
       ctx.otherVars = new Set(termVars(cl.head));
       for (const g of flatConj(cl.body)) { const gd = D(g); if (!(gd.t === 'c' && (gd.f === 'bagof' || gd.f === 'setof'))) termVars(gd).forEach(v => ctx.otherVars.add(v)); else termVars(gd.a[2]).forEach(v => ctx.otherVars.add(v)); }
@@ -3594,6 +3778,7 @@ subsumes_term(G, S) :- \\+ \\+ ( term_variables(S, V1), G = S, term_variables(V1
   }
   DetEngine.prototype.bind = function (v, t) { v.ref = t; this.trail.push(v); };
   DetEngine.prototype.undo = function (mark) { const tr = this.trail; while (tr.length > mark) tr.pop().ref = null; };
+  DetEngine.prototype.mark = function () { return this.trail.length; }; // every binding is trailed here
   DetEngine.prototype.unify = P.Engine.prototype.unify;
   DetEngine.prototype.write = function (s) { this.out += s; };
   DetEngine.prototype.tick = function (n) { this.steps += n || 1; if (this.steps > this.stepLimit) throw new P.LimitError('step limit (' + this.stepLimit + ') exceeded'); };
@@ -4895,6 +5080,7 @@ subsumes_term(G, S) :- \\+ \\+ ( term_variables(S, V1), G = S, term_variables(V1
   }
   Machine.prototype.bind = function (v, t) { v.ref = t; this.trail.push(v); };
   Machine.prototype.undo = function (m) { const tr = this.trail; while (tr.length > m) tr.pop().ref = null; };
+  Machine.prototype.mark = function () { return this.trail.length; }; // every binding is trailed here
   Machine.prototype.unify = P.Engine.prototype.unify;
   Machine.prototype.tick = function (n) { this.steps += n || 1; if (this.steps > this.stepLimit) throw new P.LimitError('step limit (' + this.stepLimit + ') exceeded'); };
   // output goes into the packet being built, in the order it is written
@@ -7584,7 +7770,7 @@ static double ref_ms(void (*run)(long)) {
   // ---------------------------------------------------------------- loading SWI-Prolog files
   const LOADERS = new Set(['consult', 'include', 'ensure_loaded', 'use_module', 'load_files', 'reexport']);
   const DROP = new Set(['module', 'set_prolog_flag', 'license', 'encoding', 'style_check', 'use_foreign_library', 'meta_predicate', 'module_transparent', 'public', 'multifile', 'table', 'noprofile', 'create_prolog_flag', 'expects_dialect']);
-  const NEEDS_SWI = new Set(['term_expansion/2', 'goal_expansion/2', 'term_expansion/4', 'goal_expansion/4', 'prolog_load_file/2', 'portray/1', 'message_hook/3']);
+  const NEEDS_SWI = new Set(['term_expansion/4', 'goal_expansion/4', 'prolog_load_file/2']);
   const fileSpec = (t) => { t = D(t); if (t.t === 'c' && t.f === 'library') return { library: true }; if (t.t === 'c' && t.a.length === 2 && t.f === ':') return fileSpec(t.a[1]); if (t.t === 'c' && t.f === '/' && t.a.length === 2) { const a = fileSpec(t.a[0]), b = fileSpec(t.a[1]); return { path: a.path + '/' + b.path }; } if (t.t === 'c' && t.a.length === 1) return { alias: t.f, path: P.textOf(t.a[0]) }; return { path: P.textOf(t) }; };
   const dirOf = (p) => { const i = p.lastIndexOf('/'); return i < 0 ? '' : i === 0 ? '/' : p.slice(0, i); };
 
@@ -7603,76 +7789,118 @@ static double ref_ms(void (*run)(long)) {
     for (const c of cands) { const s = io.stat ? io.stat(c) : (io.readFile(c) != null ? 'file' : null); if (s === 'file') return c; }
     return null;
   }
+  // the text of a clause term, with its variables' names where the source gave them
+  const clauseText = (t, vars) => {
+    const names = new Map((vars || []).map(([n, v]) => [D(v), n])), nm = P.namer();
+    const varName = (v) => names.get(v) || nm(v);
+    t = D(t);
+    return (t.t === 'c' && t.f === ':-' && t.a.length === 1 ? ':- ' + P.show(t.a[0], { quoted: true, varName, prec: 1199 }) + '.' : P.showClause(t, { varName })) + '\n';
+  };
+  const definesExpansion = (t) => { t = D(t); if (t.t === 'c' && t.f === ':-' && t.a.length === 2) t = D(t.a[0]); while (t.t === 'c' && t.f === ':' && t.a.length === 2) t = D(t.a[1]); const k = keyOf(t); return k === 'term_expansion/2' || k === 'goal_expansion/2'; };
+  // an engine on the program loaded so far, to run term_expansion/2 and goal_expansion/2 (Starlog's)
+  function expander(io, st) {
+    if (!st.hooks) return null;
+    if (st.expander && st.expander.at === st.parts.length) return st.expander.e;
+    let prog;
+    try { prog = P.loadProgram(st.parts.join('\n') + '\n' + P.SWI_PRELUDE); } catch (e) { return null; }
+    for (const [M, k] of st.privates || []) P.notePrivates(prog, M, [k]);
+    prog.moduleFiles = new Map(st.moduleFiles || []);
+    const e = new P.Engine(prog, { io, stepLimit: 1e8 });
+    st.expander = { at: st.parts.length, e };
+    return e;
+  }
   function loadFile(io, path, st, base) {
-    const full = findFile(io, base, path);
+    const full = findFile(io, base, path) || (io.cwd && base !== io.cwd ? findFile(io, io.cwd, path) : null);
     if (!full) { st.missing.push(path); return; }
     if (st.seen.has(full)) return;
     st.seen.add(full); st.files.push(full);
     const text = io.readFile(full);
     const dir = dirOf(full);
-    st.parts.push('% ---- ' + full + ' ----');
-    // the file's clauses, as text and as terms; a module's private predicates are renamed (src/swi.js)
+    // 1. read the clauses in order: operators and the files a clause loads take effect at once, so
+    //    what follows is read with them (as SWI-Prolog reads a file)
     const items = []; let rest = text;
     for (;;) {
       const cl = P.nextClauseText(rest); if (cl === null) break;
       rest = rest.slice(cl.length);
-      let r = null; try { r = P.readTerm(cl); } catch (e) { /* the loader reports the syntax error */ }
-      if (r) { const d = D(r.term); if (d.t === 'c' && d.f === ':-' && d.a.length === 1) P.applyOpDirective(d.a[0]); }
-      items.push({ text: cl, r });
+      let r = null, err = null; try { r = P.readTerm(cl); } catch (e) { err = e; }
+      const item = { text: cl, r, err };
+      items.push(item);
+      if (!r) continue;
+      const t = D(r.term);
+      if (!(t.t === 'c' && t.f === ':-' && t.a.length === 1)) continue;
+      const d = D(t.a[0]), n = d.t === 'c' ? d.f : d.t === 'a' ? d.n : '';
+      P.applyOpDirective(d);
+      if (d.t === 'c' && LOADERS.has(n)) {
+        for (const x of (P.listToArray(d.a[0]) || [d.a[0]])) {
+          const sp = fileSpec(x);
+          if (sp.library || sp.alias && sp.alias !== 'library' && !findFile(io, dir, sp.path)) continue; // built in (src/swi.js)
+          loadFile(io, sp.path, st, dir);
+        }
+        item.loaded = true;
+      } else if (d.t === 'c' && d.f === '.') { for (const x of P.listToArray(d) || []) loadFile(io, fileSpec(x).path, st, dir); item.loaded = true; }
     }
+    // 2. a module's predicates are renamed (src/swi.js)
     const md = (function () { for (const x of items) { if (!x.r) return null; const d = D(x.r.term); if (!(d.t === 'c' && d.f === ':-' && d.a.length === 1)) return null; const g = D(d.a[0]); if (g.t === 'c' && g.f === 'module' && g.a.length === 2) return g; } return null; })();
+    const extra = [];
     if (md) {
       const M = P.textOf(md.a[0]);
       const ren = P.renameModule(items.map((x) => x.r ? x.r.term : P.Atom('true')), M, P.moduleExports(md));
       st.privates = (st.privates || []).concat(ren.privates.map((k) => [M, k]));
       (st.moduleFiles = st.moduleFiles || []).push([M, full]);
-      if (ren.privates.length || ren.forwarders.length) items.forEach((x, i) => {
-        if (!x.r) return;
-        const names = new Map(x.r.vars.map(([n, v]) => [D(v), n]));
-        const nm = P.namer();
-        const t2 = D(ren.terms[i]);
-        x.r = { term: t2, vars: x.r.vars };
-        x.text = (t2.t === 'c' && t2.f === ':-' && t2.a.length === 1 ? ':- ' + P.show(t2.a[0], { quoted: true, varName: (v) => names.get(v) || nm(v), prec: 1199 }) + '.' : P.showClause(t2, { varName: (v) => names.get(v) || nm(v) })) + '\n';
-      });
+      items.forEach((x, i) => { if (x.r && !x.loaded) x.r = { term: D(ren.terms[i]), vars: x.r.vars, renamed: true }; });
       st.forwarded = st.forwarded || new Set();
-      for (const fw of ren.forwarders) if (!st.forwarded.has(fw.key)) { st.forwarded.add(fw.key); items.push({ text: P.showClause(fw.clause) + '\n', r: { term: fw.clause, vars: [] } }); }
-
+      for (const fw of ren.forwarders) if (!st.forwarded.has(fw.key)) { st.forwarded.add(fw.key); extra.push({ text: P.showClause(fw.clause) + '\n', r: { term: fw.clause, vars: [], renamed: true } }); }
     }
-    for (const { text: cl, r } of items) {
-      if (!r) { st.parts.push(cl); continue; }
-      let t = D(r.term);
-      if (t.t === 'c' && t.f === ':-' && t.a.length === 1) {
-        const d = D(t.a[0]), k = keyOf(d), n = d.t === 'c' ? d.f : d.t === 'a' ? d.n : '';
-        if (n === 'op') { st.parts.push(cl); continue; }
-        if (d.t === 'c' && LOADERS.has(n)) {
-          for (const x of (P.listToArray(d.a[0]) || [d.a[0]])) {
-            const s = fileSpec(x);
-            if (s.library || s.alias && s.alias !== 'library' && !findFile(io, dir, s.path)) continue; // built in (src/swi.js)
-            loadFile(io, s.path, st, dir);
-          }
-          st.parts.push('% ' + cl.trim().replace(/\n/g, ' '));
-          continue;
-        }
-        if (d.t === 'c' && d.f === '.' ) { for (const x of P.listToArray(d) || []) loadFile(io, fileSpec(x).path, st, dir); st.parts.push('% ' + cl.trim()); continue; }
-        if (n === 'initialization') {
-          const how = d.a.length === 2 ? P.textOf(d.a[1]) : 'now';
-          if (how === 'main') st.initMain = P.show(d.a[0], { quoted: true }); else st.init.push(P.show(d.a[0], { quoted: true }));
-          st.parts.push('% ' + cl.trim().replace(/\n/g, ' '));
-          continue;
-        }
-        if (DROP.has(n)) { st.parts.push('% ' + cl.trim().replace(/\n/g, ' ')); continue; }
-        if (n === 'dynamic' || n === 'discontiguous') { st.parts.push(cl); continue; }
-        // any other directive runs when the files are loaded, in order
-        st.loadGoals.push(P.show(d, { quoted: true }));
-        st.parts.push('% ' + cl.trim().replace(/\n/g, ' '));
-        if (k && /^(assert|retract)/.test(k)) st.dynamicLoad = true;
-        continue;
+    // 3. each clause, expanded by term_expansion/goal_expansion where the program has them, is kept
+    st.parts.push('% ---- ' + full + ' ----');
+    const defines = items.some((x) => x.r && definesExpansion(x.r.term));
+    for (const item of items.concat(extra)) {
+      if (!item.r) { st.parts.push(item.text); continue; }
+      if (item.loaded) { st.parts.push('% ' + item.text.trim().replace(/\n/g, ' ')); continue; }
+      let terms = [{ term: item.r.term, vars: item.r.vars, text: item.r.renamed ? null : item.text }];
+      const ex = definesExpansion(item.r.term) ? null : expander(io, st);
+      if (ex) {
+        const out = P.expandClauses(ex, [{ term: item.r.term, vars: item.r.vars }]);
+        if (out.length !== 1 || P.variantKey(out[0].term) !== P.variantKey(item.r.term)) terms = out.map((o) => ({ term: o.term, vars: o.vars, text: null }));
       }
-      if (t.t === 'c' && t.f === ':-' && t.a.length === 2) { const hk = keyOf(t.a[0]); if (NEEDS_SWI.has(hk)) st.needsSwi.push('defines ' + hk); }
-      else if (NEEDS_SWI.has(keyOf(t))) st.needsSwi.push('defines ' + keyOf(t));
-      st.parts.push(cl);
+      for (const { term, vars, text: tx } of terms) emit(io, st, term, tx || clauseText(term, vars), dir);
     }
     if (rest.trim()) st.parts.push(rest);
+    if (defines) { st.hooks = true; st.expander = null; }
+  }
+  function emit(io, st, term, cl, dir) {
+    const t = D(term);
+    if (t.t === 'c' && t.f === ':-' && t.a.length === 1) {
+      const d = D(t.a[0]), k = keyOf(d), n = d.t === 'c' ? d.f : d.t === 'a' ? d.n : '';
+      if (n === 'op') { st.parts.push(cl); return; }
+      if (n === 'initialization') {
+        const how = d.a.length === 2 ? P.textOf(d.a[1]) : 'now';
+        if (how === 'main') st.initMain = P.show(d.a[0], { quoted: true }); else st.init.push(P.show(d.a[0], { quoted: true }));
+        st.parts.push('% ' + cl.trim().replace(/\n/g, ' '));
+        return;
+      }
+      if (DROP.has(n)) { st.parts.push('% ' + cl.trim().replace(/\n/g, ' ')); return; }
+      if (n === 'dynamic' || n === 'discontiguous') { st.parts.push(cl); return; }
+      if (n === 'begin_tests' || n === 'end_tests') { st.unit = n === 'begin_tests' ? P.textOf(d.a[0]) : null; st.parts.push('% ' + cl.trim().replace(/\n/g, ' ')); if (n === 'begin_tests' && d.a.length === 2) st.parts.push(P.show(P.Cmp('$plunit_unit', [d.a[0], d.a[1]]), { quoted: true, ignoreOps: false }) + '.'); return; }
+      // any other directive runs when the files are loaded, in order
+      st.loadGoals.push(P.show(d, { quoted: true }));
+      st.parts.push('% ' + cl.trim().replace(/\n/g, ' '));
+      if (k && /^(assert|retract)/.test(k)) st.dynamicLoad = true;
+      return;
+    }
+    // plunit: test(Name) and test(Name, Options) between begin_tests(Unit) and end_tests(Unit)
+    if (st.unit) {
+      let h = t, b = P.Atom('true');
+      if (t.t === 'c' && t.f === ':-' && t.a.length === 2) { h = D(t.a[0]); b = t.a[1]; }
+      if (h.t === 'c' && (h.f === 'test' || /:test$/.test(h.f)) && (h.a.length === 1 || h.a.length === 2)) {
+        const ut = P.Cmp(':-', [P.Cmp('$plunit_test', [P.Atom(st.unit), h.a[0], h.a.length === 2 ? h.a[1] : P.NIL, P.Int(++st.testSeq || (st.testSeq = 1))]), b]);
+        st.parts.push(clauseText(ut, []));
+        return;
+      }
+    }
+    if (t.t === 'c' && t.f === ':-' && t.a.length === 2) { const hk = keyOf(t.a[0]); if (NEEDS_SWI.has(hk)) st.needsSwi.push('defines ' + hk); }
+    else if (NEEDS_SWI.has(keyOf(t))) st.needsSwi.push('defines ' + keyOf(t));
+    st.parts.push(cl);
   }
 
   // ---------------------------------------------------------------- the interpreter
@@ -7686,6 +7914,13 @@ static double ref_ms(void (*run)(long)) {
   // the events up to the first answer (a -g goal runs once)
   const firstOnly = (r) => { const ev = []; for (const e of r.events) { ev.push(e); if (e.k === 'row') break; } return Object.assign({}, r, { events: ev, answers: r.answers.slice(0, 1), output: ev.filter((e) => e.k === 'out').map((e) => e.text).join('') }); };
 
+  // smallTerms(ts, n): the terms have at most n cells in all
+  function smallTerms(ts, n) {
+    const st = ts.slice();
+    while (st.length) { const t = D(st.pop()); if (t.t === 'c') { if ((n -= t.a.length) < 0) return false; for (const x of t.a) st.push(x); } }
+    return true;
+  }
+
   class Interpreter {
     // opts: io (see src/swi.js), store ({ get(key) -> string|null, set(key, string) }), nativeC (Node:
     // { compile(code) -> handle|null, run(handle, args) -> { stdout, stderr, status, ms } }),
@@ -7698,12 +7933,20 @@ static double ref_ms(void (*run)(long)) {
       this.setProgram('');
     }
     setProgram(src, meta = {}) {
-      this.src = src; this.meta = meta; this.plans = new Map();
+      this.src = src; this.meta = meta; this.plans = new Map(); this.live = null; this.globals = new Map();
       this.srcKey = hash(VERSION + '\0' + src);
       const was = P.SWI_WRITE; P.SWI_WRITE = true;
-      try { this.prog = P.loadProgram(src); this.loadError = null; for (const [M, k] of meta.privates || []) P.notePrivates(this.prog, M, [k]); this.prog.moduleFiles = new Map(meta.moduleFiles || []); } catch (e) { this.prog = P.loadProgram(''); this.loadError = e.message; } finally { P.SWI_WRITE = was; }
+      try { this.prog = this.freshProgram(); this.loadError = null; } catch (e) { this.prog = P.loadProgram(''); this.loadError = e.message; } finally { P.SWI_WRITE = was; }
       this.dynamic = !!meta.dynamicLoad || /\b(assert[az]?|retract(all)?|abolish)\s*\(/.test(src);
       if (this.installTime) this.installTime();
+    }
+    // the program as loaded, with its modules' private names and files (a run that changes the
+    // database starts from a fresh copy)
+    freshProgram() {
+      const prog = P.loadProgram(this.src);
+      for (const [M, k] of this.meta.privates || []) P.notePrivates(prog, M, [k]);
+      prog.moduleFiles = new Map(this.meta.moduleFiles || []);
+      return prog;
     }
     loadFiles(files, opts) { const st = loadFiles(this.io, files, opts); this.setProgram(st.src, st); return st; }
 
@@ -7816,43 +8059,55 @@ static double ref_ms(void (*run)(long)) {
       this.acc = { det, info: new Map(keys.map((k) => [k, { state: 'try', calls: 0, samples: 0, jitMs: 0, prologMs: 0, fails: 0 }])) };
       return this.acc;
     }
+    // a sampled call's budget, on either route: more steps than this and the predicate stays on Prolog
     accelFn() {
+      const SAMPLE_STEPS = 200000;
       const acc = this.prepareAccel(); if (!acc) return null;
       const self = this;
       return function (k, g, eng) {
         const info = acc.info.get(k); if (!info || info.state === 'prolog' || info.busy) return null;
         if (info.state === 'try' && ++info.calls < 20) return null; // only predicates called often are tried
         const n = g.t === 'c' ? g.a.length : 0, args = n ? g.a.slice() : [];
+        // the compiled call copies its arguments (a packet's rows are copies): a call on a large term
+        // (key(Clause, K) on a whole clause, say) stays on Prolog
+        if (!smallTerms(args, 300)) return null;
         const R = P.Var('R');
         const call = (Rv) => {
           const was = [P.DETLOG_NATIVE, P.DETLOG_CHECKED]; P.DETLOG_NATIVE = true; P.DETLOG_CHECKED = true;
-          try { return P.detlogCall(acc.det, k.replace(/\/(\d+)$/, (m, a) => '__cp/' + (+a + 1)), args.concat([Rv]), { stepLimit: 5e6 }); }
+          try { return P.detlogCall(acc.det, k.replace(/\/(\d+)$/, (m, a) => '__cp/' + (+a + 1)), args.concat([Rv]), { stepLimit: info.state === 'try' ? SAMPLE_STEPS : 5e6 }); }
           catch (e) { return null; }
           finally { [P.DETLOG_NATIVE, P.DETLOG_CHECKED] = was; }
         };
         // the first call compiles: it is not timed
-        if (info.state === 'try' && !info.warm) { info.warm = true; const W = P.Var('W'), m0 = eng.trail.length; call(W); eng.undo(m0); }
+        if (info.state === 'try' && !info.warm) { info.warm = true; const W = P.Var('W'), m0 = eng.mark(); call(W); eng.undo(m0); }
         let t0 = P.now();
         const res = call(R);
         const jitMs = P.now() - t0;
         if (!res || !res.ok) { if (++info.fails > 2) info.state = 'prolog'; return null; }
         const items = P.listToArray(R) || [];
-        if (info.state === 'try') {
+        // on the compiled route, calls 2, 4, 8, 16, .. are checked again (a few samples can miss a case)
+        const recheck = info.state === 'jit' && ((info.jitCalls = (info.jitCalls || 0) + 1) & (info.jitCalls - 1)) === 0;
+        if (info.state === 'try' || recheck) {
           // the same call on the Prolog route, all its answers, its output caught
           info.busy = true;
-          const saveOut = eng.out, mark = eng.trail.length; eng.out = '';
+          // within a budget: a call with many answers (a search run under once/1, say) stays on Prolog
+          const saveOut = eng.out, saveOn = eng.onOut, mark = eng.mark(), outer = eng.stepLimit; eng.out = ''; eng.onOut = null;
           const sols = []; let perr = null; t0 = P.now();
+          eng.stepLimit = eng.steps + SAMPLE_STEPS;
           try { eng.solve(g, () => { sols.push({ out: eng.out, row: P.show(P.Cmp('e', args), { quoted: true, varName: P.namer() }) }); eng.out = ''; return true; }); } catch (e) { perr = e; }
+          eng.stepLimit = outer;
           const prologMs = P.now() - t0, tail = eng.out;
-          eng.out = saveOut; eng.undo(mark); info.busy = false;
-          if (perr) { if (perr.halt) throw perr; info.state = 'prolog'; return null; }
+          eng.out = saveOut; eng.onOut = saveOn; eng.undo(mark); info.busy = false;
+          if (perr) { if (perr.halt) throw perr; if (perr instanceof P.LimitError) void (eng.steps > outer); info.state = 'prolog'; return null; }
           // the packet as the same events
           const mine = []; let pend = '';
-          for (const it of items) { const x = D(it); if (x.t === 'c' && x.f === 'out') { pend += P.textOf(x.a[0]); continue; } const m2 = eng.trail.length; const vals = P.listToArray(x.a[0]); let row = null; if (vals && vals.length === n && args.every((a, i) => eng.unify(a, vals[i]))) row = P.show(P.Cmp('e', args), { quoted: true, varName: P.namer() }); eng.undo(m2); if (row !== null) { mine.push({ out: pend, row }); pend = ''; } }
+          for (const it of items) { const x = D(it); if (x.t === 'c' && x.f === 'out') { pend += P.textOf(x.a[0]); continue; } const m2 = eng.mark(); const vals = P.listToArray(x.a[0]); let row = null; if (vals && vals.length === n && args.every((a, i) => eng.unify(a, vals[i]))) row = P.show(P.Cmp('e', args), { quoted: true, varName: P.namer() }); eng.undo(m2); if (row !== null) { mine.push({ out: pend, row }); pend = ''; } }
           const same = JSON.stringify(mine) === JSON.stringify(sols) && pend === tail;
           if (!same) { if (self.debugAccel) self.debugAccel(k, P.show(g, { quoted: true }), mine, sols, pend, tail); info.state = 'prolog'; if (self.log) self.log({ plan: { goal: k }, route: 'Prolog', why: 'per call: the compiled Detlog gave other answers' }); return null; }
-          info.jitMs += jitMs; info.prologMs += prologMs;
-          if (++info.samples >= 3 && !self.debugAccel) info.state = info.jitMs < info.prologMs ? 'jit' : 'prolog';
+          if (info.state === 'try') {
+            info.jitMs += jitMs; info.prologMs += prologMs;
+            if (++info.samples >= 3 && !self.debugAccel) info.state = info.jitMs < info.prologMs ? 'jit' : 'prolog';
+          }
         }
         return (function* () {
           let rowsLeft = 0; for (const it of items) { const x = D(it); if (!(x.t === 'c' && x.f === 'out')) rowsLeft++; }
@@ -7860,7 +8115,7 @@ static double ref_ms(void (*run)(long)) {
             const x = D(items[i]);
             if (x.t === 'c' && x.f === 'out') { eng.write(P.textOf(x.a[0])); continue; }
             rowsLeft--;
-            const vals = P.listToArray(x.a[0]); const m = eng.trail.length;
+            const vals = P.listToArray(x.a[0]); const m = eng.mark();
             if (vals && vals.length === n && args.every((a, j) => eng.unify(a, vals[j]))) {
               const restOut = items.slice(i + 1).some((y) => { y = D(y); return y.t === 'c' && y.f === 'out'; });
               if (!rowsLeft && !restOut) { yield 'last'; return; }
@@ -7873,10 +8128,14 @@ static double ref_ms(void (*run)(long)) {
     }
 
     // ---- the routes
-    runProlog(text) {
-      const prog = this.dynamic || this.prog.dynamic.size ? P.loadProgram(this.src) : this.prog;
-      const r = P.runQuery(prog, text, { stepLimit: limit(this.stepLimit, this.timeLimitMs), maxAnswers: 1, io: this.io, accel: this.accelFn() });
-      r.error = tidy(r.error); return r;
+    // stream: write output as it is made (to this.onOut/this.onErr), for the run whose effects count
+    runProlog(text, stream) {
+      // a program that changes its clauses keeps one live database for the whole session (as in
+      // swipl: what initialization/1 or one goal asserts, the next goal sees)
+      if ((this.dynamic || this.prog.dynamic.size) && !this.live) this.live = this.freshProgram();
+      const prog = this.live || this.prog;
+      const r = P.runQuery(prog, text, { stepLimit: limit(this.stepLimit, this.timeLimitMs), maxAnswers: 1, io: this.io, accel: this.accelFn(), globals: this.globals, onOut: stream ? this.onOut : null, onErr: stream ? this.onErr : null });
+      r.error = tidy(r.error); if (stream && (this.onOut || this.onErr)) r.streamed = true; return r;
     }
     runDetlog(plan, native) {
       const was = P.DETLOG_NATIVE; P.DETLOG_NATIVE = native; P.DETLOG_CHECKED = this.checked;
@@ -7914,37 +8173,39 @@ static double ref_ms(void (*run)(long)) {
       const text = goalText.trim().replace(/\.\s*$/, '');
       const plan = this.plan(text);
       let res, route;
-      if (plan.route === 'Prolog' || plan.pick === 'Prolog') { res = this.runProlog(text); route = 'Prolog'; }
+      if (plan.route === 'Prolog' || plan.pick === 'Prolog') { res = this.runProlog(text, true); route = 'Prolog'; }
       else if (plan.pick) {
         res = plan.pick === 'C' ? this.runNativeC(plan) : this.runDetlog(plan, plan.pick === 'C (JS)');
         route = plan.pick;
         if (!res) { res = this.runDetlog(plan, false); route = 'MNN'; }
       } else {
-        // first run: the routes that apply, timed; they must agree
-        const m = time(() => this.runDetlog(plan, false));
+        // first run: one route, the intersection of Detlog MNN and C (the MNN program with its C tier;
+        // compiled C on Node when the goal takes a while), checked once against Prolog. On the bundled
+        // examples it is the fastest route or within 5% of it, and MNN alone is ~70x slower, so the
+        // routes are no longer each timed.
+        // (the C tier applies where the compiled program has native modes; it is known after a run)
+        const m = time(() => this.runDetlog(plan, true), 0, 1);
+        const nat = P.nativeModesOf(plan.detlog).length > 0;
         const limited = /limit/.test(m.r.error || '');
-        const cj = limited ? null : time(() => this.runDetlog(plan, true));
-        const pr = limited ? null : time(() => this.runProlog(text), 20, 20);
-        const timing = { mnn: m.ms, cjs: cj ? cj.ms : null, prolog: pr ? pr.ms : null, c: null };
+        const pr = limited ? null : time(() => this.runProlog(text), 0, 1);
+        const own = nat ? 'C (JS)' : 'MNN';
+        const timing = { mnn: nat ? null : m.ms, cjs: nat ? m.ms : null, prolog: pr ? pr.ms : null, c: null };
         const cands = [];
-        if (!m.r.error) cands.push(['MNN', m.ms, m.r]);
-        if (cj && !cj.r.error && sameAnswers(cj.r, m.r) && P.nativeModesOf(plan.detlog).length) cands.push(['C (JS)', cj.ms, cj.r]);
-        if (pr && !pr.r.error && !pr.r.halted && sameAnswers(firstOnly(pr.r), m.r) && !pr.r.errOutput) cands.push(['Prolog', pr.ms, pr.r]);
-        // compiled C: worth its compile time when the goal takes a while (the binary is kept)
-        const best = cands.length ? Math.min(...cands.map((c) => c[1])) : Infinity;
-        if (this.nativeC && P.nativeModesOf(plan.detlog).length && best >= (this.nativeC.minMs || 5) && !m.r.error) {
+        const agrees = pr && !pr.r.error && !pr.r.halted && !pr.r.errOutput && sameAnswers(firstOnly(pr.r), m.r);
+        if (!m.r.error && agrees) cands.push([own, m.ms, m.r]);
+        if (this.nativeC && nat && m.ms >= (this.nativeC.minMs || 5) && cands.length) {
           const c = this.runNativeC(plan);
           if (c && !c.error && sameAnswers(c, m.r)) { timing.c = c.ms; cands.push(['C', c.ms, c]); }
           else if (c) plan.notes.push('compiled C: ' + (c.error || 'its answers differ from the MNN route\'s'));
         }
         plan.timing = timing;
-        if (!cands.length) { plan.pick = 'Prolog'; plan.why = m.r.error ? 'the converted route raised ' + m.r.error + ': Prolog decides' : 'the routes disagree: Prolog decides'; res = this.runProlog(text); route = 'Prolog'; }
+        if (!cands.length) { plan.pick = 'Prolog'; plan.why = m.r.error ? 'the converted route raised ' + m.r.error + ': Prolog decides' : 'the routes disagree: Prolog decides'; res = this.runProlog(text, true); route = 'Prolog'; }
         else {
           cands.sort((x, y) => x[1] - y[1]);
           const [name, ms, r] = cands[0];
-          plan.pick = name; plan.why = 'the fastest on this goal (' + cands.map(([n, t]) => n + ' ' + t.toFixed(3) + ' ms').join(', ') + ')';
+          plan.pick = name; plan.why = 'the Detlog MNN and C route, its answers checked against Prolog (' + cands.map(([n, t]) => n + ' ' + t.toFixed(3) + ' ms').join(', ') + ')';
           res = r; route = name;
-          if (name === 'Prolog') res = this.runProlog(text); // its effects happen once, now
+          if (name === 'Prolog') res = this.runProlog(text, true); // its effects happen once, now
         }
         this.save(plan);
       }
@@ -7953,9 +8214,9 @@ static double ref_ms(void (*run)(long)) {
         const pr = this.runProlog(text);
         if (!sameAnswers(firstOnly(pr), res) || pr.error !== res.error) { res = pr; route = 'Prolog'; }
       }
-      if (route === 'Prolog') res = Object.assign(firstOnly(res), { errOutput: res.errOutput, halted: res.halted, error: res.error });
+      if (route === 'Prolog') res = Object.assign(firstOnly(res), { errOutput: res.errOutput, halted: res.halted, error: res.error, streamed: res.streamed });
       const status = res.halted != null ? 'halt' : res.error ? 'error' : res.answers.length ? 'true' : 'false';
-      return { status, code: res.halted, output: res.output || '', errOutput: res.errOutput || '', error: res.error || null, answers: res.answers.map((a) => a.text), route, why: plan.why, timing: plan.timing, plan };
+      return { status, code: res.halted, output: res.output || '', errOutput: res.errOutput || '', error: res.error || null, answers: res.answers.map((a) => a.text), route, why: plan.why, timing: plan.timing, plan, streamed: !!res.streamed };
     }
 
     // ---- swipl command lines
@@ -7979,8 +8240,10 @@ static double ref_ms(void (*run)(long)) {
       return spec;
     }
     // Runs a swipl command line. out(s)/err(s) receive the output. Returns the exit code.
-    runArgs(args, { out = () => {}, err = () => {} } = {}) {
+    // stream: output is written as the goals make it (else after each goal)
+    runArgs(args, { out = () => {}, err = () => {}, stream = false } = {}) {
       const spec = Interpreter.parseArgs(args);
+      if (stream) { this.onOut = out; this.onErr = err; }
       this.io.argv = spec.argv;
       const st = this.loadFiles(spec.files);
       for (const f of st.missing) { err('Warning: source_sink `' + f + "' does not exist\n"); }
@@ -7988,7 +8251,7 @@ static double ref_ms(void (*run)(long)) {
       const goal = (g, kind) => {
         const r = this.run(g);
         if (this.log) this.log(r);
-        out(r.output); if (r.errOutput) err(r.errOutput);
+        if (!r.streamed) { out(r.output); if (r.errOutput) err(r.errOutput); }
         if (r.status === 'halt') return { halt: r.code };
         if (r.status === 'error') { err((kind === 'init' ? 'Warning: ' : 'Warning: ') + 'goal (' + g + ') raised exception:\n' + r.error + '\n'); return { code: 2, failed: true }; }
         if (r.status === 'false') { err('Warning: goal (' + g + ') failed\n'); return { code: 1, failed: true }; }
@@ -8029,6 +8292,8 @@ static double ref_ms(void (*run)(long)) {
   function unknown(prog, goalText) {
     let t; try { t = P.readTerm(goalText).term; } catch (e) { return []; }
     const r = reaches(prog, t), out = [];
+    // a program that loads files while it runs defines predicates only then: nothing is known missing
+    if (['consult/1', 'use_module/1', 'use_module/2', 'load_files/2', 'ensure_loaded/1'].some((k) => r.has(k))) return [];
     for (const k of r) {
       if (prog.preds.has(k) || P.builtins[k] || P.CONTROL.has(k) || prog.dynamic.has(k)) continue;
       if (/^call\/\d+$/.test(k) || k === ':/2' || /^'?\$/.test(k)) continue;

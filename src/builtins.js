@@ -30,7 +30,7 @@
 
   // unification / comparison
   det('=/2', (a, e) => e.unify(a[0], a[1]));
-  det('\\=/2', (a, e) => { const m = e.trail.length; const r = e.unify(a[0], a[1]); e.undo(m); return !r; });
+  det('\\=/2', (a, e) => { const m = e.mark(); const r = e.unify(a[0], a[1]); e.undo(m); return !r; });
   det('unify_with_occurs_check/2', (a, e) => e.unify(a[0], a[1]));
   det('==/2', a => compare(a[0], a[1]) === 0);
   det('\\==/2', a => compare(a[0], a[1]) !== 0);
@@ -60,7 +60,7 @@
     const n = D(a[0]), t = D(a[1]);
     if (t.t !== 'c') throw typeError('compound', t);
     if (n.t === 'n') { if (n.v >= 1 && n.v <= t.a.length && e.unify(a[2], t.a[n.v - 1])) yield 'last'; return; }
-    for (let i = 0; i < t.a.length; i++) { const m = e.trail.length; if (e.unify(n, Int(i + 1)) && e.unify(a[2], t.a[i])) yield; e.undo(m); }
+    for (let i = 0; i < t.a.length; i++) { const m = e.mark(); if (e.unify(n, Int(i + 1)) && e.unify(a[2], t.a[i])) yield; e.undo(m); }
   });
   det('=../2', (a, e) => {
     const t = D(a[0]);
@@ -151,20 +151,20 @@
     if (x.t !== 'v') { const p = textOf(x); if (z.startsWith(p) && e.unify(y, Str(z.slice(p.length)))) yield 'last'; return; }
     if (y.t !== 'v') { const q = textOf(y); if (z.endsWith(q) && e.unify(x, Str(z.slice(0, z.length - q.length)))) yield 'last'; return; }
     const cs = [...z];
-    for (let i = 0; i <= cs.length; i++) { const m = e.trail.length; if (e.unify(x, Str(cs.slice(0, i).join(''))) && e.unify(y, Str(cs.slice(i).join('')))) yield; e.undo(m); }
+    for (let i = 0; i <= cs.length; i++) { const m = e.mark(); if (e.unify(x, Str(cs.slice(0, i).join(''))) && e.unify(y, Str(cs.slice(i).join('')))) yield; e.undo(m); }
   });
   nondet('atom_concat/3', function* (a, e) {
     const x = D(a[0]), y = D(a[1]);
     if (x.t !== 'v' && y.t !== 'v') { if (e.unify(a[2], Atom(textOf(x) + textOf(y)))) yield 'last'; return; }
     const z = [...textOf(a[2])];
-    for (let i = 0; i <= z.length; i++) { const m = e.trail.length; if (e.unify(x, Atom(z.slice(0, i).join(''))) && e.unify(y, Atom(z.slice(i).join('')))) yield; e.undo(m); }
+    for (let i = 0; i <= z.length; i++) { const m = e.mark(); if (e.unify(x, Atom(z.slice(0, i).join(''))) && e.unify(y, Atom(z.slice(i).join('')))) yield; e.undo(m); }
   });
   function* subText(a, e, mk) {
     const s = [...textOf(a[0])]; const n = s.length;
     const Bf = D(a[1]), L = D(a[2]), Af = D(a[3]), Sub = D(a[4]);
     if (Sub.t !== 'v') {
       const sub = [...textOf(Sub)]; const k = sub.length; const subs = sub.join('');
-      for (let i = 0; i + k <= n; i++) if (s.slice(i, i + k).join('') === subs) { const m = e.trail.length; if (e.unify(Bf, Int(i)) && e.unify(L, Int(k)) && e.unify(Af, Int(n - i - k))) yield; e.undo(m); }
+      for (let i = 0; i + k <= n; i++) if (s.slice(i, i + k).join('') === subs) { const m = e.mark(); if (e.unify(Bf, Int(i)) && e.unify(L, Int(k)) && e.unify(Af, Int(n - i - k))) yield; e.undo(m); }
       return;
     }
     for (let i = 0; i <= n; i++) {
@@ -172,7 +172,7 @@
       for (let k = 0; i + k <= n; k++) {
         if (L.t === 'n' && L.v !== k) continue;
         if (Af.t === 'n' && Af.v !== n - i - k) continue;
-        const m = e.trail.length;
+        const m = e.mark();
         if (e.unify(Bf, Int(i)) && e.unify(L, Int(k)) && e.unify(Af, Int(n - i - k)) && e.unify(Sub, mk(s.slice(i, i + k).join('')))) yield;
         e.undo(m);
       }
@@ -210,22 +210,22 @@
     const lo = evalArith(a[0]).v, hiT = D(a[1]); const hi = hiT.t === 'a' && (hiT.n === 'inf' || hiT.n === 'infinite') ? Infinity : evalArith(hiT).v;
     const x = D(a[2]);
     if (x.t === 'n') { if (x.v >= lo && x.v <= hi) yield 'last'; return; }
-    for (let i = lo; i <= hi; i++) { const m = e.trail.length; if (e.unify(x, Int(i))) yield i === hi ? 'last' : undefined; e.undo(m); }
+    for (let i = lo; i <= hi; i++) { const m = e.mark(); if (e.unify(x, Int(i))) yield i === hi ? 'last' : undefined; e.undo(m); }
   });
   nondet('member/2', function* (a, e) {
     let l = D(a[1]);
     while (isCons(l)) {
       const nx = D(l.a[1]);
-      const m = e.trail.length;
+      const m = e.mark();
       if (e.unify(a[0], l.a[0])) yield (isNil(nx) ? 'last' : undefined);
       e.undo(m);
       l = nx;
     }
     if (l.t === 'v') { // partial list: generate
-      for (;;) { const h = Var(), t = Var(); const m = e.trail.length; e.bind(l, cons(h, t)); if (e.unify(a[0], h)) yield; e.undo(m); const h2 = Var(); e.bind(l, cons(h2, t)); l = t; }
+      for (;;) { const h = Var(), t = Var(); const m = e.mark(); e.bind(l, cons(h, t)); if (e.unify(a[0], h)) yield; e.undo(m); const h2 = Var(); e.bind(l, cons(h2, t)); l = t; }
     }
   });
-  det('memberchk/2', (a, e) => { let l = D(a[1]); while (isCons(l)) { const m = e.trail.length; if (e.unify(a[0], l.a[0])) return true; e.undo(m); l = D(l.a[1]); } if (l.t === 'v') { return e.unify(l, cons(a[0], Var())); } return false; });
+  det('memberchk/2', (a, e) => { let l = D(a[1]); while (isCons(l)) { const m = e.mark(); if (e.unify(a[0], l.a[0])) return true; e.undo(m); l = D(l.a[1]); } if (l.t === 'v') { return e.unify(l, cons(a[0], Var())); } return false; });
   nondet('append/3', function* (a, e) {
     const xs = listToArray(a[0]);
     if (xs) { if (e.unify(a[2], list(xs, a[1]))) yield 'last'; return; }
@@ -234,7 +234,7 @@
     // enumerate prefixes of a[2]
     let z = D(a[2]); const pre = [];
     for (;;) {
-      const m = e.trail.length;
+      const m = e.mark();
       if (e.unify(a[0], list(pre)) && e.unify(a[1], z)) yield (isNil(z) ? 'last' : undefined);
       e.undo(m);
       if (isCons(z)) { pre.push(z.a[0]); z = D(z.a[1]); continue; }
@@ -250,7 +250,7 @@
     if (l.t !== 'v') return;
     const N = D(a[1]);
     if (N.t === 'n') { if (N.v < n) return; const vs = []; for (let i = n; i < N.v; i++) vs.push(Var()); if (e.unify(l, list(vs))) yield 'last'; return; }
-    for (let k = n; ; k++) { const vs = []; for (let i = n; i < k; i++) vs.push(Var()); const m = e.trail.length; if (e.unify(l, list(vs)) && e.unify(N, Int(k))) yield; e.undo(m); }
+    for (let k = n; ; k++) { const vs = []; for (let i = n; i < k; i++) vs.push(Var()); const m = e.mark(); if (e.unify(l, list(vs)) && e.unify(N, Int(k))) yield; e.undo(m); }
   });
   det('reverse/2', (a, e) => e.unify(a[1], list(arr(a[0]).slice().reverse())));
   nondet('nth0/3', function* (a, e) { yield* nth(a, e, 0); });
@@ -258,7 +258,7 @@
   function* nth(a, e, base) {
     const i = D(a[0]); const l = arr(a[1]);
     if (i.t === 'n') { if (typeof i.v !== 'number') return; const k = i.v - base; if (k >= 0 && k < l.length && e.unify(a[2], l[k])) yield 'last'; return; }
-    for (let k = 0; k < l.length; k++) { const m = e.trail.length; if (e.unify(i, Int(k + base)) && e.unify(a[2], l[k])) yield; e.undo(m); }
+    for (let k = 0; k < l.length; k++) { const m = e.mark(); if (e.unify(i, Int(k + base)) && e.unify(a[2], l[k])) yield; e.undo(m); }
   }
   nondet('last/2', function* (a, e) { const l = arr(a[0]); if (l.length && e.unify(a[1], l[l.length - 1])) yield 'last'; });
   det('msort/2', (a, e) => e.unify(a[1], list(arr(a[0]).slice().sort(compare))));
@@ -266,7 +266,7 @@
   det('predsort/3', () => { throw new Error('predsort/3 is not supported'); });
   det('sort/4', (a, e) => {
     const k = D(a[0]).v; const ord = D(a[1]).n; let l = arr(a[2]).slice();
-    const kf = x => k === 0 ? x : D(x).a[k - 1];
+    const kf = x => { if (k === 0) return x; const t = D(x); if (t.t !== 'c' || t.a.length < k) throw new PlError(Cmp('error', [Cmp('type_error', [Atom('compound'), t]), Var()])); return t.a[k - 1]; };
     const cmp = (x, y) => compare(kf(x), kf(y));
     if (ord === '@<' || ord === '@=<') l.sort(cmp); else l.sort((x, y) => -cmp(x, y));
     if (ord === '@<' || ord === '@>') { const o = []; for (const x of l) if (!o.length || cmp(o[o.length - 1], x) !== 0) o.push(x); l = o; }
@@ -282,27 +282,27 @@
   det('min_member/2', (a, e) => { const l = arr(a[1]); if (!l.length) return false; return e.unify(a[0], l.reduce((m, x) => compare(x, m) < 0 ? x : m)); });
   // the list is ground: its cells are marked so (copies and groundness checks of it are then O(1))
   det('numlist/3', (a, e) => { const lo = evalArith(a[0]).v, hi = evalArith(a[1]).v; let l = P.NIL; for (let i = hi; i >= lo; i--) l = { t: 'c', f: '.', a: [Int(i), l], gr: true }; return e.unify(a[2], l); });
-  det('delete/3', (a, e) => { const o = arr(a[0]).filter(x => { const m = e.trail.length; const r = e.unify(x, a[1]); e.undo(m); return !r; }); return e.unify(a[2], list(o)); });
+  det('delete/3', (a, e) => { const o = arr(a[0]).filter(x => { const m = e.mark(); const r = e.unify(x, a[1]); e.undo(m); return !r; }); return e.unify(a[2], list(o)); });
   det('exclude_eq/3', () => false);
-  det('subtract/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => !b.some(y => { const m = e.trail.length; const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o)); });
-  det('intersection/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => b.some(y => { const m = e.trail.length; const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o)); });
-  det('union/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => !b.some(y => { const m = e.trail.length; const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o.concat(b))); });
+  det('subtract/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => !b.some(y => { const m = e.mark(); const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o)); });
+  det('intersection/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => b.some(y => { const m = e.mark(); const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o)); });
+  det('union/3', (a, e) => { const b = arr(a[1]); const o = arr(a[0]).filter(x => !b.some(y => { const m = e.mark(); const r = e.unify(x, y); e.undo(m); return r; })); return e.unify(a[2], list(o.concat(b))); });
   det('flatten/2', (a, e) => { const o = []; (function f(t) { t = D(t); if (isNil(t)) return; if (isCons(t)) { f(t.a[0]); f(t.a[1]); return; } o.push(t); })(a[0]); return e.unify(a[1], list(o)); });
   det('sumlist/3', () => false);
   det('exclude/3', null); delete B['exclude/3'];
   nondet('select/3', function* (a, e) {
     const l = listToArray(a[1]);
-    if (l) { for (let i = 0; i < l.length; i++) { const m = e.trail.length; if (e.unify(a[0], l[i]) && e.unify(a[2], list(l.slice(0, i).concat(l.slice(i + 1))))) yield; e.undo(m); } return; }
+    if (l) { for (let i = 0; i < l.length; i++) { const m = e.mark(); if (e.unify(a[0], l[i]) && e.unify(a[2], list(l.slice(0, i).concat(l.slice(i + 1))))) yield; e.undo(m); } return; }
     const r = listToArray(a[2]); if (!r) throw instErr();
-    for (let i = 0; i <= r.length; i++) { const m = e.trail.length; if (e.unify(a[1], list(r.slice(0, i).concat([a[0]], r.slice(i))))) yield; e.undo(m); }
+    for (let i = 0; i <= r.length; i++) { const m = e.mark(); if (e.unify(a[1], list(r.slice(0, i).concat([a[0]], r.slice(i))))) yield; e.undo(m); }
   });
-  det('selectchk/3', (a, e) => { const l = arr(a[1]); for (let i = 0; i < l.length; i++) { const m = e.trail.length; if (e.unify(a[0], l[i]) && e.unify(a[2], list(l.slice(0, i).concat(l.slice(i + 1))))) return true; e.undo(m); } return false; });
+  det('selectchk/3', (a, e) => { const l = arr(a[1]); for (let i = 0; i < l.length; i++) { const m = e.mark(); if (e.unify(a[0], l[i]) && e.unify(a[2], list(l.slice(0, i).concat(l.slice(i + 1))))) return true; e.undo(m); } return false; });
   nondet('permutation/2', function* (a, e) {
     const l = listToArray(a[0]) || (listToArray(a[1]) ? null : null);
     let src = l, other = a[1];
     if (!src) { src = arr(a[1]); other = a[0]; }
     const perm = function* (xs) { if (!xs.length) { yield []; return; } for (let i = 0; i < xs.length; i++) for (const r of perm(xs.slice(0, i).concat(xs.slice(i + 1)))) yield [xs[i]].concat(r); };
-    for (const p of perm(src)) { const m = e.trail.length; if (e.unify(other, list(p))) yield; e.undo(m); }
+    for (const p of perm(src)) { const m = e.mark(); if (e.unify(other, list(p))) yield; e.undo(m); }
   });
   det('exclude_dummy/0', () => true); delete B['exclude_dummy/0'];
   det('pairs_keys_values/3', (a, e) => { const l = listToArray(a[0]); if (l) return e.unify(a[1], list(l.map(x => D(x).a[0]))) && e.unify(a[2], list(l.map(x => D(x).a[1]))); const ks = arr(a[1]), vs = arr(a[2]); return e.unify(a[0], list(ks.map((k, i) => Cmp('-', [k, vs[i]])))); });
@@ -381,15 +381,25 @@
   nondet('retract/1', function* (a, e) {
     let t = D(a[0]); let h = t, b = P.TRUE; if (t.t === 'c' && t.f === ':-') { h = D(t.a[0]); b = t.a[1]; }
     const cls = e.prog.preds.get(P.key(h)); if (!cls) return;
-    for (const cl of cls.slice()) { const m = e.trail.length; const mp = new Map(); if (e.unify(h, copy(cl.head, mp)) && e.unify(b, copy(cl.body, mp))) { const i = cls.indexOf(cl); if (i >= 0) cls.splice(i, 1); yield; } e.undo(m); }
+    for (const cl of cls.slice()) { const m = e.mark(); const mp = new Map(); if (e.unify(h, copy(cl.head, mp)) && e.unify(b, copy(cl.body, mp))) { const i = cls.indexOf(cl); if (i >= 0) cls.splice(i, 1); yield; } e.undo(m); }
   });
-  det('retractall/1', (a, e) => { const h = D(a[0]); const k = P.key(h); const cls = e.prog.preds.get(k); if (!cls) { e.prog.preds.set(k, []); e.prog.dynamic.add(k); return true; } for (const cl of cls.slice()) { const m = e.trail.length; if (e.unify(h, copy(cl.head))) cls.splice(cls.indexOf(cl), 1); e.undo(m); } return true; });
+  det('retractall/1', (a, e) => { const h = D(a[0]); const k = P.key(h); const cls = e.prog.preds.get(k); if (!cls) { e.prog.preds.set(k, []); e.prog.dynamic.add(k); return true; } for (const cl of cls.slice()) { const m = e.mark(); if (e.unify(h, copy(cl.head))) cls.splice(cls.indexOf(cl), 1); e.undo(m); } return true; });
   det('nb_setval/2', (a, e) => { e.globals.set(textOf(a[0]), copy(a[1])); return true; });
   det('b_setval/2', B['nb_setval/2'].fn);
   det('nb_getval/2', (a, e) => { const v = e.globals.get(textOf(a[0])); if (!v) throw new PlError(Cmp('error', [Cmp('existence_error', [Atom('variable'), a[0]]), Var()])); return e.unify(a[1], v); });
   det('b_getval/2', B['nb_getval/2'].fn);
   det('garbage_collect/0', () => true);
-  det('statistics/2', (a, e) => e.unify(a[1], list([Int(Math.round(P.now())), Int(0)])));
+  // statistics/2 as in SWI-Prolog: cputime and process_cputime/real_time/epoch/inferences are numbers,
+  // runtime/walltime/system_time are [Total, SinceLast] in milliseconds
+  det('statistics/2', (a, e) => {
+    const k = P.textOf(a[0]), ms = P.now(); e.statLast = e.statLast || {};
+    if (k === 'cputime' || k === 'process_cputime') return e.unify(a[1], Num(ms / 1000, true));
+    if (k === 'inferences') return e.unify(a[1], Int(e.steps));
+    if (k === 'epoch') return e.unify(a[1], Num(Date.now() / 1000 - ms / 1000, true));
+    if (k === 'real_time') return e.unify(a[1], Int(Math.floor(Date.now() / 1000)));
+    const last = e.statLast[k] || 0; e.statLast[k] = ms;
+    return e.unify(a[1], list([Int(Math.round(ms)), Int(Math.round(ms - last))]));
+  });
   det('get_time/1', (a, e) => e.unify(a[0], Num(Date.now() / 1000, true)));
   det('random/1', (a, e) => e.unify(a[0], Num(Math.random(), true)));
   det('random_between/3', (a, e) => { const lo = evalArith(a[0]).v, hi = evalArith(a[1]).v; return e.unify(a[2], Int(lo + Math.floor(Math.random() * (hi - lo + 1)))); });

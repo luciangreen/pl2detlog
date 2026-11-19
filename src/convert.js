@@ -160,7 +160,19 @@
       if (kind === 'partition' && ar !== 4) return null;
       const clo = D(g.a[0]);
       if (clo.t === 'v') throw convErr(ctx, kind + '/' + ar + ' with an unbound closure needs call/N');
-      const fv = termVars(clo);
+      let fv = termVars(clo);
+      // a yall lambda: its parameters and the variables only it has are its own, fresh at each call
+      // (yall copies the lambda); Free/Params>>Body shares Free; otherwise the variables the clause
+      // also has outside the lambda are passed in (its inputs)
+      if (clo.t === 'c' && clo.f === '>>' && clo.a.length === 2) {
+        const ps = D(clo.a[0]);
+        if (ps.t === 'c' && ps.f === '/' && ps.a.length === 2) { const free = new Set(termVars(ps.a[0])); fv = fv.filter((v) => free.has(v)); }
+        else if (ctx.clause) {
+          const count = (t, m) => { const st = [t]; while (st.length) { const x = D(st.pop()); if (x.t === 'v') m.set(x, (m.get(x) || 0) + 1); else if (x.t === 'c') for (const y of x.a) st.push(y); } return m; };
+          const inC = count(ctx.clause, new Map()), inL = count(clo, new Map());
+          fv = fv.filter((v) => (inC.get(v) || 0) > (inL.get(v) || 0));
+        }
+      }
       const cloKey = kind + ar + ':' + P.variantKey(Cmp('-', [list(fv), clo]));
       let nm = specs.get(cloKey);
       const nLists = kind === 'maplist' ? ar - 1 : kind === 'foldl' ? ar - 3 : 1;
@@ -243,7 +255,7 @@
     }
     function convErr(ctx, msg) { const e = new Error((ctx && ctx.pred ? ctx.pred + ': ' : '') + msg); e.conv = true; e.pred = ctx && ctx.pred; return e; }
     function mkNormCtx(pred, cl) {
-      const ctx = { pred, rewrites: [], warn: m => out.warnings.push({ pred, msg: m }) };
+      const ctx = { pred, rewrites: [], warn: m => out.warnings.push({ pred, msg: m }), clause: Cmp(':-', [cl.head, cl.body]) };
       // variables that occur outside bagof/setof goals (for the free-variable check)
       ctx.otherVars = new Set(termVars(cl.head));
       for (const g of flatConj(cl.body)) { const gd = D(g); if (!(gd.t === 'c' && (gd.f === 'bagof' || gd.f === 'setof'))) termVars(gd).forEach(v => ctx.otherVars.add(v)); else termVars(gd.a[2]).forEach(v => ctx.otherVars.add(v)); }

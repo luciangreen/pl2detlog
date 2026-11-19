@@ -249,10 +249,10 @@
 
   function Engine(prog, opts) {
     this.prog = prog; opts = opts || {};
-    this.trail = [];
+    this.trail = []; this.markVid = Infinity;
     this.steps = 0; this.cpCreated = 0; this.maxCP = 0; this.out = '';
     this.stepLimit = opts.stepLimit || 5e6;
-    this.globals = new Map();
+    this.globals = opts.globals || new Map();
     this.onOut = opts.onOut || null;
     // SWI-Prolog's I/O (src/swi.js): io = { out(s), err(s), readFile(p), writeFile(p, s, append), stat(p), list(p), stdin, argv, cwd }
     this.accel = opts.accel || null;
@@ -260,14 +260,27 @@
     this.flags = { occurs_check: false };
     this.depth = 0;
   }
-  Engine.prototype.bind = function (v, t) { v.ref = t; this.trail.push(v); };
+  // a binding is trailed only when the variable is older than the newest mark (a choicepoint or a
+  // builtin's undo point): a newer one is unreachable once older bindings are undone (as in the WAM),
+  // so deterministic code does not grow the trail. Marks are taken with mark().
+  Engine.prototype.bind = function (v, t) { v.ref = t; if (!(v.id > this.markVid)) this.trail.push(v); };
+  Engine.prototype.mark = function () { this.markVid = P.varCount(); return this.trail.length; };
   Engine.prototype.undo = function (mark) { const tr = this.trail; while (tr.length > mark) tr.pop().ref = null; };
   Engine.prototype.unify = function (a, b) {
-    const st = [a, b];
+    const st = [a, b]; let n = 0, seen = null;
     while (st.length) {
       let y = deref(st.pop()), x = deref(st.pop());
       if (x === y) continue;
-      if (x.t === 'v') { this.bind(x, y); continue; }
+      // cyclic (rational) terms, as SWI-Prolog unifies them: after many steps, a pair of compounds
+      // already being unified is taken as unified (co-induction), so the loop ends
+      if (++n > 100000 && x.t === 'c' && y.t === 'c') {
+        seen = seen || new Map(); let ys = seen.get(x);
+        if (ys && ys.has(y)) continue;
+        if (!ys) seen.set(x, ys = new Set()); ys.add(y);
+      }
+      // two variables: the newer is bound to the older (as in SWI-Prolog), so the standard order
+      // of the older stays as it was, and the binding is less often trailed
+      if (x.t === 'v') { if (y.t === 'v' && y.id > x.id) this.bind(y, x); else this.bind(x, y); continue; }
       if (y.t === 'v') { this.bind(y, x); continue; }
       if (x.t !== y.t) return false;
       switch (x.t) {
@@ -328,7 +341,7 @@
       }
       const fr = goals; goals = fr.next;
       let g = deref(fr.g);
-      if (++self.steps > self.stepLimit) throw new LimitError('step limit (' + self.stepLimit + ') exceeded');
+      if (++self.steps > self.stepLimit) throw new LimitError('step limit (' + String(self.stepLimit) + ') exceeded');
       try {
         if (g.t === 'v') throw instErr();
         let f, n, a;
@@ -345,23 +358,23 @@
             const l = deref(a[0]);
             if (l.t === 'c' && l.f === '->' && l.a.length === 2) {
               const B = cps.length;
-              push({ kind: 'alt', goals: { g: a[1], cb: fr.cb, next: goals }, trail: self.trail.length });
+              push({ kind: 'alt', goals: { g: a[1], cb: fr.cb, next: goals }, trail: self.mark() });
               goals = { g: l.a[0], cb: cps.length, next: { g: Cmp('$ite', [Int(B)]), cb: fr.cb, next: { g: l.a[1], cb: fr.cb, next: goals } } };
               continue;
             }
             if (l.t === 'c' && l.f === '*->' && l.a.length === 2) {
-              const alt = { kind: 'alt', goals: { g: a[1], cb: fr.cb, next: goals }, trail: self.trail.length };
+              const alt = { kind: 'alt', goals: { g: a[1], cb: fr.cb, next: goals }, trail: self.mark() };
               push(alt);
               goals = { g: l.a[0], cb: cps.length, next: { g: Cmp('$softcut', [{ t: 'n', v: 0, cp: alt }]), cb: fr.cb, next: { g: l.a[1], cb: fr.cb, next: goals } } };
               continue;
             }
-            push({ kind: 'alt', goals: { g: a[1], cb: fr.cb, next: goals }, trail: self.trail.length });
+            push({ kind: 'alt', goals: { g: a[1], cb: fr.cb, next: goals }, trail: self.mark() });
             goals = { g: a[0], cb: fr.cb, next: goals };
             continue;
           }
           case '->/2': {
             const B = cps.length;
-            push({ kind: 'barrier', trail: self.trail.length });
+            push({ kind: 'barrier', trail: self.mark() });
             goals = { g: a[0], cb: cps.length, next: { g: Cmp('$ite', [Int(B)]), cb: fr.cb, next: { g: a[1], cb: fr.cb, next: goals } } };
             continue;
           }
@@ -370,31 +383,31 @@
           case '$softcut/1': { const alt = a[0].cp; const i = cps.indexOf(alt); if (i >= 0) cps[i] = { kind: 'barrier', trail: alt.trail }; continue; }
           case '\\+/1': case 'not/1': {
             const B = cps.length;
-            push({ kind: 'alt', goals: goals, trail: self.trail.length });
+            push({ kind: 'alt', goals: goals, trail: self.mark() });
             goals = { g: a[0], cb: cps.length, next: { g: Cmp('$ite', [Int(B)]), cb: fr.cb, next: { g: P.FAIL, cb: fr.cb, next: null } } };
             continue;
           }
           case 'call/1': goals = { g: a[0], cb: cps.length, next: goals }; continue;
           case 'once/1': {
             const B = cps.length;
-            push({ kind: 'barrier', trail: self.trail.length });
+            push({ kind: 'barrier', trail: self.mark() });
             goals = { g: a[0], cb: cps.length, next: { g: Cmp('$ite', [Int(B)]), cb: fr.cb, next: goals } };
             continue;
           }
           case 'ignore/1': {
             const B = cps.length;
-            push({ kind: 'alt', goals: goals, trail: self.trail.length });
+            push({ kind: 'alt', goals: goals, trail: self.mark() });
             goals = { g: a[0], cb: cps.length, next: { g: Cmp('$ite', [Int(B)]), cb: fr.cb, next: goals } };
             continue;
           }
           case 'forall/2': {
-            let ok = true; const mark = self.trail.length;
-            self.solve(a[0], () => { let s = false; const m2 = self.trail.length; self.solve(a[1], () => { s = true; return false; }); self.undo(m2); if (!s) { ok = false; return false; } return true; });
+            let ok = true; const mark = self.mark();
+            self.solve(a[0], () => { let s = false; const m2 = self.mark(); self.solve(a[1], () => { s = true; return false; }); self.undo(m2); if (!s) { ok = false; return false; } return true; });
             self.undo(mark);
             if (!ok && !backtrack()) return false; continue;
           }
           case 'findall/3': case 'findall/4': {
-            const res = []; const mark = self.trail.length;
+            const res = []; const mark = self.mark();
             self.solve(a[1], () => { res.push(copy(a[0])); return true; });
             self.undo(mark);
             if (!self.unify(a[2], list(res, n === 4 ? a[3] : NIL))) { if (!backtrack()) return false; }
@@ -407,7 +420,7 @@
             const tv = termVars(a[0]); const ex = new Set(tv.concat(exVars));
             const free = termVars(gl).filter(v => !ex.has(v));
             const W = list(free);
-            const res = []; const mark = self.trail.length;
+            const res = []; const mark = self.mark();
             self.solve(gl, () => { res.push(copy(Cmp('-', [W, a[0]]))); return true; });
             self.undo(mark);
             if (!res.length) { if (!backtrack()) return false; continue; }
@@ -427,7 +440,7 @@
             continue;
           }
           case 'aggregate_all/3': {
-            const spec = deref(a[0]); const res = []; const mark = self.trail.length;
+            const spec = deref(a[0]); const res = []; const mark = self.mark();
             const sk = P.key(spec);
             const tmpl = sk === 'count/0' ? P.TRUE : spec.t === 'c' ? spec.a[0] : P.TRUE;
             self.solve(a[1], () => { res.push(copy(tmpl)); return true; });
@@ -447,14 +460,14 @@
             continue;
           }
           case 'catch/3': {
-            push({ kind: 'catch', catcher: a[1], recovery: a[2], next: goals, cb: fr.cb, trail: self.trail.length });
+            push({ kind: 'catch', catcher: a[1], recovery: a[2], next: goals, cb: fr.cb, trail: self.mark() });
             goals = { g: a[0], cb: cps.length, next: goals };
             continue;
           }
           case 'throw/1': throw new PlError(copy(a[0]));
           case 'with_output_to/2': {
-            const save = self.out; self.out = ''; let ok = false; const mark = self.trail.length;
-            try { self.solve(a[1], () => { ok = true; return false; }); } finally { var txt = self.out; self.out = save; }
+            const save = self.out, saveOn = self.onOut; self.out = ''; self.onOut = null; let ok = false; const mark = self.mark();
+            try { self.solve(a[1], () => { ok = true; return false; }); } finally { var txt = self.out; self.out = save; self.onOut = saveOn; }
             const sk = deref(a[0]);
             if (!ok) { self.undo(mark); if (!backtrack()) return false; continue; }
             const v = sk.f === 'atom' ? Atom(txt) : sk.f === 'string' ? Str(txt) : sk.f === 'codes' ? P.codesList(txt) : P.charsList(txt);
@@ -471,12 +484,13 @@
           goals = { g: ng, cb: cps.length, next: goals };
           continue;
         }
-        const clauses = self.prog.preds.get(k);
+        // lib: a library call (lists:reverse(..)) goes to the built-in even when a module exports the name
+        const clauses = g.lib ? null : self.prog.preds.get(k);
         // a faster route for this call (the interpreter's: src/interp.js), as a generator of its answers
         if (clauses && self.accel) {
           const it = self.accel(k, g, self);
           if (it) {
-            const mark = self.trail.length;
+            const mark = self.mark();
             const r = it.next();
             if (r.done) { self.undo(mark); if (!backtrack()) return false; continue; }
             if (r.value !== 'last') push({ kind: 'gen', it, next: goals, trail: mark });
@@ -493,7 +507,7 @@
         if (bi) {
           if (bi.nondet) {
             const it = bi.fn(a, self, g);
-            const mark = self.trail.length;
+            const mark = self.mark();
             const r = it.next();
             if (r.done) { self.undo(mark); if (!backtrack()) return false; continue; }
             if (r.value === 'last') continue; // deterministic exit
@@ -506,7 +520,7 @@
             goals = { g: ng, cb: cps.length, next: goals };
             continue;
           }
-          const mark = self.trail.length;
+          const mark = self.trail.length; // a failed builtin backtracks anyway: no new mark needed
           if (!bi.fn(a, self, g)) { self.undo(mark); if (!backtrack()) return false; }
           continue;
         }
@@ -515,6 +529,8 @@
         if (self.prog.privates && self.prog.privates.has(k)) { const nm = self.prog.privates.get(k)[0]; goals = { g: g.t === 'a' ? Atom(nm) : Cmp(nm, a), cb: cps.length, next: goals }; continue; }
         throw existErr(k);
       } catch (e) {
+        // a syntax error from reading text (term_string/2, read_term/2, ...) is a Prolog error that catch/3 sees
+        if (e && e.prolog && !(e instanceof PlError) && /^Syntax error/.test(e.message)) e = new PlError(P.Cmp('error', [P.Cmp('syntax_error', [P.Atom(String(e.message).replace(/^Syntax error( \(line \d+\))?: /, ''))]), P.Var()]));
         if (!(e instanceof PlError)) throw e;
         // find catch frame
         let handled = false;
@@ -522,7 +538,7 @@
           const cp = cps.pop();
           if (cp.kind === 'catch') {
             self.undo(cp.trail);
-            const mark = self.trail.length;
+            const mark = self.mark();
             const ball = copy(e.term);
             if (self.unify(cp.catcher, ball)) { goals = { g: cp.recovery, cb: cp.cb, next: cp.next }; handled = true; break; }
             self.undo(mark);
@@ -559,10 +575,12 @@
       const hasMore = j < clauses.length;
       const cb = cp ? cp.cb : cps.length;
       if (cp) { if (hasMore) { cp.idx = j; } else cps.pop(); }
-      else if (hasMore) { cp = { kind: 'clauses', goal: g, clauses, idx: j, next, cb, trail: self.trail.length }; push(cp); }
+      else if (hasMore) { cp = { kind: 'clauses', goal: g, clauses, idx: j, next, cb, trail: self.mark() }; push(cp); }
       const cl = clauses[i];
       const m = new Map();
       const h = copy(cl.head, m);
+      // the goal's variables are older than this call's choicepoint (or need no undo without one):
+      // the trail's length is enough to undo a failed head unification
       const mark = self.trail.length;
       if (self.unify(h, g)) {
         const body = deref(cl.body);
@@ -598,7 +616,7 @@
         answers.push({ text }); events.push({ k: 'row', text });
         return answers.length < maxAnswers;
       });
-    } catch (e) { if (e && e.halt) { halted = e.code; } else error = e.limit ? e.message : e.prolog ? (e.term ? errText(e.term) : e.message) : e.message; limit = !!e.limit; if (!e.prolog && !e.limit && opts.debug) console.error(e); }
+    } catch (e) { if (e && e.halt) { halted = e.code; } else error = e.limit ? e.message : e.prolog ? (e.term ? errText(e.term) : e.message) : e.message; limit = !!e.limit; if (!e.prolog && !e.limit && (opts.debug || (typeof process !== "undefined" && process.env && process.env.PL2DETLOG_DEBUG))) console.error(e); }
     const t1 = now();
     eng.undo(0); // leave the (possibly reused) query term unbound
     if (eng.out.length > lastOut) events.push({ k: 'out', text: eng.out.slice(lastOut) });

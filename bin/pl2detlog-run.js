@@ -78,7 +78,9 @@ function handOver(why) {
   process.exit(r.status ?? 1);
 }
 
-const it = new P.Interpreter({ io, store, nativeC, noAccel: env.PL2DETLOG_NO_ACCEL === '1', checked: own.has('--checked'), log: explain ? (r) => process.stderr.write('% ' + r.plan.goal + ': ' + r.route + (r.why ? ' (' + r.why + ')' : '') + '\n') : null });
+// no step or time limit by default, as in swipl; PL2DETLOG_TIME_LIMIT (seconds) sets one
+const tl = Number(env.PL2DETLOG_TIME_LIMIT) || 0;
+const it = new P.Interpreter({ io, store, nativeC, stepLimit: tl ? undefined : Infinity, timeLimitMs: tl ? tl * 1000 : Infinity, noAccel: env.PL2DETLOG_NO_ACCEL === '1', checked: own.has('--checked'), log: explain ? (r) => process.stderr.write('% ' + r.plan.goal + ': ' + r.route + (r.why ? ' (' + r.why + ')' : '') + '\n') : null });
 // a program that needs SWI-Prolog: checked before anything runs, so nothing happens twice
 if (swipl) {
   const spec = P.Interpreter.parseArgs(args);
@@ -90,5 +92,5 @@ if (swipl) {
   for (const g of goals) { const u = P.interp.unknown(it.prog, g); if (u.length) needs.push('unknown ' + u.slice(0, 3).join(', ')); }
   if (needs.length) handOver(needs.join('; '));
 }
-const code = it.runArgs(args, { out: (s) => s && process.stdout.write(s), err: (s) => s && process.stderr.write(s) });
+const code = it.runArgs(args, { out: (s) => s && process.stdout.write(s), err: (s) => s && process.stderr.write(s), stream: true });
 process.exitCode = code;

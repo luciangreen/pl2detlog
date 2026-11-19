@@ -140,9 +140,9 @@ The sweep `fib(N, F)` for N = 2..18 fits O(1.64ⁿ) for Prolog, the interpreter 
 
 In the C export, `fib(20, F)` takes 133 ms as plain Detlog code and 3 µs as MNN Detlog.
 
-## The interpreter: SWI-Prolog programs on the fastest route
+## The interpreter: SWI-Prolog programs on the Detlog MNN and C route
 
-`bin/pl2detlog-run.js` takes a `swipl` command line and runs it without SWI-Prolog, on the fastest exact route for each goal (`src/interp.js`):
+`bin/pl2detlog-run.js` takes a `swipl` command line and runs it without SWI-Prolog (`src/interp.js`). Each goal that converts runs on one route: the intersection of Detlog MNN and C. That is the proved MNN program, with its C tier for the predicates that compile to C:
 
 ```sh
 node bin/pl2detlog-run.js -g main -t halt proofs/updates.pl      # as: swipl -g main -t halt proofs/updates.pl
@@ -151,11 +151,12 @@ node bin/pl2detlog-run.js --explain -g "queens(8, Qs), print(Qs), nl" -t halt qu
 
 | Route | What runs | Used when |
 | --- | --- | --- |
-| C | The C export, compiled with the computer's C compiler (`cc`, or `$CC`) and run as a process. In a web page, the same analysis runs as JavaScript (the native tier). | The goal's calls meet the C route's type contract, its answers equal the MNN route's on the first run, and it is the fastest. |
-| MNN | The proved Detlog MNN rewrite, run by the JIT. | The conversion is exact and the MNN route is the fastest. |
-| Prolog | The reference engine, with SWI-Prolog's library (`src/swi.js`). | The goal uses what only Prolog keeps exact (files and streams, `assert`, messages), the conversion has errors, the routes disagree, or plain Prolog is the fastest. Inside it, a predicate that is called often can run on the compiled Detlog instead. Its first calls run both ways, the answers and output must be the same, and the faster way is kept. Predicates that look at variables themselves (`==`, `var/1`, `copy_term/2`, ...) stay on Prolog. |
+| Detlog MNN and C | The proved Detlog MNN rewrite, run by the JIT, with the C tier for every predicate whose modes compile to C (as JavaScript in a page, `C (JS)`; plain `MNN` when no predicate compiles). On Node, a goal that takes 5 ms or more also runs as the C export, compiled with `cc` (or `$CC`), and that binary is kept. | The conversion is exact and, on the first run, its answers and output equal Prolog's. |
+| Prolog | The reference engine, with SWI-Prolog's library (`src/swi.js`). | The goal uses what only Prolog keeps exact (files and streams, `assert`, messages), the conversion has errors, or the routes disagree. Inside it, a predicate that is called often can run on the compiled Detlog instead. Its first calls run both ways, the answers and output must be the same, and the faster way is kept. Predicates that look at variables themselves (`==`, `var/1`, `copy_term/2`, ...) stay on Prolog. |
 
-**First run and later runs.** The first run of a goal times the routes that apply and keeps the fastest. The choice and the conversion go into a store: `$PL2DETLOG_CACHE` (default `~/.cache/pl2detlog`), or the browser's storage in a page. The next process starts from the store. Compiled C programs are kept there too.
+**Why one route.** The interpreter used to time every route on a goal's first run and keep the fastest. On the 25 bundled example goals, the Detlog MNN and C route was the fastest, or within 5% of it, on 23. Its total was 1.62 ms against 1.58 ms for the fastest route of each goal, and MNN without the C tier took 110 ms. Timing every route made the first runs about 20% slower (963 ms against 801 ms in all). So the first run now runs the Detlog MNN and C route once and checks its answers against Prolog once.
+
+**First run and later runs.** The first run of a goal picks its route. The choice and the conversion go into a store: `$PL2DETLOG_CACHE` (default `~/.cache/pl2detlog`), or the browser's storage in a page. The next process starts from the store. Compiled C programs are kept there too.
 
 **The store and the thermodynamic compression MNN.** Text in the store (the conversion and the choice) is kept as thermodynamic compression codes (`src/thermo.js`), a port of mnns's `prolog/thermo/thermo.pl`. A sequence is stored as its symbol counts and its rank among all sequences with those counts. That rank fits in exactly ceil(log2 M) bits for a class of M sequences, so no lossless code for the class is shorter. Each position's neuron adds M·(c1+…+c(i−1))/N to the rank. Decoding finds a position's symbol from one quotient: q = ⌊R·N/M⌋ lies in its count block. A record is kept in this form only when it is smaller and decoding it is not slower than doing the conversion again; otherwise it is kept as JSON. `P.thermo.prove` checks round trip, bijection, neuron sum and the entropy bound on every sequence of a finite domain, as `thermo_prove/3` does.
 
@@ -170,9 +171,24 @@ node bin/pl2detlog-run.js --explain -g "queens(8, Qs), print(Qs), nl" -t halt qu
 - Unicode letters and symbol characters, `=@=`, operators as operands (`is/2`), `op/3` and module-exported operators;
 - `halt/1` exit codes, `initialization/1,2`, and swipl's messages for a goal that fails or raises an error.
 
-**When SWI-Prolog is still used.** A program can need what only SWI-Prolog has: it defines `term_expansion`/`goal_expansion`, calls a predicate that is not defined or built in, or has a syntax error the reader doesn't accept. The command line checks for these before running anything. When `swipl` is installed it hands the same arguments over (`--no-swipl` turns this off). In a web page it runs on the interpreter regardless.
+**Starlog and load-time expansion.** `term_expansion/2` and `goal_expansion/2` are applied while files load, as SWI-Prolog applies them, including in files loaded while the program runs (`expand_term/2` and `expand_goal/2` too). Starlog's operators are read and written with the brackets they need. Everything in Starlog runs on the interpreter: Visual Starlog's examples, its 51 `tests/test_*.pl` files, and the 18 plunit units of `tests/run_tests.pl`. plunit is built in: `begin_tests/1,2` (unit conditions included), `run_tests/0,1` (a unit, `Unit:Test`, or a list), and the test options `true(..)`, `fail`, `throws(..)`, `error(..)`, `all(..)` and `set(..)`.
 
-**How close it is to SWI-Prolog.** MNN in Action (`mnnaction`) drives all of mnns and S2A2 through `swipl`. Its 44 demo runs were recorded on SWI-Prolog. On the interpreter, 41 of them give byte-identical JSON. The three that differ are S2A2's `fold.pl` derivations and an induction proof: the interpreter finds no derivation or proof where SWI-Prolog finds one. LucianOS's and Lucian Office's proof programs (`proofs/*.pl`) prove all their theorems and match all 200 recorded runs.
+**When SWI-Prolog is still used.** A program can need what only SWI-Prolog has: it defines `term_expansion/4`/`goal_expansion/4` or `prolog_load_file/2`, calls a predicate that is not defined or built in, or has a syntax error the reader doesn't accept. The command line checks for these before running anything. When `swipl` is installed it hands the same arguments over (`--no-swipl` turns this off). In a web page it runs on the interpreter regardless.
+
+**How close it is to SWI-Prolog.** MNN in Action (`mnnaction`) drives all of mnns and S2A2 through `swipl`. Its 44 demo runs were recorded on SWI-Prolog. On the interpreter, all 44 give byte-identical JSON. mnns's S2A2 bridge tests pass (18 of 18), and so do the 34 tests of S2A2's `fold_tests.pl` (in 5 s). Getting there fixed these:
+- `copy_term/2` no longer marks a term ground when it keeps one of its variables shared (yall's `Free/Lambda`);
+- the database and global variables are kept from one goal to the next, so what `initialization/1` asserts, `-g main` sees;
+- a module's `initialization/1` calls the module's own predicates;
+- `-div(X, Y)` is read as minus applied to `div(X, Y)`;
+- `lists:reverse/2` and other library-qualified calls reach the library, even when a module exports the same name;
+- cyclic terms unify, and bindings of variables newer than the last choicepoint are not trailed (as in the WAM);
+- of two variables, the newer is bound to the older;
+- a lambda's own variables are fresh at each call on the Detlog route too;
+- per-call compiled Detlog is skipped for calls on large terms, and it is checked against Prolog again on calls 2, 4, 8 and so on;
+- `term_variables/2` and `ground/1` visit each shared subterm once (S2A2's tuple strategy builds terms with much sharing);
+- `run_tests(Unit:Test)` runs that one test.
+
+The command line has no step or time limit, as `swipl` has none; `PL2DETLOG_TIME_LIMIT` (seconds) sets one. Output is written as the goals make it. LucianOS's and Lucian Office's proof programs (`proofs/*.pl`) prove all their theorems and match all 200 recorded runs.
 
 **Speed.** On these programs the interpreter is slower than SWI-Prolog: the Prolog route is a JavaScript engine. For example, `updates.pl`'s 13 exhaustive theorems take about 8 s. The faster routes pay off where a goal converts: compiled C, the JIT, and the rewrites in "Engines and speed".
 

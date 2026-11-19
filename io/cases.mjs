@@ -3,7 +3,7 @@
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'cgen', 'proof', 'stats', 'examples']) require(`../src/${f}.js`);
+for (const f of ['core', 'engine', 'builtins', 'swi', 'convert', 'detlog_engine', 'native', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref', 'examples', 'thermo', 'interp']) require(`../src/${f}.js`);
 const P = globalThis.PL2D;
 
 export const title = 'pl2detlog';
@@ -34,7 +34,56 @@ const run = (x) => x && { ok: x.ok, answers: (x.answers || []).map((a) => a.text
 
 const TERMS = ['f(X, [a|T], "s", 1.5)', 'a+b*c', '(a:-b,c;d)', "'hello world'", '[1, 2|X]', '- 1', '-(1)', 'f(-)', '\\+ p(X)', 'X = f(Y, Y)', '{a, b}', "'\\n'", '1.0e10', 'a- -1', '[a, b, c]'];
 
+// SWI-Prolog programs for the interpreter (src/interp.js): dicts, JSON, strings, streams, modules
+const SWI = {
+  'json.pl': ':- use_module(library(http/json)).\nmain :- atom_json_dict(\'{"name":"Ann","n":[1,2,3]}\', D, []), sum_list(D.n, S), format("~w ~w~n", [D.name, S]).\n',
+  'strings.pl': 'main :- split_string("a,b,,c", ",", "", P), length(P, N), string_concat(X, "lo", "hello"), format("~w ~w ~q~n", [N, X, P]).\n',
+  'module.pl': ':- module(m, [run/1]).\nrun(X) :- helper(X, Y), format("~w~n", [Y]).\nhelper(X, Y) :- Y is X * 2.\n',
+  'uses.pl': ':- use_module(module).\nhelper(_, never).\nmain :- run(21).\n',
+  'files.pl': 'main :- open(\'out.txt\', write, S), format(S, "line ~w~n", [1]), close(S), read_file_to_string(\'out.txt\', T, []), write(T).\n',
+  'fail.pl': 'main :- member(X, [1,2]), X > 5.\n',
+  'halt.pl': ':- initialization(main, main).\nmain :- writeln(start), halt(3).\n',
+  'lambda.pl': ':- use_module(library(yall)).\nmain :- maplist([X, Y]>>(Y is X * X), [1,2,3], L), foldl([X, A0, A]>>(A is A0 + X), L, 0, S), print(L-S), nl.\n',
+  'nrev.pl': 'nrev([], []).\nnrev([H|T], R) :- nrev(T, RT), append(RT, [H], R).\nmain :- numlist(1, 30, L), nrev(L, R), R = [F|_], writeln(F).\n'
+};
+const SWI_RUNS = [['json.pl', ['-g', 'main', '-t', 'halt', 'json.pl']], ['strings.pl', ['-g', 'main', '-t', 'halt', 'strings.pl']], ['uses.pl', ['-g', 'main', '-t', 'halt', 'uses.pl']],
+  ['files.pl', ['-g', 'main', '-t', 'halt', 'files.pl']], ['fail.pl', ['-g', 'main', '-t', 'halt', 'fail.pl']], ['halt.pl', ['halt.pl']], ['lambda.pl', ['-q', '-g', 'main', '-t', 'halt', 'lambda.pl']],
+  ['nrev.pl', ['-g', 'main', '-t', 'halt', 'nrev.pl']], ['nrev.pl', ['-g', 'nrev([a,b,c], R), print(R), nl', '-t', 'halt', 'nrev.pl']]];
+function memIO(files) {
+  const fs = new Map(Object.entries(files));
+  return { cwd: '', readFile: (p) => (fs.has(p) ? fs.get(p) : null), writeFile: (p, s, ap) => fs.set(p, (ap && fs.get(p) || '') + s), stat: (p) => (fs.has(p) ? 'file' : null), list: () => [...fs.keys()], deleteFile: (p) => fs.delete(p) };
+}
+const SEQS = ['banana', 'abracadabra', 'mississippi', 'aaaa', 'ab', '', 'prolog', 'detlog mnn', 'thermodynamic'];
+
 export const cases = [
+  {
+    name: 'interpreter_swipl',
+    make: (r) => [r.pick(SWI_RUNS)[1]],
+    run: (args) => {
+      let out = '', err = '';
+      const it = new P.Interpreter({ io: memIO(SWI) });
+      const code = it.runArgs(args, { out: (s) => { out += s; }, err: (s) => { err += s; } });
+      return { exit: code, output: out, errors: err };
+    }
+  },
+  {
+    name: 'thermo_code',
+    make: (r) => [r.pick(SEQS)],
+    run: (s) => {
+      const seq = [...s]; const c = P.thermo.compress(seq); const back = P.thermo.decompress(c); const rep = P.thermo.report(seq);
+      return { alphabet: c.alphabet.join(''), counts: c.counts, rank: String(c.rank), round_trip: back.join('') === s, neurons_sum: String(P.thermo.neurons(seq).reduce((a, n) => a + n.weight, 0n)), rank_bits: rep.rankBits, raw_bits: rep.rawBits, entropy_bits: rep.entropyBits, erased_bits: rep.erasedBitsIrreversible };
+    }
+  },
+  {
+    name: 'thermo_store',
+    make: (r) => [r.pick(['', 'a', 'hello world', 'append([], L, L).\nappend([H|T], L, [H|R]) :- append(T, L, R).\n', '{"pick":"MNN","why":"the fastest on this goal"}', 'ünïcödé • text', 'x'.repeat(r.int(1, 400))]), r.pick([16, 64, 128])],
+    run: (text, block) => { const u = P.thermo.pack(text, { block }); return { bytes: u.length, chars: text.length, round_trip: P.thermo.unpack(u) === text }; }
+  },
+  {
+    name: 'thermo_prove',
+    make: (r) => [r.pick([['a'], ['a', 'b'], ['a', 'b', 'c'], ['x', 'y', 'z', 'w']]), r.int(0, 5)],
+    run: (alpha, n) => { const p = P.thermo.prove(alpha, n); return p.proof ? p.proof.map((s) => s.name + ': ' + JSON.stringify(s.verified || s.erasedBits)) : p; }
+  },
   {
     name: 'run_prolog',
     make: program,

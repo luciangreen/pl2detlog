@@ -544,7 +544,7 @@ static double ref_ms(void (*run)(long)) {
         } catch (e) { /* no reference for this query */ }
       });
     }
-    let main = 'int main(int argc, char **argv) {\n  int reps = 1; if (argc > 2 && !strcmp(argv[1], "-r")) reps = atoi(argv[2]); if (reps < 1) reps = 1;\n  int refs = !(argc > 1 && !strcmp(argv[argc - 1], "--no-ref")); (void)refs; /* --no-ref: skip timing the hand-written C */\n  double st0 = now_ms(); rt_init(); init_tables(); long lim0 = dl_step_limit;\n  printf("%% startup %.4f ms\\n", now_ms() - st0);\n';
+    let main = 'int main(int argc, char **argv) {\n  int reps = 1; if (argc > 2 && !strcmp(argv[1], "-r")) reps = atoi(argv[2]); if (reps < 1) reps = 1;\n  int refs = !(argc > 1 && !strcmp(argv[argc - 1], "--no-ref")); (void)refs; /* --no-ref: skip timing the hand-written C */\n  for (int i = 1; i < argc; i++) { if (!strcmp(argv[i], "--events")) ev_mode = 1; if (!strcmp(argv[i], "--first")) first_only = 1; }\n  double st0 = now_ms(); rt_init(); init_tables(); long lim0 = dl_step_limit;\n  printf("%% startup %.4f ms\\n", now_ms() - st0);\n';
     qs.forEach(q => {
       const k = q.pred + '__cp/' + (q.vars.length + 1);
       main += '  {\n    const char *nm[] = {' + (q.vars.length ? q.vars.map(cstrBytes).join(', ') : '""') + '};\n';
@@ -553,8 +553,8 @@ static double ref_ms(void (*run)(long)) {
       main += '    ArenaMark am = arena_mark(); size_t tm = TR_TOP;\n';
       main += '    for (int rep = 0; rep < reps; rep++) { if (rep) { undo(tm); arena_release(am); } dl_step_limit = dl_steps + lim0; /* the step limit is per run */ for (int i = 0; i < ' + (q.vars.length + 1) + '; i++) qv[i] = mk_var(); memo_clear(); ok = ' + pfn(k) + '(qv); }\n';
       main += '    double t1 = now_ms();\n';
-      main += '    printf("?- %s.\\n", ' + cstrBytes(q.text) + ');\n';
-      main += '    if (!ok) puts("% query failed (a packet predicate must succeed)"); else print_packet(qv[' + q.vars.length + '], nm, ' + q.vars.length + ');\n';
+      main += '    if (!ev_mode) printf("?- %s.\\n", ' + cstrBytes(q.text) + ');\n';
+      main += '    if (!ok) puts("% query failed (a packet predicate must succeed)"); else { if (ev_mode) putchar(0x1d); print_packet(qv[' + q.vars.length + '], nm, ' + q.vars.length + '); if (ev_mode) putchar(0x1d); }\n';
       main += '    printf("%% steps %ld, decisions %ld, %.4f ms per run\\n", (dl_steps - s0) / reps, (dl_decisions - d0) / reps, (t1 - t0) / reps);\n';
       const ref = refs.get(qs.indexOf(q));
       if (ref) {
@@ -580,7 +580,8 @@ static double ref_ms(void (*run)(long)) {
     // unchecked by default: no step limit, type tests, overflow or zero-divisor tests in native code;
     // opts.checked keeps them (and the step limit) for programs whose calls may break the contract
     const mode = opts.checked ? '#define DL_CHECKED 1 /* checked: step limit, type, overflow and zero tests */\n' : '/* unchecked (the default): calls are assumed to meet the type contract; build with -DDL_CHECKED for the checks */\n';
-    const code = header + mode + lib + '\n/* ---------- program ---------- */\n' + tables + natLib + protos.join('\n') + '\n' + natProtos + '\n\n' +
+    const swiMode = opts.swiWrite ? '#define DL_SWI_WRITE 1 /* write/print/format as SWI-Prolog lays terms out */\n' : '';
+    const code = header + mode + swiMode + lib + '\n/* ---------- program ---------- */\n' + tables + natLib + protos.join('\n') + '\n' + natProtos + '\n\n' +
       (nDefs.length ? '/* native tier: DET predicates in the modes the queries use */\n' + nDefs.join('\n') + '\n' + natEntries.join('\n') + '\n' : '') +
       defs.join('\n') + '\n' + main;
     return { refs: [...refs.keys()].map(i => qs[i].text), code, warnings, proofs: [...new Set(proofNotes)] };

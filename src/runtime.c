@@ -297,6 +297,15 @@ static void put_str_json(SB *b, const char *s) {
 }
 static TV show_vars;
 static void show(SB *b, Term *t, int q, int maxp);
+/* write/print/format lay terms out as SWI-Prolog writes them when compiled with -DDL_SWI_WRITE (the
+   interpreter): no space after commas, none around symbolic operators. Answers keep the toplevel's. */
+static int swi_lay = 0;
+#ifdef DL_SWI_WRITE
+#define SWIQ 1
+#else
+#define SWIQ 0
+#endif
+#define SEP (swi_lay ? "," : ", ")
 static void show_str(SB *b, Term *t, int q, int maxp) { show(b, t, q, maxp); }
 static void show(SB *b, Term *t, int q, int maxp) {
   t = deref(t);
@@ -318,7 +327,7 @@ static void show(SB *b, Term *t, int q, int maxp) {
   }
   if (is_cons(t)) {
     sb_putc(b, '['); Term *x = t; int first = 1;
-    while (is_cons(x)) { if (!first) sb_puts(b, ", "); first = 0; show(b, x->args[0], q, 999); x = deref(x->args[1]); }
+    while (is_cons(x)) { if (!first) sb_puts(b, SEP); first = 0; show(b, x->args[0], q, 999); x = deref(x->args[1]); }
     if (!is_nil(x)) { sb_putc(b, '|'); show(b, x, q, 999); }
     sb_putc(b, ']'); return;
   }
@@ -330,10 +339,10 @@ static void show(SB *b, Term *t, int q, int maxp) {
       SB l = { 0 }, r = { 0 }; show(&l, t->args[0], q, lp); show(&r, t->args[1], q, rp);
       if (!l.s) sb_puts(&l, ""); if (!r.s) sb_puts(&r, "");
       if (p > maxp) sb_putc(b, '(');
-      if (!strcmp(t->name, ",")) { sb_puts(b, l.s); sb_puts(b, ", "); sb_puts(b, r.s); }
+      if (!strcmp(t->name, ",")) { sb_puts(b, l.s); sb_puts(b, SEP); sb_puts(b, r.s); }
       else {
         const char *n = t->name;
-        int spaced = (*n >= 'a' && *n <= 'z') || p >= 700 || !strcmp(n, "->") || !strcmp(n, ":-") || !strcmp(n, "-->") || !strcmp(n, ";") || !strcmp(n, "*->");
+        int spaced = (*n >= 'a' && *n <= 'z') || !swi_lay && (p >= 700 || !strcmp(n, "->") || !strcmp(n, ":-") || !strcmp(n, "-->") || !strcmp(n, ";") || !strcmp(n, "*->"));
         if (spaced) { sb_puts(b, l.s); sb_putc(b, ' '); put_atom(b, n, q); sb_putc(b, ' '); sb_puts(b, r.s); }
         else {
           SB ft = { 0 }; put_atom(&ft, n, q);
@@ -353,7 +362,7 @@ static void show(SB *b, Term *t, int q, int maxp) {
       Term *a0 = deref(t->args[0]);
       SB as = { 0 }; show(&as, a0, q, ap); if (!as.s) sb_puts(&as, "");
       SB ft = { 0 }; put_atom(&ft, t->name, q);
-      int need = (ft.s[0] >= 'a' && ft.s[0] <= 'z') || (ft.s[0] >= 'A' && ft.s[0] <= 'Z') || !strcmp(ft.s, "\\+") || (is_symch(ft.s[ft.n - 1]) && (is_symch(as.s[0]) || a0->tag == T_INT || a0->tag == T_FLT)) || as.s[0] == '(';
+      int need = (ft.s[0] >= 'a' && ft.s[0] <= 'z') || (ft.s[0] >= 'A' && ft.s[0] <= 'Z') || !swi_lay && !strcmp(ft.s, "\\+") || (is_symch(ft.s[ft.n - 1]) && (is_symch(as.s[0]) || a0->tag == T_INT || a0->tag == T_FLT)) || as.s[0] == '(';
       if (p > maxp) sb_putc(b, '(');
       sb_puts(b, ft.s); if (need) sb_putc(b, ' '); sb_puts(b, as.s);
       if (p > maxp) sb_putc(b, ')');
@@ -361,10 +370,15 @@ static void show(SB *b, Term *t, int q, int maxp) {
     }
   }
   put_atom(b, t->name, q); sb_putc(b, '(');
-  for (int i = 0; i < t->arity; i++) { if (i) sb_puts(b, ", "); show(b, t->args[i], q, 999); }
+  for (int i = 0; i < t->arity; i++) { if (i) sb_puts(b, SEP); show(b, t->args[i], q, 999); }
   sb_putc(b, ')');
 }
 static char *show_term(Term *t, int q) { SB b = { 0 }; show(&b, t, q, 1200); if (!b.s) sb_puts(&b, ""); return b.s; }
+#ifdef DL_SWI_WRITE
+static char *show_w(Term *t, int q) { swi_lay = 1; char *s = show_term(t, q); swi_lay = 0; return s; }
+#else
+#define show_w show_term
+#endif
 /* text of an atom, string, number or code/char list */
 static char *text_of(Term *t) {
   t = deref(t); SB b = { 0 }; sb_puts(&b, "");
@@ -547,8 +561,9 @@ static void format_into(SB *b, const char *f, Term *args) {
     if (*p != '~') { sb_putc(b, *p); continue; }
     p++; int n = -1; while (*p >= '0' && *p <= '9') { n = (n < 0 ? 0 : n * 10) + (*p - '0'); p++; }
     switch (*p) {
-      case 'w': case 'p': { char *s = show_term(v.v[ai++], 0); sb_puts(b, s); free(s); break; }
-      case 'q': { char *s = show_term(v.v[ai++], 1); sb_puts(b, s); free(s); break; }
+      case 'w': { char *s = show_w(v.v[ai++], 0); sb_puts(b, s); free(s); break; }
+      case 'p': { char *s = show_w(v.v[ai++], SWIQ); sb_puts(b, s); free(s); break; }
+      case 'q': { char *s = show_w(v.v[ai++], 1); sb_puts(b, s); free(s); break; }
       case 'a': case 's': sb_puts(b, text_of(v.v[ai++])); break;
       case 'd': { char t[32]; snprintf(t, sizeof t, "%lld", deref(v.v[ai++])->iv); sb_puts(b, t); break; }
       case 'f': { char t[64]; snprintf(t, sizeof t, "%.*f", n < 0 ? 6 : n, nd(eval(v.v[ai++]))); sb_puts(b, t); break; }
@@ -565,12 +580,12 @@ static void format_into(SB *b, const char *f, Term *args) {
 static int rt_effect_text(Term *g, Term *T) {
   STEP(); g = deref(g); SB b = { 0 }; sb_puts(&b, "");
   const char *f = g->name; int n = g->tag == T_CMP ? g->arity : 0; Term **a = g->args;
-  if (!strcmp(f, "write") && n == 1) { char *s = show_term(a[0], 0); sb_puts(&b, s); }
-  else if (!strcmp(f, "print") && n == 1) { char *s = show_term(a[0], 1); sb_puts(&b, s); }
-  else if (!strcmp(f, "writeq") && n == 1) { char *s = show_term(a[0], 1); sb_puts(&b, s); }
-  else if (!strcmp(f, "write_canonical") && n == 1) { char *s = show_term(a[0], 1); sb_puts(&b, s); }
-  else if (!strcmp(f, "write_term") && n == 2) { char *s = show_term(a[0], 0); sb_puts(&b, s); }
-  else if (!strcmp(f, "writeln") && n == 1) { char *s = show_term(a[0], 0); sb_puts(&b, s); sb_putc(&b, '\n'); }
+  if (!strcmp(f, "write") && n == 1) { char *s = show_w(a[0], 0); sb_puts(&b, s); }
+  else if (!strcmp(f, "print") && n == 1) { char *s = show_w(a[0], 1); sb_puts(&b, s); }
+  else if (!strcmp(f, "writeq") && n == 1) { char *s = show_w(a[0], 1); sb_puts(&b, s); }
+  else if (!strcmp(f, "write_canonical") && n == 1) { char *s = show_w(a[0], 1); sb_puts(&b, s); }
+  else if (!strcmp(f, "write_term") && n == 2) { char *s = show_w(a[0], 0); sb_puts(&b, s); }
+  else if (!strcmp(f, "writeln") && n == 1) { char *s = show_w(a[0], 0); sb_puts(&b, s); sb_putc(&b, '\n'); }
   else if (!strcmp(f, "nl") && n == 0) sb_putc(&b, '\n');
   else if (!strcmp(f, "tab") && n == 1) { long long k = eval(a[0]).i; while (k-- > 0) sb_putc(&b, ' '); }
   else if (!strcmp(f, "put_char") && n == 1) sb_puts(&b, deref(a[0])->name);
@@ -886,20 +901,26 @@ static int rt_builtin_rows(Term *g, Term *P) {
 static int rt_unsupported(const char *what) { dl_die("predicate was not converted:", what); return 0; }
 
 /* ---------- top level ---------- */
+/* --events (the interpreter): each answer is printed between two \x1e marks, so that a program's own
+   output can't be taken for an answer; --first stops after the first answer (as swipl -g Goal). */
+static int ev_mode = 0, first_only = 0;
 static void print_packet(Term *R, const char **names, int nv) {
   TV it = items(R); size_t rows = 0;
   for (size_t i = 0; i < it.n; i++) {
     Term *x = deref(it.v[i]);
     if (is_out(x)) { fputs(text_of(x->args[0]), stdout); continue; }
     if (x->tag != T_CMP) continue;
+    if (first_only && rows) break;
     rows++;
+    if (ev_mode) putchar('\x1e');
     TV vals = items(x->args[0]);
     show_vars.n = 0;
     if (!nv) puts("true");
     else { for (int j = 0; j < nv; j++) { char *s = show_term(vals.v[j], 1); printf("%s%s = %s", j ? ", " : "", names[j], s); free(s); } putchar('\n'); }
     tv_free(vals.v);
+    if (ev_mode) putchar('\x1e');
   }
-  if (!rows) puts("false");
+  if (!rows && !ev_mode) puts("false");
   tv_free(it.v);
 }
 static double now_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6; }

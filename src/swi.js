@@ -223,6 +223,12 @@
       const t = D(o); if (t.t !== 'c' || t.a.length !== 1) continue;
       if (t.f === 'variable_names') e.unify(t.a[0], list((r.vars || []).map(([n, v]) => Cmp('=', [Atom(n), v]))));
       if (t.f === 'variables') e.unify(t.a[0], list((r.vars || []).map(([, v]) => v)));
+      // the named variables that appear once (not those starting with _), as Name = Var
+      if (t.f === 'singletons') {
+        const counts = new Map(); const st = [r.term];
+        while (st.length) { const x = D(st.pop()); if (x.t === 'v') counts.set(x, (counts.get(x) || 0) + 1); else if (x.t === 'c') for (const y of x.a) st.push(y); }
+        e.unify(t.a[0], list((r.vars || []).filter(([n, v]) => !n.startsWith('_') && counts.get(D(v)) === 1).map(([n, v]) => Cmp('=', [Atom(n), v]))));
+      }
     }
   }
   // the text of the next clause in src (through its full stop), or null at the end

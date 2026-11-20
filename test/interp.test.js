@@ -152,7 +152,13 @@ test('Starlog, plunit and the fixes from S2A2 and mnns', () => {
     // the database is kept from one goal to the next; cyclic terms unify
     'live.pl': ':- dynamic n/1.\nput :- assertz(n(1)).\nshow :- n(X), writeln(X).\ncyc :- X = f(X), Y = f(Y), X = Y, writeln(cyclic_ok).\n',
     // a lambda's own variables are fresh at each call, on every route
-    'gcd.pl': 'g(Q, G) :- foldl([_-C, G0, G1]>>(G1 is gcd(G0, abs(C))), Q, 0, G).\nmain :- g([a-4, b-(-6), c-10], G), writeln(G).\n'
+    'gcd.pl': 'g(Q, G) :- foldl([_-C, G0, G1]>>(G1 is gcd(G0, abs(C))), Q, 0, G).\nmain :- g([a-4, b-(-6), c-10], G), writeln(G).\n',
+    // the empty list as chars or codes is the empty atom or string; read_term gives singletons;
+    // is_set/1 compares with ==
+    'text.pl': 'main :- string_chars(S, []), atom_chars(A, []), string_codes(T, []), atom_codes(B, []), print([S, A, T, B]), nl,\n' +
+      '  term_string(_, "f(X, Y, X, _Z, _)", []), read_term_from_atom(\'g(A1, B1, A1, _C)\', G, [variable_names(Vs)]), length(Vs, NV), print(NV), nl,\n' +
+      '  open_string("h(X, Y, X, _Z).", In), read_term(In, _, [singletons(Ss)]), close(In), forall(member(N=_, Ss), writeln(N)),\n' +
+      '  ( is_set([a, b, f(_)]) -> writeln(set) ; true ), ( is_set([a, b, a]) -> true ; writeln(not_set) ), ( is_set([X0, Y0]) -> writeln(vars_differ) ; true ), ( is_set([a|_]) -> true ; writeln(partial_not_set) ).\n'
   };
   const r = (args) => swipl(files, args);
   assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'neg.pl']).out, '2/ -3\n');
@@ -164,6 +170,7 @@ test('Starlog, plunit and the fixes from S2A2 and mnns', () => {
   assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'libuse.pl']).out, '[3,2,1]\n');
   assert.strictEqual(r(['-g', 'put', '-g', 'show', '-g', 'cyc', '-t', 'halt', 'live.pl']).out, '1\ncyclic_ok\n');
   assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'gcd.pl']).out, '2\n');
+  assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'text.pl']).out, '["",\'\',"",\'\']\n3\nY\nset\nnot_set\nvars_differ\npartial_not_set\n');
   const conv = P.convert(files['gcd.pl'], { mnn: true, s2a: false, queries: ['g([a-4, b-(-6), c-10], G)'] });
   const q = conv.queries[0], d = P.runDetlogFast(P.loadProgram(conv.text), q.pred, q.vars, {});
   assert.deepStrictEqual(d.answers.map((a) => a.text), ['G = 2']);

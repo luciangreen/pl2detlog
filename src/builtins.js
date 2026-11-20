@@ -105,8 +105,10 @@
   det('halt/1', (a) => { const c = evalArith(a[0]); throw { halt: true, code: Number(c.v) }; });
 
   // atoms & strings
-  det('atom_codes/2', (a, e) => { const t = D(a[0]); if (t.t !== 'v') return e.unify(a[1], codesList(textOf(t))); return e.unify(t, Atom(textOf(a[1]))); });
-  det('atom_chars/2', (a, e) => { const t = D(a[0]); if (t.t !== 'v') return e.unify(a[1], charsList(textOf(t))); return e.unify(t, Atom(textOf(a[1]))); });
+  // the text of a code or char list; [] is the empty text (not the atom '[]')
+  const listText = (x) => { const t = D(x); return t.t === 'a' && t.n === '[]' ? '' : textOf(t); };
+  det('atom_codes/2', (a, e) => { const t = D(a[0]); if (t.t !== 'v') return e.unify(a[1], codesList(textOf(t))); return e.unify(t, Atom(listText(a[1]))); });
+  det('atom_chars/2', (a, e) => { const t = D(a[0]); if (t.t !== 'v') return e.unify(a[1], charsList(textOf(t))); return e.unify(t, Atom(listText(a[1]))); });
   det('char_code/2', (a, e) => { const t = D(a[0]); if (t.t === 'a') return e.unify(a[1], Int(t.n.codePointAt(0))); return e.unify(t, Atom(String.fromCodePoint(D(a[1]).v))); });
   det('atom_length/2', (a, e) => e.unify(a[1], Int([...textOf(a[0])].length)));
   det('string_length/2', (a, e) => e.unify(a[1], Int([...textOf(a[0])].length)));
@@ -116,8 +118,8 @@
   det('number_string/2', (a, e) => { const t = D(a[0]); if (t.t !== 'v') return e.unify(a[1], Str(show(t))); const n = parseNumber(textOf(a[1])); return n ? e.unify(t, n) : false; });
   det('atom_string/2', (a, e) => { const t = D(a[0]); if (t.t !== 'v') return e.unify(a[1], Str(textOf(t))); return e.unify(t, Atom(textOf(a[1]))); });
   det('number_vars/3', () => true);
-  det('string_chars/2', (a, e) => { const t = D(a[0]); if (t.t !== 'v') return e.unify(a[1], charsList(textOf(t))); return e.unify(t, Str(textOf(a[1]))); });
-  det('string_codes/2', (a, e) => { const t = D(a[0]); if (t.t !== 'v') return e.unify(a[1], codesList(textOf(t))); return e.unify(t, Str(textOf(a[1]))); });
+  det('string_chars/2', (a, e) => { const t = D(a[0]); if (t.t !== 'v') return e.unify(a[1], charsList(textOf(t))); return e.unify(t, Str(listText(a[1]))); });
+  det('string_codes/2', (a, e) => { const t = D(a[0]); if (t.t !== 'v') return e.unify(a[1], codesList(textOf(t))); return e.unify(t, Str(listText(a[1]))); });
   det('string_to_atom/2', (a, e) => { const t = D(a[0]); if (t.t !== 'v') return e.unify(a[1], Atom(textOf(t))); return e.unify(t, Str(textOf(a[1]))); });
   det('string_code/3', (a, e) => { const s = [...textOf(a[1])]; const i = D(a[0]).v; if (i < 1 || i > s.length) return false; return e.unify(a[2], Int(s[i - 1].codePointAt(0))); });
   det('number_codes/2', B['number_codes/2'].fn);
@@ -273,6 +275,8 @@
     return e.unify(a[3], list(l));
   });
   det('keysort/2', (a, e) => e.unify(a[1], list(arr(a[0]).slice().sort((x, y) => compare(D(x).a[0], D(y).a[0])))));
+  // is_set(L): a proper list with no two elements == (SWI-Prolog's library(lists))
+  det('is_set/1', (a) => { const l = listToArray(a[0]); if (!l) return false; for (let i = 0; i < l.length; i++) for (let j = i + 1; j < l.length; j++) if (compare(l[i], l[j]) === 0) return false; return true; });
   det('list_to_set/2', (a, e) => { const o = []; for (const x of arr(a[0])) if (!o.some(y => compare(x, y) === 0)) o.push(x); return e.unify(a[1], list(o)); });
   det('sum_list/2', (a, e) => { let s = Int(0); for (const x of arr(a[0])) s = evalArith(Cmp('+', [s, x])); return e.unify(a[1], s); });
   det('sumlist/2', B['sum_list/2'].fn);

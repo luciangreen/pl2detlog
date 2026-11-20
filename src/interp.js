@@ -284,6 +284,9 @@
     return true;
   }
 
+  // Prolog is kept for a goal when it takes this many times less than the Detlog MNN and C route
+  const PROLOG_FASTER = 2, PROLOG_MIN_GAIN = 0.5;
+
   class Interpreter {
     // opts: io (see src/swi.js), store ({ get(key) -> string|null, set(key, string) }), nativeC (Node:
     // { compile(code) -> handle|null, run(handle, args) -> { stdout, stderr, status, ms } }),
@@ -565,10 +568,24 @@
         if (!cands.length) { plan.pick = 'Prolog'; plan.why = m.r.error ? 'the converted route raised ' + m.r.error + ': Prolog decides' : 'the routes disagree: Prolog decides'; res = this.runProlog(text, true); route = 'Prolog'; }
         else {
           cands.sort((x, y) => x[1] - y[1]);
-          const [name, ms, r] = cands[0];
+          let [name, ms, r] = cands[0];
           plan.pick = name; plan.why = 'the Detlog MNN and C route, its answers checked against Prolog (' + cands.map(([n, t]) => n + ' ' + t.toFixed(3) + ' ms').join(', ') + ')';
           res = r; route = name;
-          if (name === 'Prolog') res = this.runProlog(text, true); // its effects happen once, now
+          // Prolog when it is clearly faster (half the time or less). A first run includes compiling,
+          // so when Prolog looks faster both are run once more, warm, and those times decide.
+          // (cold times are rough, both ways: a first Prolog run also tries its per-call compiling)
+          // A goal that takes long is timed well enough by its first runs; a short one is run twice more
+          // each way. A goal under PROLOG_MIN_GAIN ms faster stays where it is (timer noise).
+          if (pr.ms <= ms * 1.5 && ms - pr.ms >= PROLOG_MIN_GAIN / 2) {
+            const best2 = (f) => { const a = time(f, 0, 1), b = time(f, 0, 1); return a.ms <= b.ms ? a : b; };
+            const long = ms > 200;
+            const warm = name === 'C' || long ? { ms } : best2(() => this.runDetlog(plan, nat));
+            const pw = long ? pr : best2(() => this.runProlog(text));
+            if (!pw.r.error && sameAnswers(firstOnly(pw.r), r) && pw.ms * PROLOG_FASTER <= warm.ms && warm.ms - pw.ms >= PROLOG_MIN_GAIN) {
+              plan.pick = 'Prolog'; route = 'Prolog'; res = pw.r; timing.prolog = pw.ms; timing[name === 'C' ? 'c' : nat ? 'cjs' : 'mnn'] = warm.ms;
+              plan.why = 'Prolog, at least ' + PROLOG_FASTER + 'x faster than the Detlog MNN and C route here (' + pw.ms.toFixed(3) + ' ms against ' + name + ' ' + warm.ms.toFixed(3) + ' ms)';
+            }
+          }
         }
         this.save(plan);
       }

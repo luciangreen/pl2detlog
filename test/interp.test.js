@@ -178,3 +178,14 @@ test('brackets: operator terms and Starlog operators read back as written', () =
     void prog;
   }
 });
+
+test('routes: Prolog is kept for a goal where it is at least twice as fast', () => {
+  const queens = 'queens(N, Qs) :- numlist(1, N, Ns), perm(Ns, Qs), safe(Qs).\nperm([], []).\nperm(L, [H|T]) :- sel(H, L, R), perm(R, T).\nsel(X, [X|T], T).\nsel(X, [H|T], [H|R]) :- sel(X, T, R).\nsafe([]).\nsafe([Q|Qs]) :- noatt(Q, Qs, 1), safe(Qs).\nnoatt(_, [], _).\nnoatt(Q, [Q1|Qs], D) :- Q =\\= Q1 + D, Q =\\= Q1 - D, D1 is D+1, noatt(Q, Qs, D1).\n';
+  const it = new P.Interpreter({ io: null }); it.setProgram(queens);
+  const r = it.run('findall(Q, queens(6, Q), L), length(L, N)');
+  assert.strictEqual(r.route, 'Prolog'); assert.match(r.why, /at least 2x faster/);
+  assert.ok(r.answers[0].endsWith('N = 4'));
+  const fib = new P.Interpreter({ io: null }); fib.setProgram('fib(0, 0).\nfib(1, 1).\nfib(N, F) :- N > 1, A is N-1, B is N-2, fib(A, FA), fib(B, FB), F is FA+FB.\n');
+  const f = fib.run('fib(21, F)');
+  assert.notStrictEqual(f.route, 'Prolog'); assert.deepStrictEqual(f.answers, ['F = 10946']);
+});

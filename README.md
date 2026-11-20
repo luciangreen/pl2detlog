@@ -152,9 +152,18 @@ node bin/pl2detlog-run.js --explain -g "queens(8, Qs), print(Qs), nl" -t halt qu
 | Route | What runs | Used when |
 | --- | --- | --- |
 | Detlog MNN and C | The proved Detlog MNN rewrite, run by the JIT, with the C tier for every predicate whose modes compile to C (as JavaScript in a page, `C (JS)`; plain `MNN` when no predicate compiles). On Node, a goal that takes 5 ms or more also runs as the C export, compiled with `cc` (or `$CC`), and that binary is kept. | The conversion is exact and, on the first run, its answers and output equal Prolog's. |
-| Prolog | The reference engine, with SWI-Prolog's library (`src/swi.js`). | The goal uses what only Prolog keeps exact (files and streams, `assert`, messages), the conversion has errors, or the routes disagree. Inside it, a predicate that is called often can run on the compiled Detlog instead. Its first calls run both ways, the answers and output must be the same, and the faster way is kept. Predicates that look at variables themselves (`==`, `var/1`, `copy_term/2`, ...) stay on Prolog. |
+| Prolog | The reference engine, with SWI-Prolog's library (`src/swi.js`). | The goal uses what only Prolog keeps exact (files and streams, `assert`, messages), the conversion has errors, the routes disagree, or Prolog is at least twice as fast on this goal (and at least 0.5 ms faster). Inside it, a predicate that is called often can run on the compiled Detlog instead. Its first calls run both ways, the answers and output must be the same, and the faster way is kept. Predicates that look at variables themselves (`==`, `var/1`, `copy_term/2`, ...) stay on Prolog. |
 
-**Why one route.** The interpreter used to time every route on a goal's first run and keep the fastest. On the 25 bundled example goals, the Detlog MNN and C route was the fastest, or within 5% of it, on 23. Its total was 1.62 ms against 1.58 ms for the fastest route of each goal, and MNN without the C tier took 110 ms. Timing every route made the first runs about 20% slower (963 ms against 801 ms in all). So the first run now runs the Detlog MNN and C route once and checks its answers against Prolog once.
+**Why one route.** The interpreter used to time every route on a goal's first run and keep the fastest. On the 25 bundled example goals, the Detlog MNN and C route was the fastest, or within 5% of it, on 23. Its total was 1.62 ms against 1.58 ms for the fastest route of each goal, and MNN without the C tier took 110 ms. Timing every route made the first runs about 20% slower (963 ms against 801 ms in all). So the first run now runs the Detlog MNN and C route once and checks its answers against Prolog once. That check also times Prolog. When Prolog looks faster, a short goal is run twice more each way, because first runs include compiling. Prolog is kept for the goal if it takes half the time or less, and is at least 0.5 ms faster. A long goal (over 200 ms) is decided on its first runs.
+
+| Goal (ms per run, after the first) | MNN | MNN + C tier | Compiled C | Prolog | Route kept |
+|---|---|---|---|---|---|
+| nrev 300 | 0.43 | 0.25 | 2.5 | 112 | Detlog MNN |
+| fib 21 | 0.39 | 0.023 | 2.8 | 12.6 | MNN + C tier |
+| sum of 1..200,000 | 2,180 | 2,028 | – | 1,768 | MNN + C tier (Prolog isn't 2x faster) |
+| queens 6, all solutions | 185 | 74 | 26 | 19.7 | Prolog (now about 11 ms a run, was 64) |
+
+On the 63 bundled example goals, the MNN + C tier route totals 2.2 ms, Prolog 8.0 ms and MNN alone 6.1 ms. None of them is 0.5 ms faster on Prolog, so all stay on the Detlog routes. The combined route remembers the results of pure predicates within a run, which is why fib is so fast.
 
 **First run and later runs.** The first run of a goal picks its route. The choice and the conversion go into a store: `$PL2DETLOG_CACHE` (default `~/.cache/pl2detlog`), or the browser's storage in a page. The next process starts from the store. Compiled C programs are kept there too.
 

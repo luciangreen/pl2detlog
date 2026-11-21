@@ -64,7 +64,7 @@
   // builtins that look at variables themselves (identity, order, binding): the packets of the
   // compiled Detlog copy a call's arguments, so a call that compares variables it was given is kept
   // on the Prolog route (per call; a whole goal is compared with Prolog on its first run)
-  const VARSENS = new Set(['==/2', '\\==/2', 'var/1', 'nonvar/1', '@</2', '@>/2', '@=</2', '@>=/2', 'compare/3', 'copy_term/2', 'term_variables/2', '=@=/2', '\\=@=/2', 'ground/1', 'sort/2', 'msort/2', 'sort/4', 'predsort/3', 'setof/3', 'bagof/3', 'unify_with_occurs_check/2', 'numbervars/3', 'numbervars/4', 'subsumes_term/2', 'term_to_atom/2', 'term_string/2', 'term_string/3', 'format/2', 'format/3', 'with_output_to/2', 'b_setval/2', 'b_getval/2', 'nb_getval/2', 'nb_setval/2', 'list_to_set/2', 'sort_unique/2', 'keysort/2']);
+  const VARSENS = new Set(['==/2', '\\==/2', 'var/1', 'nonvar/1', '@</2', '@>/2', '@=</2', '@>=/2', 'compare/3', 'copy_term/2', 'term_variables/2', '=@=/2', '\\=@=/2', 'ground/1', 'sort/2', 'msort/2', 'sort/4', 'predsort/3', 'setof/3', 'bagof/3', 'unify_with_occurs_check/2', 'numbervars/3', 'numbervars/4', 'subsumes_term/2', 'term_to_atom/2', 'term_string/2', 'term_string/3', 'format/2', 'format/3', 'with_output_to/2', 'b_setval/2', 'b_getval/2', 'nb_getval/2', 'nb_setval/2', 'list_to_set/2', 'is_set/1', 'sort_unique/2', 'keysort/2']);
 
   // ---------------------------------------------------------------- point 1 (see detlogmnn)
   function steadfast(prog, k, i, assume = new Set()) {

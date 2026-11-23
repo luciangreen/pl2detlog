@@ -111,6 +111,8 @@
     res.mnn = P.convert(src, Object.assign({ mnn: true, queries: allQs }, opts.mnn || {}));
     res.convertMnnMs = P.now() - t1;
     const progPlain = P.loadProgram(res.plain.text), progMnn = P.loadProgram(res.mnn.text);
+    let progStream = null;
+    if (res.plain.streamText) { try { progStream = P.loadProgram(res.plain.streamText); } catch (e) { res.errors.push('stream code: ' + e.message); } }
     try { progMnn.pairwiseSource = P.loadProgram(res.mnn.source); } catch (e) { /* the JIT then permutes in full */ }
     try { res.backPlain = P.backConvert(res.plain.text); } catch (e) { res.backPlain = null; res.errors.push('back-conversion (plain): ' + e.message); }
     try { res.backMnn = P.backConvert(res.mnn.text); } catch (e) { res.backMnn = null; res.errors.push('back-conversion (MNN): ' + e.message); }
@@ -129,16 +131,19 @@
       r.interp = P.runDetlogInterp(res.plain, q.pred, q.vars, { stepLimit: lim * 20 });
       r.plain = P.runDetlogFast(progPlain, q.pred, q.vars, { stepLimit: lim * 20 });
       r.mnn = P.runDetlogFast(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 });
+      if (progStream) r.streams = P.runDetlogFast(progStream, q.pred, q.vars, { stepLimit: lim * 20 });
       if (backProg) r.back = P.runQuery(safeLoad(res.backPlain.text), q.text, { stepLimit: lim, maxAnswers: 1000 });
       if (backMnnProg) r.backMnn = P.runQuery(safeLoad(res.backMnn.text), q.text, { stepLimit: lim, maxAnswers: 1000 });
       const ev = JSON.stringify(r.prolog.events);
-      r.same = ev === JSON.stringify(r.plain.events) && ev === JSON.stringify(r.mnn.events) && ev === JSON.stringify(r.interp.events);
+      r.same = ev === JSON.stringify(r.plain.events) && ev === JSON.stringify(r.mnn.events) && ev === JSON.stringify(r.interp.events) &&
+        (!r.streams || ev === JSON.stringify(r.streams.events));
       if (opts.timing !== false) {
         const parsedQ = P.readTerm(q.text);
         r.prolog.ms = timeIt(pr => P.runQuery(pr, parsedQ, { stepLimit: lim, maxAnswers: 1000 }), 25, 200, dynamic ? fresh : () => sharedProg).ms;
         r.interp.ms = timeIt(() => P.runDetlogInterp(res.plain, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
         r.plain.ms = timeIt(() => P.runDetlogFast(progPlain, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
         r.mnn.ms = timeIt(() => P.runDetlogFast(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 })).ms;
+        if (r.streams && !r.streams.error) r.streams.ms = timeIt(() => P.runDetlogFast(progStream, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
         // against the same algorithm written by hand: MNN Detlog's computation alone, as the reference measures
         if (P.cReference && !r.mnn.error) {
           r.cref = P.cReference(q.text, r.mnn.events);

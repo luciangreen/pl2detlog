@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // pl2detlog command line:  node cli.js prog.pl -q "fib(10, F)" [-q ...] [--plain] [--detlog out.pl] [--c out.c [--best] [--checked] [--run [REPS]]] [--back out.pl] [--proof proof.txt] [--stats]
 const fs = require('fs'); const path = require('path');
-for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref']) require('./src/' + f + '.js');
+for (const f of ['core', 'engine', 'builtins', 'convert', 'stream', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref']) require('./src/' + f + '.js');
 const P = globalThis.PL2D;
 P.C_RUNTIME = fs.readFileSync(path.join(__dirname, 'src/runtime.c'), 'utf8');
 const args = process.argv.slice(2); const qs = []; const o = {};
@@ -17,8 +17,10 @@ const r = P.analyse(src, qs, { timing: !!o.stats, sweep: o.sweep ? { template: o
 if (r.errors.length) console.error(r.errors.join('\n'));
 const conv = o.plain ? r.plain : r.mnn;
 const rt = fs.readFileSync(path.join(__dirname, 'src/detlog_runtime.pl'), 'utf8');
-if (o.detlog) fs.writeFileSync(o.detlog, ':- style_check(-singleton).\n' + rt + '\n' + conv.text);
-else if (!o.c && !o.back && !o.proof && !o.stats) process.stdout.write(conv.text);
+// --streams: the plain Detlog as answer streams (no packets)
+const detlogText = o.streams ? (r.plain.streamText || conv.text) : conv.text;
+if (o.detlog) fs.writeFileSync(o.detlog, ':- style_check(-singleton).\n' + rt + '\n' + detlogText);
+else if (!o.c && !o.back && !o.proof && !o.stats) process.stdout.write(detlogText);
 // --best: build the MNN program and the plain one (no determinism rewrites), time each as a whole process
 // (startup included) and per run, and keep the faster in OUT.c. Without it, MNN (or --plain).
 let chosen = conv;

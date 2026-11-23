@@ -279,6 +279,41 @@ All times are microseconds per run, in Node 22 and `cc -O2`, recorded by `node b
 
 **Why plain converted code is slower than Prolog.** It is Detlog's representation, not its semantics. The interpreter runs the same choicepoint-free, cut-free semantics and is faster than Prolog on these queries (except `doubles`/`total`, where its `maplist` path is slow). Converted code is slower because it materialises every answer set as a list of rows, copies environments at every call, and keeps every variable as a heap logic variable with trail entries, even in deterministic integer code.
 
+**Answer streams (`src/stream.js`).** Every conversion also writes the plain Detlog as answer streams (`conv.streamText`; `node cli.js prog.pl -q Q --plain --streams` prints it):
+
+- **Streams instead of packets.** A predicate `p/N` is `p__k(Args, K)`: it passes each answer, in Prolog's order, to the continuation `K`, and stops at the first answer `K` accepts.
+- **No copies.** A rejected answer is undone by `if_commit/3` and the trail, so nothing is copied and no packet is built.
+- **Continuations.** The rest of a clause after a call is a continuation term carrying the caller's own variables. It is applied by a `dl_k/1` clause chosen by its first argument, so there is still no `call/N` and no choicepoint.
+- **Lazy builtins.** `member/2`, `between/3`, `select/3`, `nth0/3` and `nth1/3` are lazy Detlog loops in a short stream library.
+- **Collection.** `findall/3` and `aggregate_all/3` collect into a bag. A cut inside `;` or `->` commits through a cut cell.
+- **The query entry is unchanged.** `'$queryN__cp'` still returns rows with the text written before each, so every engine and export reads it as before.
+
+`test/stream.test.js` runs every example query, plain and MNN, on the JIT and the closure engine. It checks the output against Prolog's, checks that no call has two candidate clauses, and checks that the generated code contains no packet builtin and no `copy_term/2`. The analysis (`P.analyse`) runs the stream code next to the other engines and includes it in the agreement check.
+
+Microseconds per run on the JIT (Node 22, this machine):
+
+| query | Prolog | plain packets | plain streams | streams ÷ packets |
+| --- | ---: | ---: | ---: | ---: |
+| `fib(18, F)` | 50,789 | 117,285 | 88,412 | 0.75 |
+| `numlist(1, 60, L), nrev(L, R)` | 4,772 | 23,330 | 351 | 0.015 |
+| `numlist(1, 300, L), nrev(L, R)` | 118,520 | 592,344 | 341,518 | 0.58 |
+| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 12,841 | 228,004 | 60,336 | 0.26 |
+| `queens(6, Qs)` | 13,933 | 20,776 | 4,016 | 0.19 |
+| `pin(A, B, C)` | 745 | 5,583 | 487 | 0.087 |
+| `anc(X, dee)` | 25.2 | 67.6 | 27.4 | 0.41 |
+
+Streams make plain Detlog faster than its packet code on every query, and faster than Prolog on `nrev` (60 elements), `queens/2` and `pin/3`.
+
+MNN Detlog still uses packets, because its rewrites are written for packet code:
+
+- MEMO tables;
+- the DET native tier;
+- S2A loops;
+- splice;
+- the C export's pairwise pruning.
+
+Porting them to streams, and teaching the C export, back-conversion and the proof checker the stream templates, is the next step. Then streams become the default form.
+
 **What MNN removes.**
 - MEMO makes `fib` linear, so MNN `fib(21)` is faster than the exponential C.
 - S2A and splice turn data and independent generators into loops.

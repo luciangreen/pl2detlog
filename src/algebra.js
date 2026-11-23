@@ -79,7 +79,7 @@
       if (!g.a.every(a => arithOK(a, [Q, Y, Dv]))) return null;
     }
     return {
-      name, key, rel: rk, c0: c0.v, tests,
+      name, key, rel: rk, c0: c0.v, tests, vars: { Q, Y, D: Dv },
       // C (or JavaScript) for Tests(prev, next, dist): integer expressions in, a condition out
       code: (prev, next, dist, js) => tests.length ? tests.map(g => '(' + arithCode(g.a[0], new Map([[Q, prev], [Y, next], [Dv, dist]])) + ' ' + (js ? ({ '!=': '!==', '==': '===' })[CMP[g.f]] || CMP[g.f] : CMP[g.f]) + ' ' + arithCode(g.a[1], new Map([[Q, prev], [Y, next], [Dv, dist]])) + ')').join(' && ') : '1',
       proof: 'pairwise test: ' + name + '(L) holds iff for all i < j, ' + tests.map(g => P.show(g)).join(', ') + ' with ' + P.show(Q) + ' = L_i, ' + P.show(Y) + ' = L_j, ' + P.show(Dv) + ' = ' + c0.v + ' + (j - i - 1) (unfolding ' + key + ' and ' + rk + '); a conjunction over pairs is prefix-closed, so each new element is tested against those placed and a failing prefix is dropped'

@@ -158,7 +158,9 @@ test('Starlog, plunit and the fixes from S2A2 and mnns', () => {
     'text.pl': 'main :- string_chars(S, []), atom_chars(A, []), string_codes(T, []), atom_codes(B, []), print([S, A, T, B]), nl,\n' +
       '  term_string(_, "f(X, Y, X, _Z, _)", []), read_term_from_atom(\'g(A1, B1, A1, _C)\', G, [variable_names(Vs)]), length(Vs, NV), print(NV), nl,\n' +
       '  open_string("h(X, Y, X, _Z).", In), read_term(In, _, [singletons(Ss)]), close(In), forall(member(N=_, Ss), writeln(N)),\n' +
-      '  ( is_set([a, b, f(_)]) -> writeln(set) ; true ), ( is_set([a, b, a]) -> true ; writeln(not_set) ), ( is_set([X0, Y0]) -> writeln(vars_differ) ; true ), ( is_set([a|_]) -> true ; writeln(partial_not_set) ).\n'
+      '  ( is_set([a, b, f(_)]) -> writeln(set) ; true ), ( is_set([a, b, a]) -> true ; writeln(not_set) ), ( is_set([X0, Y0]) -> writeln(vars_differ) ; true ), ( is_set([a|_]) -> true ; writeln(partial_not_set) ).\n',
+    // hexadecimal digits, with their weights
+    'xdigit.pl': "main :- forall(member(C, [a, 'F', '7', g]), ( char_type(C, xdigit(W)) -> format('~w=~w ', [C, W]) ; format('~w:no ', [C]) )), ( code_type(0'c, xdigit(_)) -> writeln(yes) ; writeln(no) ), findall(A-B, nextto(A, B, [1, 2, 3]), Ps), print(Ps), nl.\n"
   };
   const r = (args) => swipl(files, args);
   assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'neg.pl']).out, '2/ -3\n');
@@ -170,6 +172,7 @@ test('Starlog, plunit and the fixes from S2A2 and mnns', () => {
   assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'libuse.pl']).out, '[3,2,1]\n');
   assert.strictEqual(r(['-g', 'put', '-g', 'show', '-g', 'cyc', '-t', 'halt', 'live.pl']).out, '1\ncyclic_ok\n');
   assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'gcd.pl']).out, '2\n');
+  assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'xdigit.pl']).out, 'a=10 F=15 7=7 g:no yes\n[1-2,2-3]\n');
   assert.strictEqual(r(['-g', 'main', '-t', 'halt', 'text.pl']).out, '["",\'\',"",\'\']\n3\nY\nset\nnot_set\nvars_differ\npartial_not_set\n');
   const conv = P.convert(files['gcd.pl'], { mnn: true, s2a: false, queries: ['g([a-4, b-(-6), c-10], G)'] });
   const q = conv.queries[0], d = P.runDetlogFast(P.loadProgram(conv.text), q.pred, q.vars, {});

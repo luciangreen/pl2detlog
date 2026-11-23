@@ -15,7 +15,9 @@ for (const ex of P.EXAMPLES) for (const mnn of [false, true]) {
     const qs = ex.queries.concat(EXTRA[ex.id] || []);
     const conv = P.convert(ex.src, { mnn, queries: qs });
     assert.ok(conv.streamText, conv.streamError || 'no stream code');
-    const own = conv.streamText.split('% ---- stream library')[1].split('\n').slice(14).join('\n');
+    // the query boundary ('$queryN__cp') is the packet interface every consumer reads: an S2A query
+    // takes its rows from the table there (splice_extend), so the check is on the clauses before it
+    const own = conv.streamText.split('% ---- stream library')[1].split('\n').slice(14).join('\n').split(/^'\$query\d+__cp'/m)[0];
     assert.ok(!PACKET.test(own), 'a packet builtin in the stream code');
     assert.ok(!/\bcopy_term\(/.test(own), 'an environment copy in the stream code');
     const prog = P.loadProgram(conv.streamText);
@@ -31,3 +33,23 @@ for (const ex of P.EXAMPLES) for (const mnn of [false, true]) {
     }
   });
 }
+
+// The C export of stream code (bags, cut cells and direct output in src/runtime.c; the pruned permutation
+// as a native loop) prints what the C export of packet code prints, plain and MNN, generic and native.
+test('streams: C export prints the packet program\'s answers', (t) => {
+  const cp = require('child_process'), fs = require('fs'), os = require('os'), path = require('path');
+  try { cp.execSync('cc --version', { stdio: 'ignore' }); } catch (e) { t.skip('no C compiler'); return; }
+  P.C_RUNTIME = fs.readFileSync(path.join(__dirname, '..', 'src', 'runtime.c'), 'utf8');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pl2d-cstream-'));
+  for (const ex of P.EXAMPLES) for (const mnn of [false, true]) for (const native of [false, true]) {
+    const qs = ex.queries.filter(q => !P.runQuery(P.loadProgram(ex.src), P.readTerm(q), { stepLimit: 3e6, maxAnswers: 1000 }).error);
+    const conv = P.convert(ex.src, { mnn, queries: qs });
+    const outs = [conv.text, conv.streamText].map((txt, i) => {
+      const f = path.join(dir, ex.id + (mnn ? 'm' : 'p') + (native ? 'n' : 'g') + i);
+      fs.writeFileSync(f + '.c', P.toC(txt, { queries: conv.queries, source: conv.source, native, checked: native }).code);
+      cp.execSync('cc -O2 -w -o ' + f + ' ' + f + '.c -lm');
+      return cp.execFileSync(f, ['--no-ref']).toString().split('\n').filter(l => !l.startsWith('% ')).join('\n');
+    });
+    assert.equal(outs[1], outs[0], ex.id + (mnn ? ' MNN' : ' plain') + (native ? ' native' : ''));
+  }
+});

@@ -25,16 +25,146 @@
     const note = (k, m) => { if (!predNotes.has(k)) predNotes.set(k, []); if (!predNotes.get(k).includes(m)) predNotes.get(k).push(m); };
     const getCls = k => { const c = prog.preds.get(k); if (!c) throw BackError('missing Detlog predicate ' + k); return c; };
 
-    for (const k of cpPreds) {
-      const [f, nS] = splitKey(k); const n = +nS - 1; const pname = f.replace(/__cp$/, ''); const pk = pname + '/' + n;
+    // stream code (src/stream.js): every predicate p/n is p__k/n+1
+    const streams = (prog.preds.get('dl_k/1') || []).some(c => isC(D(c.head).a[0], 'dl_row', 2));
+    const topKeys = streams ? prog.order.filter(k => /__k\/\d+$/.test(k) && !/^dl_/.test(k)) : cpPreds;
+    for (const k of topKeys) {
+      const [f, nS] = splitKey(k); const n = +nS - 1; const pname = f.replace(streams ? /__k$/ : /__cp$/, ''); const pk = pname + '/' + n;
       try {
-        const clauses = decompPacketPred(k, pk);
+        const clauses = streams ? decompStreamPred(k, pk, pname) : decompPacketPred(k, pk);
         predClauses.set(pk, clauses);
       } catch (e) {
         if (!e.back) throw e;
         res.warnings.push({ pred: pk, kind: 'error', msg: 'not back-convertible: ' + e.message });
         predClauses.set(pk, null);
       }
+    }
+
+    // ---- stream code back to Prolog ----
+    // p__k(A.., K): an S2A table, a facts table, a DET or MEMO wrapper (dropped), or the clause chain
+    //   [dl_cut_new(C),] if_commit(p__k1(A.., [C,] K), true, [dl_cut_off(C),] ...)
+    // whose clauses are walked goal by goal, following each continuation term into its dl_k/1 clause.
+    var kcMap = null; // continuation functor -> its dl_k/1 clause
+    function kconts() { if (!kcMap) { kcMap = new Map(); for (const c of prog.preds.get('dl_k/1') || []) { const a = D(D(c.head).a[0]); if (a.t === 'c') kcMap.set(a.f + '/' + a.a.length, c); } } return kcMap; }
+    function lastArg(t) { t = D(t); return t.a[t.a.length - 1]; }
+    function decompStreamPred(k, pk, pname) {
+      const cls = getCls(k);
+      if (cls.length === 1) {
+        const h = D(cls[0].head), gs = flat(cls[0].body).map(D), A = h.a.slice(0, -1);
+        if (gs.length === 2 && isC(gs[0], 's2a_rows', 3) && isC(gs[1], 'dl_rows_k', 3)) { note(pk, 'S2A loop back-converted'); return s2aClauses(gs[0].a[0], pname, A.length, pk); }
+        if (gs.length === 1 && isC(gs[0], 'dl_facts_k', 3)) return listToArray(gs[0].a[0]).map(r => ({ head: Cmp(pname, listToArray(r).map(x => copy(x))), body: P.TRUE }));
+        // DET wrapper: if_commit((p__d(A.., S), S \== maybe), (S == yes, dl_k(K)), Stream)
+        if (gs.length === 1 && isC(gs[0], 'if_commit', 3)) {
+          const c0 = flat(gs[0].a[0]).map(D);
+          if (c0.length === 2 && c0[0].t === 'c' && /__d$/.test(c0[0].f) && isC(c0[1], '\\==', 2)) {
+            note(pk, 'deterministic mode dropped (DET is an optimisation only)');
+            return decompStreamPred(P.key(gs[0].a[2]), pk, pname);
+          }
+        }
+        // MEMO wrapper: memo_lookup(p/n, A, F), p__kmemo(F, A.., K); its none clause runs the stream into a bag
+        if (gs.length === 2 && isC(gs[0], 'memo_lookup', 3)) {
+          note(pk, 'memo table dropped (memoisation is an optimisation only)');
+          const none = getCls(P.key(gs[1])).find(c => isA(D(c.head).a[0], 'none'));
+          if (!none) throw BackError('memo wrapper without a none clause');
+          const ic = flat(none.body).map(D).find(g => isC(g, 'if_commit', 3));
+          return decompStreamPred(P.key(ic.a[0]), pk, pname);
+        }
+      }
+      // the clause chain, or the predicate's only clause
+      const chainOf = (g, out) => { g = D(g);
+        if (isC(g, ',', 2) && isC(D(g.a[0]), 'dl_cut_off', 1)) return chainOf(g.a[1], out);
+        if (isC(g, 'if_commit', 3) && isA(g.a[1], 'true') && D(g.a[0]).t === 'c' && prog.preds.has(P.key(g.a[0])) && /__k\w*\d+$/.test(D(g.a[0]).f)) { out.push(P.key(g.a[0])); return chainOf(g.a[2], out); }
+        if (g.t === 'c' && prog.preds.has(P.key(g)) && /__k\w*\d+$/.test(g.f)) { out.push(P.key(g)); return out; }
+        return null; };
+      if (cls.length === 1) {
+        const gs = flat(cls[0].body).map(D);
+        const cut = gs.length === 2 && isC(gs[0], 'dl_cut_new', 1);
+        const ch = gs.length === 1 || cut ? chainOf(gs[gs.length - 1], []) : null;
+        if (ch) { const out = []; for (const ck of ch) for (const c of getCls(ck)) out.push(...streamClause(c, pname, pk, cut)); return out; }
+      }
+      const out = []; for (const c of cls) out.push(...streamClause(c, pname, pk, false)); return out;
+    }
+    function streamClause(cl, pname, pk, cut) {
+      const m = new Map(); const t = copy(Cmp(':-', [cl.head, cl.body]), m);
+      const h = D(t.a[0]); const K = h.a[h.a.length - 1], C = cut ? h.a[h.a.length - 2] : null;
+      const args = h.a.slice(0, cut ? -2 : -1);
+      const body = walkK(flat(t.a[1]), K, C);
+      const names = new Map();
+      const clause = { head: Cmp(pname, args.map(x => ren(x, names))), body: ren(body, names) };
+      return restoreCuts(clause, pname, pk).map(c => cleanup(c, pk));
+    }
+    // the Prolog goal of a stream goal sequence ending in the terminal continuation T
+    function walkK(gs, T, C) {
+      gs = gs.map(D); const out = [];
+      const isT = x => sameT(x, T);
+      for (let i = 0; i < gs.length; i++) {
+        const g = gs[i], last = i === gs.length - 1;
+        if (isC(g, 'dl_k', 1)) { if (isT(g.a[0])) continue; out.push(cont(g.a[0], T, C)); continue; }
+        if (isC(g, 'dl_cut_off', 1)) continue;
+        if (isC(g, 'dl_cut_set', 1)) { out.push(Atom('!')); continue; }
+        // findall/3, findall/4, aggregate_all/3 through a bag
+        if (isC(g, 'dl_bag_new', 1) && isC(gs[i + 1], 'if_commit', 3) && (isC(gs[i + 2], 'dl_bag_list', 2) || isC(gs[i + 2], 'dl_bag_list', 3))) {
+          const ic = D(gs[i + 1]), bl = D(gs[i + 2]);
+          const term = (function find(x) { x = D(x); if (isC(x, 'dl_collect', 2)) return x; if (x.t === 'c') for (const y of x.a) { const r = find(y); if (r) return r; } return null; })(ic.a[0]);
+          const inner = walkK(flat(ic.a[0]), term, C);
+          if (isC(gs[i + 3], 'aggregate_list', 3) && D(gs[i + 3].a[1]) === D(bl.a[1])) {
+            const ag = D(gs[i + 3]), nm = D(ag.a[0]).n, tm = term.a[1];
+            out.push(Cmp('aggregate_all', [isA(tm, 'true') && nm === 'count' ? Atom('count') : Cmp(nm, [tm]), inner, ag.a[2]])); i += 3; continue;
+          }
+          out.push(bl.a.length === 2 ? Cmp('findall', [term.a[1], inner, bl.a[1]]) : Cmp('findall', [term.a[1], inner, bl.a[1], bl.a[2]])); i += 2; continue;
+        }
+        if (isC(g, 'builtin_rows', 2) && isC(gs[i + 1], 'dl_rows_k', 3)) { out.push(g.a[0]); const k2 = gs[i + 1].a[2]; i++; if (!isT(k2)) out.push(cont(k2, T, C)); continue; }
+        if (isC(g, 'if_commit', 3)) {
+          const c0 = flat(g.a[0]).map(D);
+          // the pruned permutation: the goals as written are its else branch
+          if (c0.length === 2 && isC(c0[0], 'var', 1) && isC(c0[1], 'is_list', 1) && D(g.a[1]).t === 'c' && /__pwperm$/.test(D(g.a[1]).f)) { out.push(walkK(flat(g.a[2]), T, C)); continue; }
+          const reaches = x => { let r = false; (function w(y) { y = D(y); if (sameT(y, T) && !isA(y, 'true')) r = true; else if (y.t === 'c') y.a.forEach(w); })(x); return r; };
+          if (isA(g.a[1], 'true') && reaches(g.a[0])) { out.push(Cmp(';', [walkK(flat(g.a[0]), T, C), walkK(flat(g.a[2]), T, C)])); continue; }
+          const cond = walkK(flat(g.a[0]), Atom('true'), C);
+          out.push(mkIte(cond, walkK(flat(g.a[1]), T, C), walkK(flat(g.a[2]), T, C))); continue;
+        }
+        // a stream call: its goal, then its continuation (to T), or once/1 when goals follow it
+        const sc = streamCall(g);
+        if (sc) {
+          const kt = lastArg(g);
+          if (last) { out.push(sc); if (!isT(kt)) out.push(cont(kt, T, C)); }
+          else { const inner = isA(kt, 'true') ? sc : conj([sc, cont(kt, Atom('true'), C)]); out.push(Cmp('once', [inner])); }
+          continue;
+        }
+        out.push(g);
+      }
+      return conj(out);
+    }
+    function streamCall(g) {
+      g = D(g); if (g.t !== 'c') return null; const a = g.a;
+      if (g.f === 'dl_member_k' && a.length === 3) return Cmp('member', [a[1], a[0]]);
+      if (g.f === 'dl_between_k' && a.length === 4) return Cmp('between', [a[0], a[1], a[2]]);
+      if (g.f === 'dl_select_k' && a.length === 4) return Cmp('select', [a[1], a[0], a[2]]);
+      if (g.f === 'dl_nth_k' && a.length === 5) return Cmp(D(a[1]).v === 0 ? 'nth0' : 'nth1', [a[2], a[0], a[3]]);
+      if (/__k$/.test(g.f) && prog.preds.has(P.key(g))) { const f = g.f.slice(0, -3); return a.length === 1 ? Atom(f) : Cmp(f, a.slice(0, -1)); }
+      return null;
+    }
+    function sameT(a, b) {
+      a = D(a); b = D(b); if (a === b) return true; if (a.t !== b.t) return false;
+      if (a.t === 'c') return a.f === b.f && a.a.length === b.a.length && a.a.every((x, i) => sameT(x, b.a[i]));
+      return a.t === 'a' ? a.n === b.n : a.t === 'n' ? a.v === b.v : a.t === 's' ? a.v === b.v : false;
+    }
+    // unify a fresh clause head with a term (the head's variables are fresh: no undo is needed)
+    function bindTo(a, b) {
+      a = D(a); b = D(b); if (a === b) return true;
+      if (a.t === 'v') { a.ref = b; return true; } if (b.t === 'v') { b.ref = a; return true; }
+      if (a.t !== b.t) return false;
+      if (a.t === 'c') return a.f === b.f && a.a.length === b.a.length && a.a.every((x, i) => bindTo(x, b.a[i]));
+      return a.t === 'a' ? a.n === b.n : a.t === 'n' ? a.v === b.v && !!a.f === !!b.f : a.t === 's' ? a.v === b.v : false;
+    }
+    // the rest a continuation term stands for
+    function cont(kt, T, C) {
+      kt = D(kt); if (sameT(kt, T)) return P.TRUE;
+      const kc = kt.t === 'c' ? kconts().get(kt.f + '/' + kt.a.length) : null;
+      if (!kc) throw BackError('unknown continuation ' + show(kt));
+      const c = copy(Cmp(':-', [kc.head, kc.body]));
+      if (!bindTo(D(D(c.a[0]).a[0]), kt)) throw BackError('continuation ' + show(kt) + ' does not match its clause');
+      return walkK(flat(c.a[1]), T, C);
     }
 
     // decompile the packet predicate k (p__cp/n+1) into Prolog clauses of p/n
@@ -383,7 +513,7 @@
     // rule CUT inverse: p(H..) :- ( [H..]=[h..], G -> B ; Rest )  ==>  p(h..) :- G, !, B.  + Rest
     function restoreCuts(clause, pname, pk) {
       const h = D(clause.head); const H = h.t === 'c' ? h.a.map(D) : [];
-      const isMergedHead = H.length > 0 && H.every(v => v.t === 'v' && /^H__\d+$/.test(v.name || '')) || (H.length === 0 && /__c\d/.test(show(clause.body, { varName: v => v.name || '_' })));
+      const isMergedHead = H.length > 0 && H.every(v => v.t === 'v' && /^[HA]__\d+$/.test(v.name || '')) || (H.length === 0 && /__c\d/.test(show(clause.body, { varName: v => v.name || '_' })));
       if (!isMergedHead) return [clause];
       const out = [];
       let b = D(clause.body);

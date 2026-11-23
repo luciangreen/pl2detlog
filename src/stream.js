@@ -58,7 +58,9 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
     const ir = conv.ir;
     const clauses = []; // [term]
     const user = new Set(ir.keys());
-    const emit = t => clauses.push(t);
+    // every clause carries its rule (src/proof.js checks them): RULE is the rule of the code being built
+    const tags = []; let RULE = 'k_clause', PRED = '';
+    const emit = (t, rule) => { clauses.push(t); tags.push({ rule: rule || RULE, pred: PRED }); };
     const kname = f => f + '__k';
     let contN = 0, varN = 0; const pwDone = new Set();
     const V = p => Var(p + '__' + (++varN));
@@ -82,13 +84,14 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       const A = []; for (let j = 0; j < n; j++) A.push(Var('A__' + (j + 1)));
       const KV = Var('K__0');
       const head = Cmp(kname(f), A.concat([KV]));
+      PRED = k; RULE = 'k_clause';
       if (rec.error) { emit(Cmp(':-', [head, Cmp('detlog_unsupported', [Cmp('/', [Atom(f), Int(n)]), Str(rec.error)])])); continue; }
       const cls = rec.clauses;
       if (!cls.length) { emit(Cmp(':-', [head, P.FAIL])); continue; }
       // MNN S2A: the predicate's rows, walked lazily
       if (s2aCode.has(f)) {
         const g = s2aCode.get(f), Rs = V('Rs');
-        emit(Cmp(':-', [head, conj([Cmp('s2a_rows', [g.a[0], list(A), Rs]), Cmp('dl_rows_k', [Rs, list(A), KV])])]));
+        emit(Cmp(':-', [head, conj([Cmp('s2a_rows', [g.a[0], list(A), Rs]), Cmp('dl_rows_k', [Rs, list(A), KV])])]), 'k_s2a');
         continue;
       }
       const isDet = detCode.has(f), isMemo = kindOf.get(k) === 'memo';
@@ -98,6 +101,7 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       if (isMemo) {
         // MEMO: the answers of a pure predicate per call variant, from the table
         const F = V('F'), Rs = V('Rs'), Bg = V('B');
+        RULE = 'k_memo';
         emit(Cmp(':-', [Cmp(memoName, A.concat([KV])), conj([Cmp('memo_lookup', [Cmp('/', [Atom(f), Int(n)]), list(A), F]), Cmp(f + '__kmemo', [F].concat(A, [KV]))])]));
         const A2 = A.map((_, j) => V('A')), K2 = V('K'), R2 = V('R');
         emit(Cmp(':-', [Cmp(f + '__kmemo', [Cmp('found', [R2])].concat(A2, [K2])), Cmp('dl_rows_k', [R2, list(A2), K2])]));
@@ -109,20 +113,22 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       }
       if (isDet) {
         // DET: the deterministic-mode status code; maybe (several clauses possible) runs the stream
+        RULE = 'k_det';
         for (const t of detCode.get(f)) emit(t);
         const S = V('S');
         emit(Cmp(':-', [head, Cmp('if_commit', [conj([Cmp(f + '__d', A.concat([S])), Cmp('\\==', [S, Atom('maybe')])]),
           conj([Cmp('==', [S, Atom('yes')]), Cmp('dl_k', [KV])]), Cmp(top, A.concat([KV]))])]));
         if (isMemo) { const Pk = V('P'), Bp = V('B');
           emit(Cmp(':-', [Cmp(f + '__cp', A.concat([Pk])), conj([Cmp('dl_bag_new', [Bp]),
-            Cmp('if_commit', [Cmp(memoName, A.concat([Cmp('dl_collect', [Bp, Cmp('e', [list(A)])])])), TRUE, TRUE]), Cmp('dl_bag_list', [Bp, Pk])])])); }
+            Cmp('if_commit', [Cmp(memoName, A.concat([Cmp('dl_collect', [Bp, Cmp('e', [list(A)])])])), TRUE, TRUE]), Cmp('dl_bag_list', [Bp, Pk])])]), 'k_memo'); }
       }
       // facts: a table walked by the stream library
       if (cls.length > 1 && cls.every(c => isTrue(c.body))) {
         const rows = cls.map(c => list(D(c.head).t === 'c' ? D(c.head).a : []));
-        emit(Cmp(':-', [head, Cmp('dl_facts_k', [list(rows), list(A), KV])]));
+        emit(Cmp(':-', [head, Cmp('dl_facts_k', [list(rows), list(A), KV])]), 'k_facts');
         continue;
       }
+      RULE = 'k_clause';
       const cut = cls.some(c => hasCut(c.body));
       const C = Var('C__0');
       const clauseGoal = (c, j) => {
@@ -139,11 +145,12 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       const calls = cls.map(clauseGoal);
       let chain = calls[calls.length - 1];
       for (let j = calls.length - 2; j >= 0; j--) chain = Cmp('if_commit', [calls[j], TRUE, cut ? conj([Cmp('dl_cut_off', [C]), chain]) : chain]);
-      emit(Cmp(':-', [Cmp(base, A.concat([KV])), cut ? conj([Cmp('dl_cut_new', [C]), chain]) : chain]));
+      emit(Cmp(':-', [Cmp(base, A.concat([KV])), cut ? conj([Cmp('dl_cut_new', [C]), chain]) : chain]), 'k_pred');
     }
 
     // queries: the packet entry, collecting answers and the text written before each
     for (const q of conv.queries || []) {
+      PRED = q.pred + '/' + q.vars.length; RULE = 'k_query';
       const vs = q.vars.map(v => Var(v));
       const B = V('B'), R = V('R');
       const streamed = Cmp('if_commit', [Cmp(kname(q.pred), vs.concat([Cmp('dl_row', [B, list(vs)])])), TRUE, TRUE]);
@@ -219,7 +226,7 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       const Kr = Cmp(contName(ctx), env.concat([K]));
       const ctx2 = Object.assign({}, ctx, { outer: env.concat(termVars(K)) });
       const rc = genConj(rest, K, ctx2);
-      emit(Cmp(':-', [Cmp('dl_k', [Kr]), conj((guarded ? [Cmp('dl_cut_off', [ctx.cut])] : []).concat(rc))]));
+      emit(Cmp(':-', [Cmp('dl_k', [Kr]), conj((guarded ? [Cmp('dl_cut_off', [ctx.cut])] : []).concat(rc))]), 'k_cont');
       return genGoal(g, Kr, ctx);
     }
 
@@ -236,17 +243,18 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       const general = genConj([g, tg].concat(rest), K, Object.assign({}, ctx, { noPrune: true }));
       const call = [Cmp('if_commit', [conj([Cmp('var', [Pv]), Cmp('is_list', [L])]), Cmp(nm, [L, NIL, Pv, Kr]), conj(general)])];
       if (pwDone.has(T)) return call;
-      pwDone.add(T);
+      pwDone.add(T); const pred0 = PRED; PRED = T + '/1';
       const X = V('X'), Xs = V('Xs'), Pre = V('Pre'), Y = V('Y'), Ys = V('Ys'), R = V('R'), K1 = V('K');
-      emit(Cmp(':-', [Cmp(nm, [NIL, Var('_'), NIL, K1]), Cmp('dl_k', [K1])]));
+      emit(Cmp(':-', [Cmp(nm, [NIL, Var('_'), NIL, K1]), Cmp('dl_k', [K1])]), 'k_prune');
       const K2 = V('K');
-      emit(Cmp(':-', [Cmp(nm, [P.cons(X, Xs), Pre, P.cons(Y, Ys), K2]), Cmp('dl_select_k', [P.cons(X, Xs), Y, R, Cmp(cn, [Y, R, Pre, Ys, K2])])]));
-      emit(Cmp(':-', [Cmp('dl_k', [Cmp(cn, [Y, R, Pre, Ys, K2])]), conj([Cmp(pn, [Pre, Y, Int(pw.c0)]), Cmp(nm, [R, P.cons(Y, Pre), Ys, K2])])]));
-      emit(Cmp(pn, [NIL, Var('_'), Var('_')]));
+      emit(Cmp(':-', [Cmp(nm, [P.cons(X, Xs), Pre, P.cons(Y, Ys), K2]), Cmp('dl_select_k', [P.cons(X, Xs), Y, R, Cmp(cn, [Y, R, Pre, Ys, K2])])]), 'k_prune');
+      emit(Cmp(':-', [Cmp('dl_k', [Cmp(cn, [Y, R, Pre, Ys, K2])]), conj([Cmp(pn, [Pre, Y, Int(pw.c0)]), Cmp(nm, [R, P.cons(Y, Pre), Ys, K2])])]), 'k_prune');
+      emit(Cmp(pn, [NIL, Var('_'), Var('_')]), 'k_prune');
       const Q = V('Q'), Qs = V('Qs'), Y2 = V('Y'), Dd = V('D'), D1 = V('D');
       const m = new Map([[pw.vars.Q, Q], [pw.vars.Y, Y2], [pw.vars.D, Dd]]);
       const tests = pw.tests.map(t => P.copy(t, m));
-      emit(Cmp(':-', [Cmp(pn, [P.cons(Q, Qs), Y2, Dd]), conj(tests.concat([Cmp('is', [D1, Cmp('+', [Dd, Int(1)])]), Cmp(pn, [Qs, Y2, D1])]))]));
+      emit(Cmp(':-', [Cmp(pn, [P.cons(Q, Qs), Y2, Dd]), conj(tests.concat([Cmp('is', [D1, Cmp('+', [Dd, Int(1)])]), Cmp(pn, [Qs, Y2, D1])]))]), 'k_prune');
+      PRED = pred0;
       return call;
     }
 
@@ -258,7 +266,7 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       if (ctx.cut && !env.includes(ctx.cut)) env.push(ctx.cut);
       const Kr = Cmp(contName(ctx), env.concat([K]));
       const rc = genConj(rest, K, Object.assign({}, ctx, { outer: env.concat(termVars(K)) }));
-      emit(Cmp(':-', [Cmp('dl_k', [Kr]), conj((guarded ? [Cmp('dl_cut_off', [ctx.cut])] : []).concat(rc))]));
+      emit(Cmp(':-', [Cmp('dl_k', [Kr]), conj((guarded ? [Cmp('dl_cut_off', [ctx.cut])] : []).concat(rc))]), 'k_cont');
       return Kr;
     }
 
@@ -319,7 +327,7 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
 
     const text = '% Detlog stream code: no answer packets (src/stream.js)\n' + LIB + '\n' +
       clauses.map(c => P.showClause(c, { varName: v => v.name })).join('\n') + '\n';
-    return { text, clauses };
+    return { text, clauses, tags };
   }
 
   // ---- runtime builtins shared by every engine (reference, closure, JIT) ----

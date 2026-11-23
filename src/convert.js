@@ -882,6 +882,8 @@
     out.srcPreds = srcPreds; out.order = order; out.prog = prog;
     // group clauses by generated predicate in order
     out.text = printDetlog(out);
+    // the same program as answer streams, without packets (src/stream.js)
+    if (P.toStreams) { try { out.streamText = P.toStreams(out).text; } catch (e) { out.streamError = e.message; } }
     return out;
   }
 

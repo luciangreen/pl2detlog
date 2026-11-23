@@ -224,7 +224,7 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       if (isTrue(g)) return genConj(rest, K, ctx);
       if (detGoal(g)) return [g].concat(genConj(rest, K, Object.assign({}, ctx, { outer: ctx.outer.concat(termVars(g)) })));
       // PRUNE pairwise: permutation(L, P), t(P) with t a test over all pairs of positions
-      if (isC(g, 'permutation', 2) && !ctx.noPrune && P.pairwise && prog && isC(rest[0], P.name(rest[0]), 1) && user.has(kk(rest[0])) && D(D(rest[0]).a[0]) === D(g.a[1])) {
+      if (rest.length && (isC(g, 'permutation', 2) || (isC(g, P.name(g), 2) && user.has(kk(g)) && P.isPermPred(prog, kk(g)))) && !ctx.noPrune && P.pairwise && prog && isC(rest[0], P.name(rest[0]), 1) && user.has(kk(rest[0])) && D(D(rest[0]).a[0]) === D(g.a[1])) {
         let pw = null; try { pw = P.pairwise(prog, kk(rest[0])); } catch (e) { pw = null; }
         if (pw && pw.vars) return prunePerm(g, rest[0], rest.slice(1), pw, K, ctx);
       }
@@ -477,6 +477,36 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       return lo.lo > hi.hi || (lo.lo === hi.hi && (lo.loOpen || hi.hiOpen)); }
     const p = D((a.pat || b.pat)), iv = a.iv || b.iv;
     return p.t === 'n' && !p.f && Number.isSafeInteger(p.v) && !inIv(iv, p.v);
+  };
+
+  // a user predicate that is permutation/2, in permutation/2's order: perm([], []).  perm(L, [H|T]) :-
+  // S(H, L, R), perm(R, T).  with S select/3 or a user predicate that is select/3:
+  // s(X, [X|T], T).  s(X, [H|T], [H|R]) :- s(X, T, R).  (Variables as shown; any names.)
+  const vv = x => D(x).t === 'v';
+  const isA = (t, n) => { t = D(t); return t.t === 'a' && t.n === n; };
+  function isSelectPred(prog, k) {
+    const cls = prog.preds.get(k); if (!cls || cls.length !== 2) return false;
+    const [a, b] = cls.map(c => ({ h: D(c.head), b: D(c.body) }));
+    if (!isTrue(a.b) || a.h.t !== 'c' || a.h.a.length !== 3) return false;
+    const [X, L1, T1] = a.h.a.map(D);
+    if (!vv(X) || !vv(T1) || !(L1.t === 'c' && L1.f === '.' && D(L1.a[0]) === X && D(L1.a[1]) === T1)) return false;
+    const [X2, L2, L3] = b.h.a.map(D);
+    if (!vv(X2) || L2.t !== 'c' || L2.f !== '.' || L3.t !== 'c' || L3.f !== '.') return false;
+    const H = D(L2.a[0]), T = D(L2.a[1]), R = D(L3.a[1]);
+    if (!vv(H) || !vv(T) || !vv(R) || D(L3.a[0]) !== H || new Set([X2, H, T, R]).size !== 4) return false;
+    return isC(b.b, b.h.f, 3) && D(b.b.a[0]) === X2 && D(b.b.a[1]) === T && D(b.b.a[2]) === R;
+  }
+  P.isPermPred = (prog, k) => {
+    const cls = prog && prog.preds.get(k); if (!cls || cls.length !== 2) return false;
+    const [a, b] = cls.map(c => ({ h: D(c.head), b: D(c.body) }));
+    if (!isTrue(a.b) || !a.h.a.every(x => isA(x, '[]'))) return false;
+    const [L, PT] = b.h.a.map(D); if (!vv(L) || PT.t !== 'c' || PT.f !== '.') return false;
+    const H = D(PT.a[0]), T = D(PT.a[1]); if (!vv(H) || !vv(T)) return false;
+    const gs = P.flatConj(b.b).map(D); if (gs.length !== 2) return false;
+    const [s1, s2] = gs; if (!isC(s1, P.name(s1), 3) || !isC(s2, b.h.f, 2)) return false;
+    const R = D(s1.a[2]);
+    if (D(s1.a[0]) !== H || D(s1.a[1]) !== L || !vv(R) || D(s2.a[0]) !== R || D(s2.a[1]) !== T || new Set([L, H, T, R]).size !== 4) return false;
+    return s1.f === 'select' || isSelectPred(prog, P.key(s1));
   };
 
   P.toStreams = toStreams; P.printStreams = printStreams;

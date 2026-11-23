@@ -4004,7 +4004,7 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       if (isTrue(g)) return genConj(rest, K, ctx);
       if (detGoal(g)) return [g].concat(genConj(rest, K, Object.assign({}, ctx, { outer: ctx.outer.concat(termVars(g)) })));
       // PRUNE pairwise: permutation(L, P), t(P) with t a test over all pairs of positions
-      if (isC(g, 'permutation', 2) && !ctx.noPrune && P.pairwise && prog && isC(rest[0], P.name(rest[0]), 1) && user.has(kk(rest[0])) && D(D(rest[0]).a[0]) === D(g.a[1])) {
+      if (rest.length && (isC(g, 'permutation', 2) || (isC(g, P.name(g), 2) && user.has(kk(g)) && P.isPermPred(prog, kk(g)))) && !ctx.noPrune && P.pairwise && prog && isC(rest[0], P.name(rest[0]), 1) && user.has(kk(rest[0])) && D(D(rest[0]).a[0]) === D(g.a[1])) {
         let pw = null; try { pw = P.pairwise(prog, kk(rest[0])); } catch (e) { pw = null; }
         if (pw && pw.vars) return prunePerm(g, rest[0], rest.slice(1), pw, K, ctx);
       }
@@ -4257,6 +4257,36 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       return lo.lo > hi.hi || (lo.lo === hi.hi && (lo.loOpen || hi.hiOpen)); }
     const p = D((a.pat || b.pat)), iv = a.iv || b.iv;
     return p.t === 'n' && !p.f && Number.isSafeInteger(p.v) && !inIv(iv, p.v);
+  };
+
+  // a user predicate that is permutation/2, in permutation/2's order: perm([], []).  perm(L, [H|T]) :-
+  // S(H, L, R), perm(R, T).  with S select/3 or a user predicate that is select/3:
+  // s(X, [X|T], T).  s(X, [H|T], [H|R]) :- s(X, T, R).  (Variables as shown; any names.)
+  const vv = x => D(x).t === 'v';
+  const isA = (t, n) => { t = D(t); return t.t === 'a' && t.n === n; };
+  function isSelectPred(prog, k) {
+    const cls = prog.preds.get(k); if (!cls || cls.length !== 2) return false;
+    const [a, b] = cls.map(c => ({ h: D(c.head), b: D(c.body) }));
+    if (!isTrue(a.b) || a.h.t !== 'c' || a.h.a.length !== 3) return false;
+    const [X, L1, T1] = a.h.a.map(D);
+    if (!vv(X) || !vv(T1) || !(L1.t === 'c' && L1.f === '.' && D(L1.a[0]) === X && D(L1.a[1]) === T1)) return false;
+    const [X2, L2, L3] = b.h.a.map(D);
+    if (!vv(X2) || L2.t !== 'c' || L2.f !== '.' || L3.t !== 'c' || L3.f !== '.') return false;
+    const H = D(L2.a[0]), T = D(L2.a[1]), R = D(L3.a[1]);
+    if (!vv(H) || !vv(T) || !vv(R) || D(L3.a[0]) !== H || new Set([X2, H, T, R]).size !== 4) return false;
+    return isC(b.b, b.h.f, 3) && D(b.b.a[0]) === X2 && D(b.b.a[1]) === T && D(b.b.a[2]) === R;
+  }
+  P.isPermPred = (prog, k) => {
+    const cls = prog && prog.preds.get(k); if (!cls || cls.length !== 2) return false;
+    const [a, b] = cls.map(c => ({ h: D(c.head), b: D(c.body) }));
+    if (!isTrue(a.b) || !a.h.a.every(x => isA(x, '[]'))) return false;
+    const [L, PT] = b.h.a.map(D); if (!vv(L) || PT.t !== 'c' || PT.f !== '.') return false;
+    const H = D(PT.a[0]), T = D(PT.a[1]); if (!vv(H) || !vv(T)) return false;
+    const gs = P.flatConj(b.b).map(D); if (gs.length !== 2) return false;
+    const [s1, s2] = gs; if (!isC(s1, P.name(s1), 3) || !isC(s2, b.h.f, 2)) return false;
+    const R = D(s1.a[2]);
+    if (D(s1.a[0]) !== H || D(s1.a[1]) !== L || !vv(R) || D(s2.a[0]) !== R || D(s2.a[1]) !== T || new Set([L, H, T, R]).size !== 4) return false;
+    return s1.f === 'select' || isSelectPred(prog, P.key(s1));
   };
 
   P.toStreams = toStreams; P.printStreams = printStreams;
@@ -7556,6 +7586,23 @@ static double ref_ms(void (*run)(long)) {
     return op === '>' ? { lo: c, loOpen: true, hi: Infinity, hiOpen: true } : op === '>=' ? { lo: c, loOpen: false, hi: Infinity, hiOpen: true }
       : op === '<' ? { lo: -Infinity, loOpen: true, hi: c, hiOpen: true } : op === '=<' ? { lo: -Infinity, loOpen: true, hi: c, hiOpen: false } : { lo: c, loOpen: false, hi: c, hiOpen: false };
   };
+  // a source predicate that is permutation/2 clause for clause, with select/3 or a predicate that is select/3
+  const PERMSHAPE = (prog, k) => {
+    const V = x => D(x).t === 'v', L = (t) => { t = D(t); return t.t === 'c' && t.f === '.' && t.a.length === 2 ? [D(t.a[0]), D(t.a[1])] : null; };
+    const SEL = (sk) => { const c = prog.preds.get(sk); if (!c || c.length !== 2) return false;
+      const h1 = D(c[0].head), h2 = D(c[1].head), b2 = D(c[1].body); if (!isA(c[0].body, 'true') || h1.a.length !== 3) return false;
+      const l1 = L(h1.a[1]); if (!l1 || !V(h1.a[0]) || l1[0] !== D(h1.a[0]) || l1[1] !== D(h1.a[2]) || !V(h1.a[2])) return false;
+      const l2 = L(h2.a[1]), l3 = L(h2.a[2]); if (!l2 || !l3 || l3[0] !== l2[0] || ![h2.a[0], l2[0], l2[1], l3[1]].every(V) || new Set([D(h2.a[0]), l2[0], l2[1], l3[1]]).size !== 4) return false;
+      return isC(b2, h2.f, 3) && D(b2.a[0]) === D(h2.a[0]) && D(b2.a[1]) === l2[1] && D(b2.a[2]) === l3[1]; };
+    const c = prog.preds.get(k); if (!c || c.length !== 2) return false;
+    const h1 = D(c[0].head), h2 = D(c[1].head); if (!isA(c[0].body, 'true') || !h1.a.every(x => isA(x, '[]'))) return false;
+    const pt = L(h2.a[1]); if (!pt || !V(h2.a[0]) || !V(pt[0]) || !V(pt[1])) return false;
+    const gs = P.flatConj(c[1].body).map(D); if (gs.length !== 2 || gs[0].t !== 'c' || gs[0].a.length !== 3 || !isC(gs[1], h2.f, 2)) return false;
+    const R = D(gs[0].a[2]);
+    if (D(gs[0].a[0]) !== pt[0] || D(gs[0].a[1]) !== D(h2.a[0]) || !V(R) || D(gs[1].a[0]) !== R || D(gs[1].a[1]) !== pt[1] || new Set([D(h2.a[0]), pt[0], pt[1], R]).size !== 4) return false;
+    return gs[0].f === 'select' || SEL(P.key(gs[0]));
+  };
+  const isA = (t, n) => { t = D(t); return t.t === 'a' && t.n === n; };
   const STREAM_RULES = new Set(['k_clause', 'k_pred', 'k_cont', 'k_facts', 'k_s2a', 'k_det', 'k_memo', 'k_prune', 'k_query', 'k_detloop', 'k_index']);
   const isC = (t, f, n) => { t = D(t); return t.t === 'c' && t.f === f && t.a.length === n; };
   const RUNTIME_PREDS = () => new Set(Object.keys(P.DETLOG_RUNTIME).concat(['if_commit/3']));
@@ -7786,6 +7833,18 @@ static double ref_ms(void (*run)(long)) {
           ok = want.join() === have.join(); why = ok ? pw.proof : 'tests differ: ' + have.join(', ') + ' vs ' + want.join(', ');
         }
         add('Side conditions', 'stream PRUNE permutation then ' + tk + ': prefixes failing a pair are dropped, the same permutations kept in order', ok, why);
+      }
+      // the generator of each pruned permutation: permutation/2, or a source predicate that is
+      // permutation/2 clause for clause (select-based, in the same order)
+      {
+        const srcProg = P.loadProgram(conv.source); const gens = new Set();
+        for (const c of st.clauses) (function w(g) { g = D(g); if (g.t !== 'c') return;
+          if (g.f === 'if_commit' && g.a.length === 3) { const a = D(g.a[1]); if (a.t === 'c' && /__pwperm$/.test(a.f)) { const g0 = P.flatConj(D(g.a[2])).map(D)[0]; gens.add(g0 && isC(g0, 'builtin_rows', 2) ? P.key(D(g0.a[0])) : g0 && g0.t === 'c' ? g0.f.replace(/__k$/, '') + '/' + (g0.a.length - 1) : '?'); } }
+          g.a.forEach(w); })(c);
+        for (const gk of gens) {
+          const ok = gk === 'permutation/2' || PERMSHAPE(srcProg, gk);
+          add('Side conditions', 'stream PRUNE generator ' + gk + ': permutation/2 in its order', ok, ok ? (gk === 'permutation/2' ? 'the builtin' : 'perm([], []). perm(L, [H|T]) :- select(H, L, R), perm(R, T). (select/3 itself or its two clauses)') : 'not permutation/2');
+        }
       }
     }
     // CUT round trip

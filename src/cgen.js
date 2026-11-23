@@ -336,6 +336,30 @@ static double ref_ms(void (*run)(long)) {
         return ind + 'if (!' + RT[k] + '(' + as.map(x => termC(x, vm)).join(', ') + ')) ' + fail + '\n';
       }
       if (prog.preds.has(k)) {
+        // stream code's pruned permutation T__pwperm(L, [], P, K) (src/stream.js), as in the JIT: a native
+        // integer loop over the pairwise test; each kept permutation runs the continuation K, and an answer
+        // that commits stops the loop.  A list that is not all integers runs the clauses.
+        if (k.endsWith('__pwperm/4') && srcProg && prog.preds.has('dl_k/1')) {
+          let pw = null; try { pw = P.pairwise(srcProg, g.f.slice(0, -'__pwperm'.length) + '/1'); } catch (e) { pw = null; }
+          if (pw) {
+            proofNotes.push(pw.proof);
+            const n = ++uid, test = pw.code('p', 'yv', 'dist', false), a = as.map(x => termC(x, vm));
+            return ind + '{ Term *L' + n + ' = ' + a[0] + ', *Pre' + n + ' = ' + a[1] + ', *P' + n + ' = ' + a[2] + ', *K' + n + ' = ' + a[3] + '; TV xs = { 0 }; int found = 0, native = list_to_tv(L' + n + ', &xs) && deref(Pre' + n + ') == NIL && deref(P' + n + ')->tag == T_VAR;\n' +
+              ind + '  for (size_t i = 0; native && i < xs.n; i++) if (deref(xs.v[i])->tag != T_INT) native = 0;\n' +
+              ind + '  if (!native) found = ' + pfn(k) + '((Term*[]){ L' + n + ', Pre' + n + ', P' + n + ', K' + n + ' });\n' +
+              ind + '  else { size_t k = xs.n; long long *val = (long long *)malloc(sizeof(long long) * (k + 1)), *pl = (long long *)malloc(sizeof(long long) * (k + 1)); for (size_t i = 0; i < k; i++) val[i] = deref(xs.v[i])->iv;\n' +
+              ind + '    size_t *idx = (size_t *)calloc(k + 1, sizeof(size_t)); int *used = (int *)calloc(k + 1, sizeof(int)); long d = 0; TV cur = { 0 };\n' +
+              ind + '    for (;;) { STEP();\n' +
+              ind + '      if ((size_t)d == k) { Term *y = tv_list(&cur); size_t m = TR_TOP; if (unify(P' + n + ', y) && ' + pfn('dl_k/1') + '((Term*[]){ K' + n + ' })) { found = 1; break; } undo(m);\n' +
+              ind + '        d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
+              ind + '      while (idx[d] < k && used[idx[d]]) idx[d]++;\n' +
+              ind + '      if (idx[d] >= k) { d--; if (d < 0) break; used[idx[d]] = 0; cur.n--; idx[d]++; continue; }\n' +
+              ind + '      { long long yv = val[idx[d]]; int okp = 1; for (long i = d - 1; i >= 0; i--) { long long p = pl[i], dist = ' + pw.c0 + ' + (d - 1 - i); if (!(' + test + ')) { okp = 0; break; } } if (!okp) { idx[d]++; continue; } }\n' +
+              ind + '      used[idx[d]] = 1; pl[d] = val[idx[d]]; tv_push(&cur, xs.v[idx[d]]); d++; idx[d] = 0;\n' +
+              ind + '    }\n' + ind + '    free(idx); free(used); tv_free(cur.v); free(val); free(pl); }\n' +
+              ind + '  tv_free(xs.v); if (!found) ' + fail + ' }\n';
+          }
+        }
         if (natModes.has(k) && /__d$/.test(g.f) && !/__d$/.test(curPred)) return ind + '{ Term **na = ' + (as.length ? argsC(as, vm) : 'NULL') + '; if (!' + natEntryFn(k) + '(na) && !' + pfn(k) + '(na)) ' + fail + ' }\n';
         return ind + 'if (!' + pfn(k) + '(' + argsC(as, vm) + ')) ' + fail + '\n';
       }

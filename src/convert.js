@@ -883,7 +883,12 @@
     // group clauses by generated predicate in order
     out.text = printDetlog(out);
     // the same program as answer streams, without packets (src/stream.js)
-    if (P.toStreams) { try { out.streamText = P.toStreams(out).text; } catch (e) { out.streamError = e.message; } }
+    if (P.toStreams) { try { out.stream = P.toStreams(out); out.streamText = out.stream.text; } catch (e) { out.streamError = e.message; } }
+    // the default form is the stream code; opts.form === 'packets' keeps the packet code as the text.
+    // packetText is always the packet code (the per-predicate packet entries p__cp that src/interp.js calls)
+    out.packetText = out.text;
+    out.form = out.streamText && opts.form !== 'packets' ? 'streams' : 'packets';
+    if (out.form === 'streams') out.text = out.streamText;
     return out;
   }
 

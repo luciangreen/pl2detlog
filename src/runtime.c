@@ -468,6 +468,7 @@ static int bi_length_det(Term **a) {
 }
 static int sort_cmp(const void *x, const void *y) { return compare(*(Term **)x, *(Term **)y); }
 static int bi_call(const char *k, Term **a); /* dispatch */
+static int rt_stream_call(const char *k, Term **a, int *r); /* stream code: bags, cut cells, direct output */
 static int sum_list(Term *l, Term **out) { TV v = { 0 }; if (!list_to_tv(l, &v)) dl_die("list expected", NULL); Num s = NI(0);
   for (size_t i = 0; i < v.n; i++) { Num x = eval(v.v[i]); s = (s.f || x.f) ? NF(nd(s) + nd(x)) : NI(s.i + x.i); } tv_free(v.v); *out = num_term(s); return 1; }
 
@@ -551,6 +552,7 @@ static int bi_call(const char *k, Term **a) {
     int r = unify(a[3], tv_list(&parts)); tv_free(parts.v); return r; }
   if (K("throw/1")) dl_die("uncaught exception:", show_term(a[0], 1));
 #undef K
+  { int r; if (rt_stream_call(k, a, &r)) return r; }
   dl_die("builtin not available in the C runtime:", k); return 0;
 }
 
@@ -924,8 +926,56 @@ static void print_packet(Term *R, const char **names, int nv) {
   tv_free(it.v);
 }
 static double now_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6; }
+
+/* ---------- answer streams (src/stream.js) ----------
+   Stream code writes output directly (into dl_outb), collects answers into bags and keeps transparent
+   cuts in cells.  A bag is '$bag'(N) and a cut cell '$cut'(N), N indexing the tables below; neither is
+   undone on backtracking.  At a query's boundary the text written before each answer becomes an
+   out(Text) item before its e(Row), so the query packet is the one packet code builds. */
+static SB dl_outb;
+typedef struct { TV items; size_t mark; } Bag;
+static Bag *bags = NULL; static size_t nbags = 0, capbags = 0;
+static char *cutcells = NULL; static size_t ncuts = 0, capcuts = 0;
+static Term *A_BAG, *A_CUTC;
+static Term *cell_term(Term *f, long long id) { Term *x = mk_int(id); return mk_cmp(f->name, 1, &x); }
+static long long cell_id(Term *t, Term *f) { t = deref(t); if (t->tag != T_CMP || t->arity != 1 || t->name != f->name) dl_die("not a stream cell:", f->name); return deref(t->args[0])->iv; }
+static void take_text(Bag *b) {
+  if (dl_outb.n > b->mark) { char *s = (char *)alloc(dl_outb.n - b->mark + 1); memcpy(s, dl_outb.s + b->mark, dl_outb.n - b->mark); s[dl_outb.n - b->mark] = 0;
+    Term *t = new_term(T_STR); t->name = s; tv_push(&b->items, mk_cmp(A_OUT->name, 1, &t)); dl_outb.n = b->mark; dl_outb.s[b->mark] = 0; }
+}
+static Term *bag_take(Bag *b, Term *tail) { Term *r = tail; for (size_t i = b->items.n; i-- > 0;) r = mk_cons(b->items.v[i], r); b->items.n = 0; return r; }
+static int rt_stream_call(const char *k, Term **a, int *r) {
+#define K(s) (k[0] == (s)[0] && k[1] == (s)[1] && !strcmp(k, s))
+  if (k[0] == 'd' && k[1] == 'l' && k[2] == '_') {
+    if (K("dl_bag_new/1") || K("dl_query_new/1")) { if (nbags == capbags) { capbags = capbags ? capbags * 2 : 64; bags = (Bag *)realloc(bags, capbags * sizeof(Bag)); }
+      Bag *b = &bags[nbags]; memset(b, 0, sizeof *b); b->mark = dl_outb.n; *r = unify(a[0], cell_term(A_BAG, (long long)nbags++)); return 1; }
+    if (K("dl_bag_add/2")) { tv_push(&bags[cell_id(a[0], A_BAG)].items, copy_term(a[1])); *r = 1; return 1; }
+    if (K("dl_bag_list/2")) { *r = unify(a[1], bag_take(&bags[cell_id(a[0], A_BAG)], NIL)); return 1; }
+    if (K("dl_bag_list/3")) { *r = unify(a[1], bag_take(&bags[cell_id(a[0], A_BAG)], a[2])); return 1; }
+    if (K("dl_bag_row/2")) { Bag *b = &bags[cell_id(a[0], A_BAG)]; take_text(b); tv_push(&b->items, mk_e(copy_term(a[1]))); *r = 1; return 1; }
+    if (K("dl_bag_rows/2")) { Bag *b = &bags[cell_id(a[0], A_BAG)]; take_text(b); *r = unify(a[1], bag_take(b, NIL)); return 1; }
+    if (K("dl_bag_last/3")) { Bag *b = &bags[cell_id(a[0], A_BAG)]; take_text(b); tv_push(&b->items, mk_e(a[1])); *r = unify(a[2], bag_take(b, NIL)); return 1; }
+    if (K("dl_cut_new/1")) { if (ncuts == capcuts) { capcuts = capcuts ? capcuts * 2 : 256; cutcells = (char *)realloc(cutcells, capcuts); }
+      cutcells[ncuts] = 0; *r = unify(a[0], cell_term(A_CUTC, (long long)ncuts++)); return 1; }
+    if (K("dl_cut_set/1")) { cutcells[cell_id(a[0], A_CUTC)] = 1; *r = 1; return 1; }
+    if (K("dl_cut_off/1")) { *r = !cutcells[cell_id(a[0], A_CUTC)]; return 1; }
+  }
+  /* an output builtin called directly: its text, as effect_text/2 computes it, is written */
+  const char *sl = strrchr(k, '/'); if (!sl) return 0;
+  static const char *effects[] = { "write", "print", "writeq", "write_canonical", "write_term", "writeln", "nl", "tab", "put_char", "format", "flush_output", NULL };
+  size_t fl = (size_t)(sl - k); int n = atoi(sl + 1);
+  for (const char **e = effects; *e; e++) if (strlen(*e) == fl && !strncmp(*e, k, fl)) {
+    char nm[32]; memcpy(nm, k, fl); nm[fl] = 0;
+    Term *g = n ? mk_cmp(intern(nm), n, a) : mk_atom(nm); Term *T = mk_var();
+    if (!rt_effect_text(g, T)) { *r = 0; return 1; }
+    if (!dl_outb.s) sb_puts(&dl_outb, ""); sb_puts(&dl_outb, deref(T)->name); *r = 1; return 1;
+  }
+#undef K
+  return 0;
+}
+
 static void rt_init(void) {
-  NIL = mk_atom("[]"); A_TRUE = mk_atom("true"); A_E = mk_atom("e"); A_OUT = mk_atom("out");
+  NIL = mk_atom("[]"); A_BAG = mk_atom("$bag"); A_CUTC = mk_atom("$cut"); A_TRUE = mk_atom("true"); A_E = mk_atom("e"); A_OUT = mk_atom("out");
   A_FOUND = mk_atom("found"); A_NONE = mk_atom("none"); A_MINUS = mk_atom("-"); A_DOT = mk_atom("."); A_CUT = mk_atom("cut");
 }
 /* first-argument selection test */

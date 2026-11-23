@@ -411,6 +411,18 @@
       if (k === '=/2') return TICK + '\n{ const m = E.trail.length; if (!E.unify(' + build(g.a[0], slot) + ', ' + build(g.a[1], slot) + ')) { E.undo(m); ' + FAIL + ' } }\n';
       const as = g.t === 'c' ? g.a.map(x => build(x, slot)) : [];
       if (prog.preds.has(k)) {
+        // stream code's pruned permutation T__pwperm(L, [], P, K) (src/stream.js): a native integer loop
+        // over the pairwise test when the source is known; each kept permutation runs the continuation K,
+        // and an answer that commits stops the loop.  Otherwise (or for a non-integer list) the clauses run.
+        if (k.endsWith('__pwperm/4') && prog.pairwiseSource && P.pairwise && prog.preds.has('dl_k/1')) {
+          let pw = null; try { pw = P.pairwise(prog.pairwiseSource, g.f.slice(0, -'__pwperm'.length) + '/1'); } catch (e) { pw = null; }
+          if (pw) {
+            const L = 'L' + (lab++);
+            return TICK + '\n{ const xs' + L + ' = D(' + as[1] + ').t === \'a\' && D(' + as[1] + ').n === \'[]\' ? LA(' + as[0] + ') : null; let h' + L + ';\n' +
+              'if (xs' + L + ' && D(' + as[2] + ').t === \'v\') h' + L + ' = PWK(xs' + L + ', (p, yv, dist) => ' + pw.code('p', 'yv', 'dist', true) + ', ' + pw.c0 + ', (l) => { const m = E.trail.length; if (E.unify(' + as[2] + ', l) && ' + fname.get('dl_k/1') + '(' + as[3] + ', E)) return true; E.undo(m); return false; }, E);\n' +
+              'if (h' + L + ' === undefined) { if (!' + fname.get(k) + '(' + as.concat(['E']).join(', ') + ')) ' + FAIL + ' } else if (!h' + L + ') ' + FAIL + '\n}\n';
+          }
+        }
         if (/__d$/.test(g.f) && !/__d$/.test(curPred)) return '{ const h = NATE(' + JSON.stringify(k) + ', [' + as.join(', ') + '], E); if (h === undefined && !' + fname.get(k) + '(' + as.concat(['E']).join(', ') + ')) ' + FAIL + ' }\n';
         return 'if (!' + fname.get(k) + '(' + as.concat(['E']).join(', ') + ')) ' + FAIL + '\n';
       }
@@ -550,6 +562,24 @@
     }
     // permutation/2 under a pairwise test (src/algebra.js): a prefix whose newest element fails the test
     // against an earlier one is not extended; the permutations kept are those perms keeps, in its order
+    // the same, lazily: fn(l) returns true to stop (an answer committed); undefined for a non-integer list
+    function permsPWK(xs, test, c0, fn, E) {
+      const n = xs.length, xr = xs.map(D);
+      const val = xr.map(x => (x.t === 'n' && !x.f && Number.isSafeInteger(x.v) ? x.v : null));
+      if (val.includes(null)) return undefined;
+      const cur = new Array(n), pl = new Array(n), used = new Array(n).fill(false);
+      return (function rec(k) {
+        if (++E.steps > E.stepLimit) OVER(E);
+        if (k === n) { let l = P.NIL; for (let i = n - 1; i >= 0; i--) l = { t: 'c', f: '.', a: [cur[i], l], gr: true }; return fn(l); }
+        for (let i = 0; i < n; i++) if (!used[i]) {
+          const y = val[i]; let ok = true;
+          for (let j = k - 1; j >= 0; j--) if (!test(pl[j], y, c0 + (k - 1 - j))) { ok = false; break; }
+          if (!ok) continue;
+          used[i] = true; cur[k] = xr[i]; pl[k] = y; const r = rec(k + 1); used[i] = false; if (r) return true;
+        }
+        return false;
+      })(0);
+    }
     function permsPW(xs, test, c0, fn) {
       const n = xs.length, xr = xs.map(D);
       const val = xr.map(x => (x.t === 'n' && !x.f && Number.isSafeInteger(x.v) ? x.v : null));
@@ -607,7 +637,7 @@
     const src = '"use strict";\n' + out.join('\n') + '\nreturn {' + [...fname].map(([k, f]) => JSON.stringify(k) + ': ' + f).join(', ') + '};';
     const OVER = E => { throw new P.LimitError('step limit (' + E.stepLimit + ') exceeded'); };
     const BADV = { t: 'v', ref: null }; // stands for a variable that was never created (an unbound leaf)
-    const fns = new Function('K', 'RB', 'D', 'V', 'LA', 'LIST', 'OVER', 'INT', 'COPY', 'BADV', 'NATE', 'PERMS', 'LIMIT', 'PERMSPW', src)(consts, rbs, D, Var, listToArray, list, OVER, P.Int, P.copy, BADV, natEntry, perms, P.LimitError, permsPW);
+    const fns = new Function('K', 'RB', 'D', 'V', 'LA', 'LIST', 'OVER', 'INT', 'COPY', 'BADV', 'NATE', 'PERMS', 'LIMIT', 'PERMSPW', 'PWK', src)(consts, rbs, D, Var, listToArray, list, OVER, P.Int, P.copy, BADV, natEntry, perms, P.LimitError, permsPW, permsPWK);
     const preds = new Map();
     for (const [k, f] of Object.entries(fns)) preds.set(k, { k, fn: (args, E) => f(...args, E), pos: f });
     return { preds, src, jit: true, nat: NAT };

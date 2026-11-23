@@ -13,6 +13,8 @@
   const D = deref;
   const FORBIDDEN = new Set(['!/0', ';/2', '->/2', '*->/2', '\\+/1', 'not/1', 'findall/3', 'findall/4', 'bagof/3', 'setof/3', 'aggregate_all/3', 'aggregate_all/4', 'forall/2', 'once/1', 'ignore/1', 'call/1', 'catch/3']);
   const RULES = new Set(['CUT', 'SPEC', 'PRED', 'FACTS', 'CLAUSE', 'S2A', 'MEMO', 'DET', 'call_det', 'UNSUPPORTED', 'true', 'fail', 'det', 'effect', 'call', 'member_cp', 'between_cp', 'builtin_rows', 'seq', 'det_prefix', 'effect_prefix', 'disj', 'ite', 'ite_det', 'ite_scan', 'neg', 'neg_det', 'neg_scan', 'findall', 'aggregate', 'splice', 'cut_mark']);
+  const STREAM_RULES = new Set(['k_clause', 'k_pred', 'k_cont', 'k_facts', 'k_s2a', 'k_det', 'k_memo', 'k_prune', 'k_query']);
+  const isC = (t, f, n) => { t = D(t); return t.t === 'c' && t.f === f && t.a.length === n; };
   const RUNTIME_PREDS = () => new Set(Object.keys(P.DETLOG_RUNTIME).concat(['if_commit/3']));
 
   function checkShape(detlogText) {
@@ -40,6 +42,7 @@
       if (gk === ',/2') { walk(g.a[0], k, inCond); walk(g.a[1], k, inCond); return; }
       if (gk === 'true/0') return;
       goals++;
+      if (gk === 'fail/0' || gk === 'false/0') return;
       if (gk === 'if_commit/3') { decisions++; walk(g.a[0], k, true); walk(g.a[1], k, inCond); walk(g.a[2], k, inCond); return; }
       if (FORBIDDEN.has(gk) || (gk && gk.startsWith('call/'))) { issues.push(k + ': contains ' + gk); return; }
       if (P.NONDET_BI.has(gk)) { issues.push(k + ': nondeterministic builtin ' + gk + ' called directly'); return; }
@@ -88,9 +91,9 @@
     const checks = [];
     const add = (group, name, ok, detail) => checks.push({ group, name, ok, detail: detail || '' });
     const pur = purity(src);
-    for (const [label, conv] of [['Detlog', plain], ['MNN Detlog', mnn]]) {
+    for (const [label, conv] of [['Detlog packets', plain], ['MNN Detlog packets', mnn]]) {
       if (!conv) continue;
-      const sh = checkShape(conv.text);
+      const sh = checkShape(conv.packetText || conv.text);
       add('Shape', label + ': no cut, ;, ->, \\+, findall, call/N or nondeterministic builtin; first-argument determinism', sh.ok, sh.ok ? sh.preds + ' predicates, ' + sh.clauses + ' clauses, ' + sh.decisions + ' if_commit decisions' : sh.issues.slice(0, 8).join('; '));
       if (sh.condUser) add('Shape', label + ': if_commit conditions', 'warn', sh.condUser + ' condition(s) call Detlog predicates (allowed: they are deterministic)');
       // justification
@@ -164,8 +167,58 @@
       if (conv.errors.length) add('Coverage', label + ': predicates converted', false, conv.errors.map(e => e.msg).join('; '));
       else add('Coverage', label + ': every predicate converted', true, conv.genPreds.filter(g => !/^\$query/.test(g.key)).length + ' predicate(s), plus ' + conv.queries.length + ' query predicate(s)');
     }
+    // stream code (src/stream.js): shape, a rule for every clause, the side conditions it relies on
+    for (const [label, conv] of [['Stream Detlog', plain], ['MNN stream Detlog', mnn]]) {
+      if (!conv || !conv.stream) continue;
+      const st = conv.stream, text = st.text;
+      const sh = checkShape(text);
+      add('Shape', label + ': no cut, ;, ->, \\+, findall, call/N or nondeterministic builtin; first-argument determinism', sh.ok, sh.ok ? sh.preds + ' predicates, ' + sh.clauses + ' clauses, ' + sh.decisions + ' if_commit decisions' : sh.issues.slice(0, 8).join('; '));
+      // no answer packets outside the query boundary and the S2A/memo tables, no environment copies
+      const own = st.clauses.map((c, i) => ({ c, t: st.tags[i] })).filter(x => x.t.rule !== 'k_query');
+      const PACKET = new Set(['splice_extend/4', 'rows_concat/2', 'rows_cut_concat/2', 'project_rows/4', 'project_list/4', 'packet_first/3', 'packet_split/3', 'effect_text/2', 'cp_filter/3', 'splice2/6', 'copy_term/2']);
+      const used = new Set(); for (const x of own) (function w(g) { g = D(g); if (g.t !== 'c') return; if (g.f === ':-' || g.f === ',' || g.f === 'if_commit') { g.a.forEach(w); return; } const k = P.key(g); if (PACKET.has(k)) used.add(k); })(x.c);
+      add('Shape', label + ': no answer packet and no environment copy outside the query boundary', used.size === 0, used.size ? 'uses ' + [...used].join(', ') : own.length + ' clauses outside the ' + st.clauses.filter((c, i) => st.tags[i].rule === 'k_query').length + ' query boundary clause(s)');
+      const unk = st.tags.filter(t => !STREAM_RULES.has(t.rule));
+      const by = new Map(); for (const t of st.tags) by.set(t.rule, (by.get(t.rule) || 0) + 1);
+      add('Justification', label + ': every clause carries a stream rule', unk.length === 0, st.clauses.length + ' clauses (' + [...by].map(([r, n]) => r + ' ' + n).join(', ') + ')');
+      const stepOf = (rule, pred) => conv.steps.find(x => x.rule === rule && x.pred === pred);
+      const preds = rule => [...new Set(st.tags.filter(t => t.rule === rule).map(t => t.pred))];
+      for (const pk of preds('k_det')) {
+        // as for DET: nothing reachable from p__d writes output or updates the database
+        const [f, n] = splitKey(pk); const dprog = P.loadProgram(text);
+        const seen = new Set(); const todo = [f + '__d/' + (+n + 1)]; let bad = stepOf('DET', pk) ? null : 'no DET step';
+        const EFF = new Set(['assert/1', 'asserta/1', 'assertz/1', 'retract/1', 'retractall/1', 'nb_setval/2', 'b_setval/2', 'setarg/3', 'nb_setarg/3']);
+        while (todo.length && !bad) {
+          const k = todo.pop(); if (seen.has(k)) continue; seen.add(k);
+          const cls = dprog.preds.get(k); if (!cls) { bad = 'missing ' + k; break; }
+          for (const cl of cls) (function walk(g) { g = D(g); const gk = P.key(g); if (gk === ',/2') { walk(g.a[0]); walk(g.a[1]); return; } if (gk === 'if_commit/3') { g.a.forEach(walk); return; } if (EFF.has(gk) || P.EFFECT.has(gk)) bad = gk; else if (dprog.preds.has(gk)) todo.push(gk); })(cl.body);
+        }
+        add('Side conditions', 'stream DET ' + pk + ': the deterministic mode of the proven DET step writes no output; maybe runs the stream', !bad, bad ? bad : seen.size + ' predicate(s) reachable from ' + f + '__d, none writes');
+      }
+      for (const pk of preds('k_memo')) add('Side conditions', 'stream MEMO ' + pk + ': pure (a variant call gives the same answers, in order)', !!pur.pure.get(pk) && !!stepOf('MEMO', pk), pur.pure.get(pk) ? 'purity re-derived from the source' : 'not pure');
+      for (const pk of preds('k_s2a')) add('Side conditions', 'stream S2A ' + pk + ': the rows are the table of the proven S2A step', !!stepOf('S2A', pk), stepOf('S2A', pk) ? 'step ' + stepOf('S2A', pk).id : 'no S2A step');
+      for (const pk of preds('k_facts')) {
+        const rows = st.clauses.filter((c, i) => st.tags[i].rule === 'k_facts' && st.tags[i].pred === pk).map(c => listToArray(D(D(c).a[1]).a[0]))[0] || [];
+        const srcRows = (pur.prog.preds.get(pk) || []).map(c => show(list(D(c.head).t === 'c' ? D(c.head).a : []), { varName: P.namer() }));
+        const same = rows.length === srcRows.length && rows.every((r, i) => show(r, { varName: P.namer() }) === srcRows[i]);
+        add('Side conditions', 'stream FACTS ' + pk + ': rows are the source facts in order', same, rows.length + ' facts');
+      }
+      for (const tk of preds('k_prune')) {
+        // re-derived: the pairwise test of the source predicate, and the tests the generated pairs check
+        let pw = null; try { pw = P.pairwise(P.loadProgram(conv.source), tk); } catch (e) { pw = null; }
+        const pc = st.clauses.find((c, i) => st.tags[i].rule === 'k_prune' && st.tags[i].pred === tk && isC(c, ':-', 2) && /__pwpairs$/.test(D(D(c).a[0]).f || '') && D(D(c).a[0]).a.length === 3 && isC(D(D(c).a[0]).a[0], '.', 2));
+        let ok = !!pw && !!pc, why = pw ? '' : 'no pairwise form re-derived';
+        if (ok) {
+          const h = D(D(pc).a[0]), m = new Map([[pw.vars.Q, D(h.a[0]).a[0]], [pw.vars.Y, h.a[1]], [pw.vars.D, h.a[2]]]);
+          const want = pw.tests.map(t => show(P.copy(t, m), { varName: P.namer() }));
+          const have = P.flatConj(D(pc).a[1]).slice(0, pw.tests.length).map(t => show(t, { varName: P.namer() }));
+          ok = want.join() === have.join(); why = ok ? pw.proof : 'tests differ: ' + have.join(', ') + ' vs ' + want.join(', ');
+        }
+        add('Side conditions', 'stream PRUNE permutation then ' + tk + ': prefixes failing a pair are dropped, the same permutations kept in order', ok, why);
+      }
+    }
     // CUT round trip
-    for (const [label, back] of [['Detlog', backPlain], ['MNN Detlog', backMnn]]) {
+    for (const [label, back] of [[plain && plain.form === 'streams' ? 'Stream Detlog' : 'Detlog', backPlain], [mnn && mnn.form === 'streams' ? 'MNN stream Detlog' : 'MNN Detlog', backMnn], ['Detlog packets', ctx.backPackets], ['MNN Detlog packets', ctx.backPacketsMnn]]) {
       if (!back) continue;
       const cw = P.changeWarnings(src, back.text, back);
       const same = cw.filter(w => w.kind === 'same').length, changed = cw.filter(w => w.kind === 'changed'), bad = cw.filter(w => w.kind === 'error' || w.kind === 'removed');
@@ -176,16 +229,16 @@
       const ref = JSON.stringify(r.prolog.events);
       const parts = [];
       let ok = true; let limitOnly = false;
-      for (const [nm, x] of [['Detlog interpreter', r.interp], ['Detlog code', r.plain], ['MNN Detlog code', r.mnn], ['back-converted Prolog', r.back], ['back-converted (MNN) Prolog', r.backMnn]]) {
+      for (const [nm, x] of [['Detlog interpreter', r.interp], ['Detlog code', r.plain], ['MNN Detlog code', r.mnn], ['Detlog packet code', r.packets], ['MNN Detlog packet code', r.packetsMnn], ['back-converted Prolog', r.back], ['back-converted (MNN) Prolog', r.backMnn]]) {
         if (!x) continue;
         const same = JSON.stringify(x.events) === ref && !x.error === !r.prolog.error;
         if (!same) { ok = false; if (r.prolog.truncated || r.prolog.limit || (x.error && /infinite|no finite packet|step limit/.test(x.error))) limitOnly = true; parts.push(nm + ' differs' + (x.error ? ' (' + x.error + ')' : '')); }
       }
-      add('Evaluation', '?- ' + r.query, ok ? true : limitOnly ? 'warn' : false, ok ? r.prolog.answers.length + ' answer(s)' + (r.prolog.output ? ' + output' : '') + ', same order, duplicates and output in Prolog, the Detlog interpreter, both Detlog programs and both back-conversions' : parts.join('; ') + (limitOnly ? ' — infinite generator: no finite packet (documented limit)' : ''));
-      for (const [nm, x] of [['Detlog', r.plain], ['MNN', r.mnn]]) if (x && x.violations) add('Determinism', nm + ' ?- ' + r.query, false, x.violations + ' call(s) with more than one candidate clause: ' + x.violationPreds.join(', '));
+      add('Evaluation', '?- ' + r.query, ok ? true : limitOnly ? 'warn' : false, ok ? r.prolog.answers.length + ' answer(s)' + (r.prolog.output ? ' + output' : '') + ', same order, duplicates and output in Prolog, the Detlog interpreter, the Detlog programs (streams and packets, plain and MNN) and the back-conversions' : parts.join('; ') + (limitOnly ? ' — infinite generator: no finite packet (documented limit)' : ''));
+      for (const [nm, x] of [['Detlog', r.plain], ['MNN', r.mnn], ['packets', r.packets], ['MNN packets', r.packetsMnn]]) if (x && x.violations) add('Determinism', nm + ' ?- ' + r.query, false, x.violations + ' call(s) with more than one candidate clause: ' + x.violationPreds.join(', '));
     }
     if (runs && runs.length) {
-      const anyViol = runs.some(r => (r.plain && r.plain.violations) || (r.mnn && r.mnn.violations));
+      const anyViol = runs.some(r => ['plain', 'mnn', 'packets', 'packetsMnn'].some(k => r[k] && r[k].violations));
       if (!anyViol) add('Determinism', 'no Detlog call left a choicepoint (first-argument selection was unique on every call)', true, runs.length + ' queries');
     }
     const GO = ['Shape', 'Justification', 'Side conditions', 'Coverage', 'Back-conversion', 'Evaluation', 'Determinism'];
@@ -234,6 +287,15 @@
     ['cut_mark', 'a cut inside a branch emits [cut, e(Row)]: row loops stop after it and later alternatives and clauses are dropped'],
     ['MEMO', 'MNN: a pure tree-recursive predicate is tabled by call variant'],
     ['call_det', 'MNN: a call of a DET predicate in packet code runs its deterministic mode in place: yes gives [Env], no gives []; maybe undoes it and makes the packet call'],
+    ['k_clause', 'streams: a clause becomes p__kJ(Head.., K): its goals in order, each call given the rest as a continuation term; the first answer K accepts commits, a rejected one is undone by the trail'],
+    ['k_pred', 'streams: a predicate tries its clauses in order: if_commit(p__k1(A.., K), true, p__k2(A.., K)), with a cut cell when a clause cuts'],
+    ['k_cont', 'streams: the rest of a conjunction after a call, as dl_k(p__cN(Env.., K)) :- Rest; dl_k/1 is selected by its first argument'],
+    ['k_facts', 'streams: facts as a table walked in order (dl_facts_k)'],
+    ['k_s2a', 'streams + S2A: the rows of the proven S2A table, walked in order (dl_rows_k)'],
+    ['k_det', 'streams + DET: the proven deterministic mode first; yes is the one answer, no is none, maybe runs the stream'],
+    ['k_memo', 'streams + MEMO: the answers of a pure predicate per call variant, from the table or collected once'],
+    ['k_prune', 'streams + PRUNE: permutation then a pairwise test: each placed element is tested against the earlier ones, so a failing prefix is not extended'],
+    ['k_query', 'streams: the query boundary collects the answers, with the text written before each, as the query packet'],
     ['DET', 'MNN: an output-free predicate whose clauses are told apart by their first argument, and whose goals are deterministic, runs as p__d(Args, Status) without packets; status maybe (a first argument unbound where several clauses match) falls back to the packet code']
   ];
   P.checkShape = checkShape; P.prove = prove; P.purity = purity; P.RULE_DOC = RULE_DOC;

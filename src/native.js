@@ -33,7 +33,7 @@
       else if (mode[i] === 'n') { st.set(hv, { k: 'G', js: 'a' + i, int: true, param: true }); params.push({ name: 'a' + i, int: true }); }
       else { st.set(hv, { k: 'F' }); outs.push(hv); }
     }
-    const statusLocals = new Set();
+    const statusLocals = new Set(); const statusOf = new Map();
     const get = (s, v) => s.get(v) || { k: 'F' };
     const clone = s => new Map(s);
     const join = (a, b) => {
@@ -232,7 +232,8 @@
         if (sb && (sb.k === 'F') && !(sa && sa.k === 'F')) { [a, b] = [b, a]; [sa, sb] = [sb, sa]; }
         if (sa && sa.k === 'F') { // a fresh local status takes a value
           const v = val(b, sb); if (!v) nope();
-          const sv = 's' + (nl++); statusLocals.add(sv);
+          // one local per status variable, so both branches of an if_commit/3 set the same one (they join)
+          let sv = statusOf.get(D(a)); if (!sv) { sv = 's' + (nl++); statusOf.set(D(a), sv); } statusLocals.add(sv);
           const s2 = clone(s); s2.set(D(a), { k: 'S', js: sv, set: true });
           return { code: sv + ' = ' + v + ';\n', out: s2 };
         }

@@ -3,7 +3,7 @@
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-for (const f of ['core', 'engine', 'builtins', 'swi', 'convert', 'detlog_engine', 'native', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref', 'examples', 'thermo', 'interp']) require(`../src/${f}.js`);
+for (const f of ['core', 'engine', 'builtins', 'swi', 'convert', 'stream', 'detlog_engine', 'native', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref', 'examples', 'thermo', 'interp']) require(`../src/${f}.js`);
 const P = globalThis.PL2D;
 
 export const title = 'pl2detlog';
@@ -101,8 +101,9 @@ export const cases = [
     make: (r) => { const [name, query] = program(r); return [name, query, r.pick(['plain', 'mnn'])]; },
     run: (name, query, mode) => {
       const c = P.convert(src(name), { queries: [query], mode, mnn: mode === 'mnn' });
-      const heads = c.text.split('\n').filter((l) => /^[a-z'$][^ ]*__c(p|\d+)\(.*:-$/.test(l));
-      return { mode: c.mode, clauses: c.clauses.length, errors: c.errors.map(String), warnings: c.warnings.length, cut_free: !/(^|[^a-z_])!/.test(c.text.replace(/%.*$/gm, '')), heads };
+      // the default form is answer streams: the heads of the stream predicates p__k / p__kJ (src/stream.js)
+      const heads = c.text.split('\n').filter((l) => /^[a-z'$][^ (]*__k\d*\(.*:-$/.test(l));
+      return { mode: c.mode, form: c.form, clauses: c.clauses.length, stream_clauses: c.stream ? c.stream.clauses.length : 0, errors: c.errors.map(String), warnings: c.warnings.length, cut_free: !/(^|[^a-z_])!/.test(c.text.replace(/%.*$/gm, '')), heads };
     }
   },
   {

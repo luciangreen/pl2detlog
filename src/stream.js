@@ -286,9 +286,9 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       for (let i = 0; i < keys.length; i++) for (let j = i + 1; j < keys.length; j++) if (!P.streamExclusive(keys[i], keys[j])) return null;
       return tests;
     }
+    // X has the pattern's principal functor (X is bound here); no binding, no structure built
     function patTest(a, X) {
-      if (a.t === 'c') return Cmp('=', [X, Cmp(a.f, a.a.map(() => Var('_')))]);
-      return Cmp('==', [X, a]);
+      return Cmp('dl_has_key', [X, a.t === 'c' ? Cmp(a.f, a.a.map(() => Var('_'))) : a]);
     }
 
     // findall(T, (between(L, H, I), G1, ..., Gn), Ts) with each Gi a pure builtin or a call of a DET
@@ -433,6 +433,10 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
   det('dl_cut_set/1', (a) => { slotOf(a[0], '$cut').cut = true; return true; });
   det('dl_cut_off/1', (a) => !slotOf(a[0], '$cut').cut);
 
+  // X bound, with the principal functor of P (name and arity; an atomic P: X is that constant)
+  const sameKey = (x, p) => { x = D(x); p = D(p); if (x.t === 'v') return false; if (p.t === 'c') return x.t === 'c' && x.f === p.f && x.a.length === p.a.length;
+    if (x.t !== p.t) return false; return p.t === 'a' ? x.n === p.n : p.t === 'n' ? x.v === p.v && !!x.f === !!p.f : p.t === 's' ? x.v === p.v : false; };
+  det('dl_has_key/2', (a) => sameKey(a[0], a[1]));
   det('dl_bag_count/2', (a, e) => { const b = slotOf(a[0], '$bag'); let n = 0; for (const x of b.items) if (x.f === 'e') n++; return e.unify(a[1], Int(n)); });
   // for the interpreter's per-call route (src/interp.js): a bag made from JavaScript, and its items with the
   // text written after the last answer

@@ -421,6 +421,10 @@
         const L = 'L' + (lab++);
         return TICK + ' E.decisions++;\n{ const m' + L + ' = E.trail.length; let ok' + L + ' = false;\n' + L + ': {\n' + goal(g.a[0], slot, 'break ' + L + ';') + 'ok' + L + ' = true;\n}\nif (ok' + L + ') {\n' + goal(g.a[1], slot, FAIL) + '} else {\nE.undo(m' + L + ');\n' + goal(g.a[2], slot, FAIL) + '}\n}\n';
       }
+      // first-argument dispatch tests of stream code (src/stream.js), in place
+      if (k === 'nonvar/1') return TICK + '\nif (D(' + build(g.a[0], slot) + ').t === "v") ' + FAIL + '\n';
+      if (k === 'dl_has_key/2' && D(g.a[1]).t !== 'v') { const pat = D(g.a[1]), L = 'x' + (lab++);
+        return TICK + '\n{ const ' + L + ' = D(' + build(g.a[0], slot) + '); if (' + L + '.t === "v" || !(' + keyTest(pat, L) + ')) ' + FAIL + ' }\n'; }
       if (k === '=/2') return TICK + '\n{ const m = E.trail.length; if (!E.unify(' + build(g.a[0], slot) + ', ' + build(g.a[1], slot) + ')) { E.undo(m); ' + FAIL + ' } }\n';
       const as = g.t === 'c' ? g.a.map(x => build(x, slot)) : [];
       if (prog.preds.has(k)) {

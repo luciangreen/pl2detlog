@@ -41,6 +41,9 @@ dl_qitem(pos(N), Is, T, P, R) :-
     dl_qitems(Is, T, N, R1).
 dl_qitem(e(Vs), Is, T, P, [e(Vs)|R]) :- dl_qitems(Is, T, P, R).
 
+% first-argument dispatch: X is bound and has P's principal functor
+dl_has_key(X, P) :- nonvar(X), functor(X, N, A), functor(P, N, A).
+
 % a cut cell: '$cut'(false) until the cut runs
 dl_cut_new('$cut'(false)).
 dl_cut_set(C) :- nb_setarg(1, C, true).

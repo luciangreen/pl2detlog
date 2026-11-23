@@ -1204,7 +1204,8 @@ lead_tests(commit(G, _), Ts) :- lead_tests_(G, Ts).
 lead_tests_([b(T)|Gs], [b(T)|Ts]) :- test_bi(T), !, lead_tests_(Gs, Ts).
 lead_tests_(_, []).
 
-%   annotate(+Head, +Goals, +Pattern, -Anns): an(Goal, Det, Total, GroundBefore, InnerDet)
+%   annotate(+Head, +Goals, +Pattern, -Anns):
+%   an(Goal, Det, Total, GroundBefore, InnerDet, MaybeBoundBefore, Shared)
 annotate(H, Gs, P, Anns) :-
     term_variables(H-Gs, OVs),
     copy_term(H-Gs-OVs, H1-Gs1-CVs),
@@ -1214,10 +1215,10 @@ annotate(H, Gs, P, Anns) :-
     ann_walk(Gs, Gs1, OVs, CVs, S0, Anns0),
     add_shared(Anns0, H, [], Anns).
 
-%   an(Goal, Det, Total, GroundBefore, InnerDet, Shared): Shared are the goal's variables that
+%   Shared are the goal's variables that
 %   occur elsewhere in the clause
 add_shared([], _, _, []).
-add_shared([an(G, D, T, GB, ID)|As], H, Before, [an(G, D, T, GB, ID, Sh)|Rs]) :-
+add_shared([an(G, D, T, GB, ID, Se)|As], H, Before, [an(G, D, T, GB, ID, Se, Sh)|Rs]) :-
     rest_goals(As, After),
     term_variables(H-Before-After, O),
     term_variables(G, GV),
@@ -1225,8 +1226,9 @@ add_shared([an(G, D, T, GB, ID)|As], H, Before, [an(G, D, T, GB, ID, Sh)|Rs]) :-
     add_shared(As, H, [G|Before], Rs).
 
 ann_walk([], [], _, _, _, []).
-ann_walk([G|Gs], [A|As], OVs, CVs, S0, [an(G, Det, Total, GB, ID)|Rest]) :-
+ann_walk([G|Gs], [A|As], OVs, CVs, S0, [an(G, Det, Total, GB, ID, Seen)|Rest]) :-
     ground_before(OVs, CVs, GB),
+    seen_before(OVs, CVs, S0, Seen),
     goal_det(A, Det), inner_det(A, ID),
     ( A = b(AG), bi_total(AG, S0) -> Total = true ; Total = false ),
     (   agoal(A, S0, noreg, S1)
@@ -1234,7 +1236,13 @@ ann_walk([G|Gs], [A|As], OVs, CVs, S0, [an(G, Det, Total, GB, ID)|Rest]) :-
     ;   maplist(unreached, Gs, Rest)
     ).
 
-unreached(G, an(G, true, false, [], true)).  % add_shared adds the 6th argument
+unreached(G, an(G, true, false, [], true, [])).
+
+%   the original variables that may be bound before the goal (all but the fresh ones)
+seen_before([], [], _, []).
+seen_before([O|Os], [C|Cs], S0, Seen) :-
+    ( var(C), \+ var_in(S0, C) -> Seen = Seen1 ; Seen = [O|Seen1] ),
+    seen_before(Os, Cs, S0, Seen1).
 
 ground_before([], [], []).
 ground_before([O|Os], [C|Cs], GB) :-
@@ -1422,14 +1430,14 @@ gen(K, prolog) :- !,
     (   kept(K, _) -> gen_kept(K)
     ;   pred_key(K, _), \+ m_pat(K, _) -> gen_kept(K)
     ;   det_key(K) -> need_key(K, det)
+    ;   form(mnn), facts_pred(K) -> gen_kept(K)
     ;   eff_key(K) -> gen_kept(K)
     ;   inf_key(K) -> gen_kept(K)
-    ;   need_key(K, all), gen_wrapper(K)
+    ;   need_key(K, k), gen_wrapper(K)
     ).
 gen(K, entry) :- !, gen_entry(K).
 gen(K, det) :- !, gen_det(K).
-gen(K, first) :- !, gen_first(K).
-gen(K, all) :- !, gen_all(K).
+gen(K, k) :- !, k_name(K, KN), gen_k(K, KN, k, var).
 
 out(K, M, Cl) :- copy_term(Cl, Cl1), db_put(out, K-M, Cl1).
 
@@ -1439,15 +1447,17 @@ gen_kept(K) :-
     forall(( member((_ :- B), Cls), leaf_goal(B, L), nonvar(L), user_goal(L) ),
            ( key(L, LK), need_key(LK, prolog) )).
 
+%   Where ordinary Prolog calls a nondeterministic predicate by name and backtracks into it,
+%   its answers are collected (the one place a list of answers is built) and given back one
+%   by one.
 gen_wrapper(K) :-
     K = N/A, length(Ps, A), name_params(K, Ps),
-    H =.. [N|Ps], all_name(K, AN),
+    H =.. [N|Ps], k_call(H, dl_collect(H), C),
     fresh('As', As),
-    append(Ps, [As, []], AA), C =.. [AN|AA],
-    out(K, prolog, (H :- C, dl_member(H, As))).
+    out(K, prolog, (H :- dl_findall_k(C, As), dl_member(H, As))).
 
-all_name(N/_, AN) :- atom_concat(N, '__all', AN).
-first_name(N/_, FN) :- atom_concat(N, '__first', FN).
+k_name(N/_, KN) :- atom_concat(N, '__k', KN).
+k_call(G, K, C) :- G =.. [N|As], atom_concat(N, '__k', KN), append(As, [K], AK), C =.. [KN|AK].
 
 name_params(K, Ps) :-
     (   ncls(K, [cl(H, _)|_]), H =.. [_|As] -> maplist(param_name, As, Ps) ; true ),
@@ -1504,7 +1514,7 @@ denorm(aggr(F, E, S, R), aggregate_all(Spec, G, R)) :-
 gen_entry(K) :-
     (   kept(K, _) -> need_key(K, prolog)
     ;   det_key(K) -> need_key(K, det)
-    ;   K = N/_, gen_first(K, N, entry)
+    ;   K = N/_, gen_k(K, N, entry, true)
     ).
 
 ctx(K, M, c(K, M)).
@@ -1637,100 +1647,54 @@ hm(A, B, HVs, U0, U) :-
     foldl(hm2(HVs), As, Bs, U0, U).
 hm2(HVs, A, B, U0, U) :- hm(A, B, HVs, U0, U).
 
-%   ---- first-answer version (MNN): p__first/N, semideterministic ----
-gen_first(K) :-
-    first_name(K, FN),
-    gen_first(K, FN, first).
-
-gen_first(K, FN, Mode) :-
+%   ---- the stream version: p__k(Args..., K) ----
+%   p__k(Args, K) passes each answer of p(Args), in Prolog's order, to the continuation K,
+%   and succeeds, keeping the bindings, at the first answer that K accepts.  An answer that K
+%   rejects is undone by if_commit/3 (SWI-Prolog's trail), so nothing is copied and no list
+%   of answers is built.  The continuations are terms, applied by the clauses of dl_k/1.
+gen_k(K, Name, Mode, KT) :-
     resolved(K, Rs), m_pat(K, P),
     ctx(K, Mode, Ctx),
-    K = _/A, length(Ps, A), name_params(K, Ps),
-    H =.. [FN|Ps],
+    K = F/A, length(Ps, A), name_params(K, Ps),
+    (   KT == var -> fresh('K', KV), append(Ps, [KV], HA) ; KV = KT, HA = Ps ),
+    H =.. [Name|HA],
     Head =.. [x|Ps],
-    first_chain(Rs, Head, P, Ctx, Code),
+    (   form(mnn), facts_pred(K)
+    ->  G =.. [F|Ps], Code = dl_gen_k(G, KV), need_key(K, prolog),
+        add_note(K, 'MNN facts as data: the facts stay as they are, and SWI-Prolog\'s clause index finds the ones that match each call; each is passed to the continuation')
+    ;   k_chain(Rs, Head, P, KV, Ctx, Code)
+    ),
     out(K, Mode, (H :- Code)).
 
-first_chain([], _, _, _, fail).
-first_chain([r(CH, Kind)|Rs], Head, P, Ctx, Code) :-
+%   a table of 8 facts or more (below that, the if_commit/3 chain over the heads is faster)
+facts_pred(K) :-
+    \+ aux_of(K, _), ncls(K, Cls), length(Cls, N), N >= 8,
+    \+ ( member(cl(_, Kd), Cls), Kd \== plain([]) ).
+
+add_note(K, N) :- ( note(K, N) -> true ; assertz(note(K, N)) ).
+
+k_chain([], _, _, _, _, fail).
+k_chain([r(CH, Kind)|Rs], Head, P, KV, Ctx, Code) :-
     copy_term(CH-Kind, CH1-Kind1),
     CH1 =.. [_|CA], Head =.. [_|HA], CH2 =.. [x|CA],
     head_match(Head, CH2, U), unif_goals(U, UC),
-    term_variables(HA-UC, HV),
+    term_variables(HA-UC-KV, HV),
     (   Kind1 = commit(G, B)
     ->  append(G, B, Gs), annotate(CH2, Gs, P, As),
         length(G, NG), length(AG, NG), append(AG, AB, As),
         term_variables(HV-B, After),
-        tr_first(AG, After, Ctx, CG), tr_first(AB, HV, Ctx, TB),
+        tr_k(AG, After, true, Ctx, CG), tr_k(AB, HV, KV, Ctx, TB),
         conj(UC, CG, Cond),
         (   Rs == [] -> conj(Cond, TB, Code)
-        ;   first_chain(Rs, Head, P, Ctx, Else), Code = if_commit(Cond, TB, Else)
+        ;   k_chain(Rs, Head, P, KV, Ctx, Else), Code = if_commit(Cond, TB, Else)
         )
     ;   Kind1 = plain(Gs),
         annotate(CH2, Gs, P, As),
-        tr_first(As, HV, Ctx, BC), conj(UC, BC, Cond),
+        tr_k(As, HV, KV, Ctx, BC), conj(UC, BC, Cond),
         (   Rs == [] -> Code = Cond
-        ;   first_chain(Rs, Head, P, Ctx, Else), Code = if_commit(Cond, true, Else)
+        ;   k_chain(Rs, Head, P, KV, Ctx, Else), Code = if_commit(Cond, true, Else)
         )
     ).
-
-%   ---- all-answers version: p__all(Args..., Answers, Tail) ----
-gen_all(K) :-
-    resolved(K, Rs), m_pat(K, P),
-    ctx(K, all, Ctx),
-    K = N/A, length(Ps, A), name_params(K, Ps),
-    all_name(K, AN), fresh('Out', Out), fresh('T', T),
-    append(Ps, [Out, T], HA), H =.. [AN|HA],
-    (   form(mnn), all_facts(Rs, Facts)
-    ->  G =.. [N|Ps], Code = dl_match(Facts, G, Out, T),
-        assertz(note(K, 'MNN facts as data: answers are the facts that unify with the call'))
-    ;   all_chain(Rs, N, Ps, P, Out, T, Ctx, Code)
-    ),
-    out(K, all, (H :- Code)).
-
-all_facts(Rs, Facts) :-
-    maplist(fact_of, Rs, Facts).
-fact_of(r(H, plain([])), H).
-
-all_chain([], _, _, _, Out, T, _, Out = T).
-all_chain([r(CH, Kind)|Rs], N, Ps, P, Out, T, Ctx, Code) :-
-    copy_term(CH-Kind, CH1-Kind1),
-    arg_copies(Ps, P, Ps1, CopyGs),
-    Head =.. [x|Ps1], CH1 =.. [_|CA], CH2 =.. [x|CA],
-    head_match(Head, CH2, U), unif_goals(U, UC),
-    Ans =.. [N|Ps1],
-    term_variables(Ps1-UC, PV),
-    (   Kind1 = commit(G, B)
-    ->  append(G, B, Gs), annotate(CH2, Gs, P, As),
-        length(G, NG), length(AG, NG), append(AG, AB, As),
-        term_variables(PV-B, After),
-        tr_first(AG, After, Ctx, CG), conj(UC, CG, Cond),
-        tr_all(AB, Ans, Out, T, PV, Ctx, Then),
-        all_chain(Rs, N, Ps, P, Out, T, Ctx, Else),
-        conj(CopyGs, if_commit(Cond, Then, Else), Code)
-    ;   Kind1 = plain(Gs),
-        annotate(CH2, Gs, P, As),
-        (   Rs == [] -> T1 = T ; fresh('T1', T1) ),
-        tr_all(As, Ans, Out, T1, PV, Ctx, Body),
-        (   UC == true -> C1 = Body ; C1 = if_commit(UC, Body, Out = T1) ),
-        (   Rs == [] -> Rest = true ; all_chain(Rs, N, Ps, P, T1, T, Ctx, Rest) ),
-        conj(CopyGs, C1, C2), conj(C2, Rest, Code)
-    ).
-
-%   each clause works on a copy of the arguments that are not ground
-arg_copies(Ps, P, Ps1, Copy) :-
-    maplist(arg_copy, Ps, P, Ps1, Pairs),
-    exclude(==(none), Pairs, Cs),
-    (   Cs == [] -> Copy = true
-    ;   pairs_keys_values(Cs, From, To),
-        Copy = copy_term(From, To)
-    ).
-
-arg_copy(X, g, X, none) :- !.
-arg_copy(X, f, Y, none) :- !, copy_hint(X, Y).
-arg_copy(X, a, Y, X-Y) :- copy_hint(X, Y).
-
-copy_hint(X, Y) :- ( get_attr(X, pl2detlog, N) -> atom_concat(N, '1', N1), fresh(N1, Y) ; true ).
 
                  /*******************************
                  *     GOALS IN EACH MODE       *
@@ -1745,16 +1709,16 @@ tr_det([], _, true).
 tr_det([A|As], Ctx, Code) :-
     tr_det_goal(A, Ctx, C1), tr_det(As, Ctx, C2), conj(C1, C2, Code).
 
-tr_det_goal(an(b(G), _, _, _, _, _), _, G) :- !.
-tr_det_goal(an(u(G), _, _, _, _, _), Ctx, C) :- !, call_det(G, Ctx, C).
-tr_det_goal(an(not(S), _, _, _, ID, _), Ctx, if_commit(C, fail, true)) :- !, first_simple(S, ID, Ctx, C).
-tr_det_goal(an(once(S), _, _, _, ID, _), Ctx, C) :- !, first_simple(S, ID, Ctx, C).
-tr_det_goal(an(ignore(S), _, _, _, ID, _), Ctx, if_commit(C, true, true)) :- !, first_simple(S, ID, Ctx, C).
-tr_det_goal(an(findall(T, S, L), _, _, GB, ID, Sh), Ctx, C) :- !, tr_findall(T, S, ID, L, GB-Sh, Ctx, C).
-tr_det_goal(an(findall4(T, S, L, T0), _, _, GB, ID, Sh), Ctx, (C, append(L0, T0, L))) :- !,
+tr_det_goal(an(b(G), _, _, _, _, _, _), _, G) :- !.
+tr_det_goal(an(u(G), _, _, _, _, _, _), Ctx, C) :- !, call_det(G, Ctx, C).
+tr_det_goal(an(not(S), _, _, _, ID, _, _), Ctx, if_commit(C, fail, true)) :- !, first_simple(S, ID, Ctx, C).
+tr_det_goal(an(once(S), _, _, _, ID, _, _), Ctx, C) :- !, first_simple(S, ID, Ctx, C).
+tr_det_goal(an(ignore(S), _, _, _, ID, _, _), Ctx, if_commit(C, true, true)) :- !, first_simple(S, ID, Ctx, C).
+tr_det_goal(an(findall(T, S, L), _, _, GB, ID, _, Sh), Ctx, C) :- !, tr_findall(T, S, ID, L, GB-Sh, Ctx, C).
+tr_det_goal(an(findall4(T, S, L, T0), _, _, GB, ID, _, Sh), Ctx, (C, append(L0, T0, L))) :- !,
     fresh('L0', L0), tr_findall(T, S, ID, L0, GB-Sh, Ctx, C).
-tr_det_goal(an(aggr(F, E, S, R), _, _, GB, ID, Sh), Ctx, C) :- !, tr_aggr(F, E, S, ID, R, GB-Sh, Ctx, C).
-tr_det_goal(an('$cut', _, _, _, _, _), _, true).
+tr_det_goal(an(aggr(F, E, S, R), _, _, GB, ID, _, Sh), Ctx, C) :- !, tr_aggr(F, E, S, ID, R, GB-Sh, Ctx, C).
+tr_det_goal(an('$cut', _, _, _, _, _, _), _, true).
 
 %   a deterministic user call: in place, or inlined when it is a one-clause auxiliary
 %   predicate whose head arguments are distinct variables
@@ -1790,185 +1754,258 @@ calls_self(B, H) :- functor(H, N, A), sub_term(T, B), callable(T), functor(T, N,
 first_simple(b(G), true, _, G) :- !.
 first_simple(b(G), false, _, dl_once(G)) :- !.
 first_simple(u(G), true, Ctx, C) :- !, call_det(G, Ctx, C).
-first_simple(u(G), false, _, C) :-
-    key(G, K),
-    (   kept(K, _)
-    ->  C = dl_once(G), need_key(K, prolog)
-    ;   first_call(G, C), need_key(K, first)
+first_simple(u(G), false, Ctx, C) :- call_k(u(G), true, Ctx, C).
+
+%   call_k(+Goal, +K, +Ctx, -Code): pass each answer of a nondeterministic goal to K
+call_k(u(G), K, _, Code) :- !,
+    key(G, GK),
+    (   kept(GK, _)
+    ->  need_key(GK, prolog),
+        (   K == true -> Code = dl_once(G) ; Code = dl_once((G, dl_k(K))) )
+    ;   need_key(GK, k), k_call(G, K, Code)
     ).
+call_k(b(G), K, _, Code) :-
+    (   K == true -> Code = dl_once(G) ; Code = dl_gen_k(G, K) ).
 
-kept_or_effect_all(K) :- ( kept(K, _) ; eff_key(K) ), !.
+%   findall over a simple goal; the list is the program's own
+tr_findall(T, S, ID, L, GS, Ctx, Code) :- tr_findall(T, S, ID, L, [], GS, Ctx, Code).
 
-first_call(G, C) :- key(G, K), first_name(K, FN), G =.. [_|As], C =.. [FN|As].
-all_call(G, Ans, C) :-
-    key(G, K), all_name(K, AN), G =.. [_|As],
-    fresh('As', Ans), append(As, [Ans, []], AA), C =.. [AN|AA].
-
-%   findall over a simple goal
-tr_findall(T, S, true, L, GB-Sh, Ctx, Code) :- !,
+tr_findall(T, S, true, L, T0, GB-Sh, Ctx, Code) :- !,
     det_inner(S, Ctx, G),
     term_variables(G-T, GTV), include(var_in(Sh), GTV, Sh1), exclude(var_in(GB), Sh1, NG),
     copy_nonground(NG, G-T, G1-T1, CopyG),
-    conj(CopyG, if_commit(G1, L = [T1], L = []), Code).
-tr_findall(T, b(G), false, L, _, _, Code) :- !,
-    (   bi_effect(G) -> Code = findall(T, G, L)
-    ;   fresh('As', As), Code = (dl_all(G, As, []), dl_project(As, G, T, L))
-    ).
-tr_findall(T, u(G), false, L, _, _, Code) :-
-    key(G, K),
-    (   kept_or_effect_all(K)
-    ->  Code = findall(T, G, L), need_key(K, prolog)
-    ;   need_key(K, all), all_call(G, As, AC),
-        Code = (AC, dl_project(As, G, T, L))
+    conj(CopyG, if_commit(G1, L = [T1|T0], L = T0), Code).
+tr_findall(T, S, false, L, T0, _, Ctx, Code) :-
+    (   S = u(G), key(G, GK), kept(GK, _)
+    ->  need_key(GK, prolog),
+        ( T0 == [] -> Code = findall(T, G, L) ; Code = findall(T, G, L, T0) )
+    ;   call_k(S, dl_collect(T), Ctx, C),
+        ( T0 == [] -> Code = dl_findall_k(C, L) ; Code = dl_findall_k(C, L, T0) )
     ).
 
 det_inner(b(G), _, G).
 det_inner(u(G), Ctx, C) :- call_det(G, Ctx, C).
 
-tr_aggr(count, _, S, ID, N, GB-Sh, Ctx, Code) :-
-    (   ID == true
-    ->  det_inner(S, Ctx, G), term_variables(G, GV), include(var_in(Sh), GV, Sh1),
-        exclude(var_in(GB), Sh1, NG),
-        copy_nonground(NG, G, G1, CopyG), conj(CopyG, if_commit(G1, N = 1, N = 0), Code)
-    ;   S = u(G), key(G, K), \+ kept_or_effect_all(K)
-    ->  need_key(K, all), all_call(G, As, AC), Code = (AC, length(As, N))
-    ;   S = b(G), \+ bi_effect(G)
-    ->  fresh('As', As), Code = (dl_all(G, As, []), length(As, N))
-    ;   S = u(G) -> key(G, K), need_key(K, prolog), Code = aggregate_all(count, G, N)
-    ;   S = b(G), Code = aggregate_all(count, G, N)
-    ).
+tr_aggr(count, _, S, true, N, GB-Sh, Ctx, Code) :- !,
+    det_inner(S, Ctx, G), term_variables(G, GV), include(var_in(Sh), GV, Sh1),
+    exclude(var_in(GB), Sh1, NG),
+    copy_nonground(NG, G, G1, CopyG), conj(CopyG, if_commit(G1, N = 1, N = 0), Code).
 tr_aggr(F, E, S, ID, R, GS, Ctx, Code) :-
-    F \== count,
-    fresh('Vs', Vs),
-    tr_findall(E, S, ID, Vs, GS, Ctx, C1),
-    Code = (C1, dl_aggregate(F, Vs, R)).
+    (   S = u(G), key(G, GK), kept(GK, _)
+    ->  need_key(GK, prolog),
+        ( F == count -> Spec = count ; Spec =.. [F, E] ),
+        Code = aggregate_all(Spec, G, R)
+    ;   ID == false
+    ->  ( F == count -> E1 = x ; E1 = E ),
+        call_k(S, dl_collect(E1), Ctx, C),
+        Code = dl_aggregate_k(F, C, R)
+    ;   fresh('Vs', Vs),
+        tr_findall(E, S, ID, Vs, GS, Ctx, C1),
+        Code = (C1, dl_aggregate(F, Vs, R))
+    ).
 
-%   first: the first answer of a conjunction (semideterministic); Ctx0 are the variables
-%   used outside the conjunction
-tr_first(As, Ctx0, Ctx, Code) :- tr_first_(As, Ctx0, Ctx, Code).
+tr_first(As, Ctx0, Ctx, Code) :- tr_k(As, Ctx0, true, Ctx, Code).
 
-tr_first_([], _, _, true).
-tr_first_([A|As], Out, Ctx, Code) :-
-    A = an(G, Det, _, _, _, _),
+%   tr_k(+Anns, +Out, +K, +Ctx, -Code): the first answer of the conjunction followed by the
+%   continuation K (a variable, or true).  Out are the variables used outside it.
+tr_k([], _, K, _, C) :- !, ( K == true -> C = true ; C = dl_k(K) ).
+tr_k([A|As], Out, K, Ctx, Code) :-
+    A = an(G, Det, _, _, _, _, _),
     term_variables(G, GV), append(GV, Out, Out1),
     (   Det == true
-    ->  tr_det_goal(A, Ctx, C1), tr_first_(As, Out1, Ctx, C2), conj(C1, C2, Code)
+    ->  tr_det_goal(A, Ctx, C1), tr_k(As, Out1, K, Ctx, C2), conj(C1, C2, Code)
+    ;   prune(A, As, Out, K, Ctx, Code)
+    ->  true
     ;   As == []
-    ->  first_simple(G, false, Ctx, Code)
-    ;   form(mnn), all_total(As)
-    ->  first_simple(G, false, Ctx, C1), tr_det(As, Ctx, C2), conj(C1, C2, Code)
-    ;   form(mnn), G = b(BG), \+ bi_effect(BG), fusable(As, first)
-    ->  tr_fused(As, Ctx, Test), Code = dl_fused_first(BG, Test),
-        fuse_note(Ctx)
-    ;   scan(A, As, Out, Ctx, Code)
+    ->  call_k(G, K, Ctx, Code)
+    ;   form(mnn), K == true, all_total(As)
+    ->  call_k(G, true, Ctx, C1), tr_det(As, Ctx, C2), conj(C1, C2, Code)
+    ;   continuation(As, Out1, K, Ctx, Kr),
+        call_k(G, Kr, Ctx, Code)
     ).
 
-all_det(As) :- forall(member(an(_, D, _, _, _, _), As), D == true).
+all_total(As) :- forall(member(an(_, _, T, _, _, _, _), As), T == true).
 
-%   the rest of a conjunction that the runtime can run as one lazy loop: builtins (more
-%   generators among them) and deterministic goals; in the all mode they are pure
-fusable(As, Mode) :- forall(member(A, As), fusable_goal(A, Mode)).
-
-fusable_goal(an(b(G), _, _, _, _, _), Mode) :- !, ( Mode == all -> \+ bi_effect(G) ; true ).
-fusable_goal(an(_, true, _, _, _, _), _).
-
-tr_fused([], _, true).
-tr_fused([A|As], Ctx, Code) :-
-    (   A = an(b(G), false, _, _, _, _) -> C1 = G ; tr_det_goal(A, Ctx, C1) ),
-    tr_fused(As, Ctx, C2), conj(C1, C2, Code).
-
-fuse_note(c(K, _)) :-
-    root_of(K, R),
-    (   note(R, N), sub_atom(N, 0, _, _, 'MNN fuse') -> true
-    ;   assertz(note(R, 'MNN fuse: a builtin generator followed by deterministic goals is enumerated lazily by the runtime (dl_fused_first/2, dl_fused_all/5): the same answers in the same order, and no answer list is built'))
-    ).
-
-all_total(As) :- forall(member(an(_, _, T, _, _, _), As), T == true).
-
-%   scan the answers of a nondeterministic goal for the first that the rest accepts
-scan(an(G, _, _, _, _, _), As, Out, Ctx, Code) :-
-    (   generator(G, Gen, Answers, Pat)
-    ->  rest_goals(As, RG),
-        term_variables(G-RG, LV),
-        shared_vars(LV, Out, Env),
-        loop_name(Ctx, s, SN),
-        fresh('A', A1), fresh('As', As1),
-        H =.. [SN, [A1|As1]|Env], R =.. [SN, As1|Env],
-        term_variables(Pat-Env, Out2),
-        tr_first_(As, Out2, Ctx, RC),
-        conj((A1 = Pat), RC, Cond),
-        Ctx = c(K, M),
-        out(K, M, (H :- if_commit(Cond, true, R))),
-        Call =.. [SN, Answers|Env],
-        Code = (Gen, Call)
-    ;   tr_island(G, As, Ctx, Code)
-    ).
+%   continuation(+Anns, +Out, +K, +Ctx, -Kr): the rest of a conjunction as a continuation term
+%   Root__cN(Vars..., K); its clause of dl_k/1 runs the rest and then K.  Vars are the rest's
+%   variables that are shared with the code before it or outside it: the same variables, not
+%   copies.
+continuation(As, Out, K, Ctx, Kr) :-
+    rest_goals(As, RG), term_variables(RG, RV),
+    shared_vars(RV, Out, Env),
+    loop_name(Ctx, c, Name),
+    (   K == true -> Args = Env ; append(Env, [K], Args) ),
+    Kr =.. [Name|Args],
+    term_variables(Args, Out2),
+    tr_k(As, Out2, K, Ctx, Body),
+    Ctx = c(Key, M),
+    out(Key, M, (detlog_rt:dl_k(Kr) :- Body)).
 
 rest_goals(As, Gs) :- maplist(arg(1), As, Gs).
-
-%   a goal with side effects whose answers are needed one by one: an ordinary Prolog
-%   conjunction, run by Prolog's own backtracking
-tr_island(G, As, Ctx, dl_once((G1, RC))) :-
-    island_goal(G, G1),
-    tr_first_(As, [], Ctx, RC).
-
-island_goal(b(G), G).
-island_goal(u(G), G) :- key(G, K), need_key(K, prolog).
-
-generator(u(G), Gen, Ans, G) :-
-    key(G, K), \+ kept_or_effect_all(K), !,
-    need_key(K, all), all_call(G, Ans, Gen).
-generator(b(G), dl_all(G, Ans, []), Ans, G) :-
-    \+ bi_effect(G), fresh('As', Ans).
 
 loop_name(c(K, _), Kind, Name) :-
     root_of(K, R), R = N/_,
     next_count(loop(R), I),
     format(atom(Name), '~w__~w~w', [N, Kind, I]).
 
-%   all: Out-T are the answers Ans of the conjunction, for every way it succeeds
-tr_all([], Ans, Out, T, _, _, Out = [Ans|T]).
-tr_all([A|As], Ans, Out, T, Seen, Ctx, Code) :-
-    A = an(_, true, _, _, _, _), !,
-    det_prefix([A|As], Ds, Rest),
-    tr_det(Ds, Ctx, DC),
-    rest_goals(Ds, DG), term_variables(DG, DV), append(DV, Seen, Seen1),
-    tr_all(Rest, Ans, Out, T, Seen1, Ctx, RC),
-    (   all_total(Ds) -> conj(DC, RC, Code)
-    ;   Code = if_commit(DC, RC, Out = T)
-    ).
-tr_all([A|As], Ans, Out, T, _, Ctx, Code) :-
-    form(mnn), A = an(b(BG), false, _, _, _, _), \+ bi_effect(BG), fusable(As, all), !,
-    tr_fused(As, Ctx, Test),
-    Code = dl_fused_all(BG, Test, Ans, Out, T),
-    fuse_note(Ctx).
-tr_all([A|As], Ans, Out, T, Seen, Ctx, Code) :-
-    A = an(G, false, _, GB, _, _),
-    generator(G, Gen, Answers, Pat), !,
-    rest_goals(As, RG),
-    term_variables(Pat-RG-Ans, LV),
-    shared_vars(LV, Seen, Env0),
-    exclude(var_in(GB), Env0, NG),
-    loop_name(Ctx, l, LN),
-    fresh('A', A1), fresh('As', As1), fresh('Out', LO), fresh('T', LT), fresh('T1', LT1),
-    copy_nonground(NG, Pat-As-Ans-Env0, Pat1-As2-Ans1-Env1, CopyG),
-    term_variables(Pat1-Env1, Seen2),
-    tr_all(As2, Ans1, LO, LT1, Seen2, Ctx, RC),
-    append([[A1|As1]|Env0], [LO, LT], HA), LH =.. [LN|HA],
-    append([As1|Env0], [LT1, LT], RA), LR =.. [LN|RA],
-    append([[]|Env0], [LT, LT], BA), LB =.. [LN|BA],
-    conj(CopyG, if_commit(A1 = Pat1, RC, LO = LT1), LBody),
-    Ctx = c(K, M),
-    out(K, M, LB),
-    out(K, M, (LH :- LBody, LR)),
-    append([Answers|Env0], [Out, T], CA), Call =.. [LN|CA],
-    Code = (Gen, Call).
-tr_all([A|_], _, _, _, _, _, _) :-
-    A = an(G, _, _, _, _, _),
-    throw(unsupported(all_mode_effect(G))).
+                 /*******************************
+                 *      CONSTRAINT PRUNING      *
+                 *******************************/
 
-det_prefix([A|As], [A|Ds], Rest) :- A = an(_, true, _, _, _, _), !, det_prefix(As, Ds, Rest).
-det_prefix(As, [], As).
+%   prune(+A, +As, +Out, +K, +Ctx, -Code): a generator whose answers a later test would
+%   reject is not run over those answers.
+%
+%   PRUNE pairwise: permutation(L, P), t(P), where t is a test over all pairs of positions,
+%       t([]).  t([X|Xs]) :- r(X, Xs, C0), t(Xs).
+%       r(_, [], _).  r(X, [Y|Ys], D) :- Tests(X, Y, D), D1 is D + 1, r(X, Ys, D1).
+%     Unfolding both recursions, t(L) holds iff Tests(Li, Lj, C0 + (j - i - 1)) for all i < j.
+%     The condition is closed under prefixes, so the permutation is built element by element
+%     (as permutation/2 does, by select/3) and a prefix is dropped as soon as its new element
+%     fails against an earlier one: the same permutations pass, in the same order.
+%   PRUNE solve: between(Lo, Hi, X), E1 =:= E2, with E1 - E2 linear in X with coefficient 1
+%     or -1 and its other variables bound, has at most one answer: X = the solution, when it is
+%     an integer in Lo..Hi.
+%   PRUNE bounds: between(Lo, Hi, X), X > N (or >=, <, =<, with integers Lo, Hi, N) is
+%     between(Lo', Hi', X) with the bound narrowed; the test then always holds.
+prune(an(b(permutation(L, P)), false, _, GB, _, Seen, _), [an(u(TG), _, _, _, _, _, _)|Rest],
+      Out, K, Ctx, Code) :-
+    var(P), \+ var_in(Seen, P), ground_in(L, GB),
+    TG =.. [TN, P1], P1 == P,
+    pairwise(TN/1, C0, Pair),
+    !,
+    Ctx = c(Key, M),
+    loop_name(Ctx, perm, PN), loop_name(Ctx, pairs, QN), loop_name(Ctx, c, CN),
+    % the pruned permutation
+    fresh('K', PK), fresh('X', X), fresh('Xs', Xs), fresh('Pre', Pre),
+    fresh('Y', Y), fresh('Ys', Ys), fresh('R', R),
+    B0 =.. [PN, [], _, [], PK],
+    out(Key, M, (B0 :- dl_k(PK))),
+    H1 =.. [PN, [X|Xs], Pre, [Y|Ys], PK],
+    Cn =.. [CN, Y, R, Pre, Ys, PK],
+    out(Key, M, (H1 :- dl_select_k([X|Xs], Y, R, Cn))),
+    Chk =.. [QN, Pre, Y, C0], Rec =.. [PN, R, [Y|Pre], Ys, PK],
+    out(Key, M, (detlog_rt:dl_k(Cn) :- Chk, Rec)),
+    % the test of a new element against the earlier ones, nearest first
+    Pair = pair(Q0, Y0, D0, Tests),
+    Q00 =.. [QN, [], _, _],
+    out(Key, M, Q00),
+    fresh('D1', D1), fresh('Qs', Qs),
+    Q1 =.. [QN, [Q0|Qs], Y0, D0], Q2 =.. [QN, Qs, Y0, D1],
+    append(Tests, [D1 is D0 + 1, Q2], QB), list_conj(QB, QBody),
+    out(Key, M, (Q1 :- QBody)),
+    rest_k(Rest, Out, P, K, Ctx, K1),
+    Call =.. [PN, L, [], P, K1],
+    Code = Call,
+    TN = TNm,
+    format(atom(N), 'MNN prune pairwise: permutation/2 then ~w/1, a test over all pairs of positions, so a prefix that fails a pair is never extended (same permutations, same order)', [TNm]),
+    root_of(Key, Root), add_note(Root, N).
+prune(an(b(between(Lo, Hi, X)), false, _, GB, _, Seen, _), [an(b(E1 =:= E2), _, _, _, _, _, _)|Rest],
+      Out, K, Ctx, Code) :-
+    var(X), \+ var_in(Seen, X),
+    linear(E1 - E2, X, A, Rm), ( A =:= 1 ; A =:= -1 ),
+    term_variables(Rm, RV), forall(member(V, RV), var_in(GB, V)),
+    !,
+    (   A =:= 1 -> S = -(Rm) ; S = Rm ),
+    simplify_expr(S, S1),
+    term_variables(X-Rest, RO), append(RO, Out, Out2),
+    tr_k(Rest, Out2, K, Ctx, RC),
+    conj(dl_solve_between(Lo, Hi, S1, X), RC, Code),
+    Ctx = c(Key, _), root_of(Key, Root),
+    add_note(Root, 'MNN prune solve: between/3 followed by a test linear in its variable has at most one answer, which is solved for (dl_solve_between/4)').
+prune(an(b(between(Lo, Hi, X)), false, Tt, GB, ID, Se, Sh), [an(b(T), _, _, _, _, _, _)|Rest],
+      Out, K, Ctx, Code) :-
+    integer(Lo), ( integer(Hi) ; Hi == inf ; Hi == infinite ), var(X),
+    narrow(T, X, Lo, Hi, Lo1, Hi1),
+    !,
+    Ctx = c(Key, _), root_of(Key, Root),
+    add_note(Root, 'MNN prune bounds: between/3 followed by an integer bound on its variable starts or stops at that bound'),
+    tr_k([an(b(between(Lo1, Hi1, X)), false, Tt, GB, ID, Se, Sh)|Rest], Out, K, Ctx, Code).
+
+ground_in(L, GB) :- term_variables(L, Vs), forall(member(V, Vs), var_in(GB, V)).
+
+rest_k([], _, _, K, _, K) :- !.
+rest_k(Rest, Out, P, K, Ctx, Kr) :-
+    term_variables(P, PV), append(PV, Out, Out1),
+    continuation(Rest, Out1, K, Ctx, Kr).
+
+list_conj([G], G) :- !.
+list_conj([G|Gs], (G, C)) :- list_conj(Gs, C).
+
+%   narrow(+Test, +X, +Lo, +Hi, -Lo1, -Hi1)
+narrow(X1 > N, X, Lo, Hi, Lo1, Hi) :- X1 == X, integer(N), !, Lo1 is max(Lo, N + 1).
+narrow(X1 >= N, X, Lo, Hi, Lo1, Hi) :- X1 == X, integer(N), !, Lo1 is max(Lo, N).
+narrow(X1 < N, X, Lo, Hi, Lo, Hi1) :- X1 == X, integer(N), !, hi_min(Hi, N - 1, Hi1).
+narrow(X1 =< N, X, Lo, Hi, Lo, Hi1) :- X1 == X, integer(N), !, hi_min(Hi, N, Hi1).
+narrow(N < X1, X, Lo, Hi, Lo1, Hi1) :- X1 == X, !, narrow(X1 > N, X, Lo, Hi, Lo1, Hi1).
+narrow(N =< X1, X, Lo, Hi, Lo1, Hi1) :- X1 == X, !, narrow(X1 >= N, X, Lo, Hi, Lo1, Hi1).
+narrow(N > X1, X, Lo, Hi, Lo1, Hi1) :- X1 == X, !, narrow(X1 < N, X, Lo, Hi, Lo1, Hi1).
+narrow(N >= X1, X, Lo, Hi, Lo1, Hi1) :- X1 == X, !, narrow(X1 =< N, X, Lo, Hi, Lo1, Hi1).
+
+hi_min(Hi, E, H1) :- V is E, ( ( Hi == inf ; Hi == infinite ) -> H1 = V ; H1 is min(Hi, V) ).
+
+%   linear(+E, +X, -A, -R): E = A*X + R, with A an integer and R free of X
+linear(V, X, A, R) :- var(V), !, ( V == X -> A = 1, R = 0 ; A = 0, R = V ).
+linear(N, _, 0, N) :- number(N), !.
+linear(E1 + E2, X, A, R) :- !, linear(E1, X, A1, R1), linear(E2, X, A2, R2), A is A1 + A2, R = R1 + R2.
+linear(E1 - E2, X, A, R) :- !, linear(E1, X, A1, R1), linear(E2, X, A2, R2), A is A1 - A2, R = R1 - R2.
+linear(-E, X, A, -R) :- !, linear(E, X, A1, R), A is -A1.
+linear(N * E, X, A, N * R) :- integer(N), !, linear(E, X, A1, R), A is N * A1.
+linear(E * N, X, A, R * N) :- integer(N), !, linear(E, X, A1, R), A is N * A1.
+linear(E, X, 0, E) :- \+ occurs_in(X, E).
+
+%   simplify an arithmetic expression without binding its variables
+simplify_expr(E, S) :- simp(E, S0), ( S0 == E -> S = S0 ; simplify_expr(S0, S) ).
+
+simp(V, V) :- var(V), !.
+simp(E, S) :- compound(E), E =.. [Op|As0], !,
+    maplist(simp, As0, As),
+    E1 =.. [Op|As],
+    ( simp1(E1, S0) -> S = S0 ; S = E1 ).
+simp(E, E).
+
+zero(Z) :- Z == 0.
+
+simp1(-(E), F) :- nonvar(E), E = -(F), !.
+simp1(-(E), B - A) :- nonvar(E), E = A - B, !.
+simp1(-(E), -A - B) :- nonvar(E), E = A + B, !.
+simp1(A + Z, A) :- zero(Z), !.
+simp1(Z + A, A) :- zero(Z), !.
+simp1(A - Z, A) :- zero(Z), !.
+simp1(Z - A, -A) :- zero(Z), !.
+simp1(A - E, A - B - C) :- nonvar(E), E = B + C, !.
+simp1(A - E, A - B + C) :- nonvar(E), E = B - C, !.
+simp1(A + E, A + B + C) :- nonvar(E), E = B + C, !.
+simp1(A + E, A + B - C) :- nonvar(E), E = B - C, !.
+
+%   pairwise(+T/1, -C0, -pair(X, Y, D, Tests)): T is a test over all pairs of positions
+pairwise(TK, C0, pair(Q, Y, D, Tests)) :-
+    TK = TN/1,
+    ncls(TK, Cls), length(Cls, 2),
+    select(cl(B0, plain([])), Cls, [cl(S0, plain(SB))]),
+    B0 =.. [TN, BA], BA == [],
+    S0 =.. [TN, SA], nonvar(SA), SA = [X|Xs], var(X), var(Xs), X \== Xs,
+    length(SB, 2),
+    select(u(Self), SB, [u(Rel)]),
+    Self =.. [TN, Xs1], Xs1 == Xs,
+    Rel =.. [RN, X1, Xs2, C0], X1 == X, Xs2 == Xs, integer(C0),
+    RK = RN/3, RK \== TK, det_key(TK),
+    ncls(RK, RCls), length(RCls, 2),
+    select(cl(RB, plain([])), RCls, [cl(RS, plain(RG))]),
+    RB =.. [RN, _, RBL, _], RBL == [],
+    RS =.. [RN, Q, YL, D], var(Q), var(D), nonvar(YL), YL = [Y|Ys], var(Y), var(Ys),
+    sort([Q, D, Y, Ys], Dist), length(Dist, 4),
+    append(TestGs, [b(D1 is Inc), u(RRec)], RG),
+    plus_one(Inc, D),
+    RRec =.. [RN, Q1, Ys1, D11], Q1 == Q, Ys1 == Ys, D11 == D1,
+    TestGs \== [],
+    maplist(pair_test(Q, Y, D), TestGs, Tests).
+
+plus_one(E, D) :- ( E = D1 + 1 ; E = 1 + D1 ), D1 == D.
+
+pair_test(Q, Y, D, b(T), T) :-
+    T =.. [Op, A, B], memberchk(Op, [=\=, =:=, <, >, =<, >=]),
+    term_variables(A-B, Vs),
+    forall(member(V, Vs), ( V == Q ; V == Y ; V == D )).
 
 %   rename the variables NG in T (a fresh copy per answer), keeping the others
 copy_nonground([], T, T, true) :- !.
@@ -2069,7 +2106,7 @@ write_file(Form, P, OutRoot, Rt) :-
           format(S, "% ~w of ~w, written by pl2detlog.~n", [Title, Rel]),
           (   Items = [it(_, dir(module(_, _), _), _)|_]
           ->  true
-          ;   format(S, ":- use_module(~q).~n~n", [RtRel])
+          ;   format(S, ":- use_module(~q).~n:- multifile detlog_rt:dl_k/1.~n~n", [RtRel])
           ),
           write_items(Items, S, P, RtRel)
         ),
@@ -2091,7 +2128,7 @@ write_item(eof, _, _, _).
 write_item(dir(D, Loads), S, _, RtRel) :-
     rewrite_directive(D, Loads, D1),
     print_clause(S, (:- D1)),
-    (   D = module(_, _) -> format(S, ":- use_module(~q).~n", [RtRel]) ; true ).
+    (   D = module(_, _) -> format(S, ":- use_module(~q).~n:- multifile detlog_rt:dl_k/1.~n", [RtRel]) ; true ).
 write_item(cl(H, _), S, P, _) :-
     key(H, K),
     (   first_clause_here(K, P, H) -> emit_block(S, K) ; true ).
@@ -2118,8 +2155,7 @@ rewrite_directive(initialization(G), _, initialization(N)) :-
 rewrite_directive(D, _, D).
 
 %   the converted versions of an exported predicate are exported too
-export_version(N/A, FN/A) :- dbv(out, (N/A)-first, _, _, _), first_name(N/A, FN).
-export_version(N/A, AN/A2) :- dbv(out, (N/A)-all, _, _, _), all_name(N/A, AN), A2 is A + 2.
+export_version(N/A, KN/A1) :- dbv(out, (N/A)-k, _, _, _), k_name(N/A, KN), A1 is A + 1.
 
 map_spec(L, Loads, L1) :- is_list(L), !, maplist(map_one(Loads), L, L1).
 map_spec(S, Loads, S1) :- map_one(Loads, S, S1).
@@ -2144,7 +2180,7 @@ emit_aux(S, A) :-
     forall(aux_of(A2, A), emit_aux(S, A2)).
 
 emit_versions(S, K) :-
-    forall(member(M, [det, first, all, entry, prolog, dead]),
+    forall(member(M, [det, k, entry, prolog, dead]),
            (   db_all(out, K-M, Cls), Cls \== []
            ->  partition(is_main(K, M), Cls, Main, Loops),
                forall(member(C, Main), print_clause(S, C)),
@@ -2157,8 +2193,7 @@ is_main(K, M, C) :- ( C = (:- _) -> true ; C = (H :- _) -> true ; H = C ), versi
 
 version_head(N/A, M, H) :- callable(H),
     (   memberchk(M, [det, prolog, dead, entry]) -> functor(H, N, A)
-    ;   M == first -> first_name(N/A, FN), functor(H, FN, A)
-    ;   M == all -> all_name(N/A, AN), A2 is A + 2, functor(H, AN, A2)
+    ;   M == k -> k_name(N/A, KN), A1 is A + 1, functor(H, KN, A1)
     ).
 version_head(_, _, (:- _)).
 
@@ -2334,11 +2369,8 @@ proof_line(K, L) :-
     format(atom(L), 'DET: called as ~w, the clauses exclude each other and every goal has at most one answer', [P]).
 proof_line(K, L) :-
     conv_key(K), \+ det_key(K), \+ kept(K, _), m_pat(K, P), P \== none,
-    all_name(K, AN),
-    (   eff_key(K)
-    ->  format(atom(L), 'nondeterministic with side effects (called as ~w): first answers in Detlog, answer lists never built', [P])
-    ;   format(atom(L), 'ALL: nondeterministic (called as ~w); ~w returns the answers in Prolog order', [P, AN])
-    ).
+    k_name(K, KN),
+    format(atom(L), 'STREAM: nondeterministic (called as ~w); ~w passes each answer to its continuation, in Prolog order, without a list or a copy', [P, KN]).
 
                  /*******************************
                  *     COMPILE: TIME, PICK, BUILD    *

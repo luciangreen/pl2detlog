@@ -62,9 +62,9 @@ For `examples/fib.pl` with the query `fib(21, F), print(F), nl`, `compile` print
 
 ```
 % form      time per run      output
-% prolog    3.550 ms          same as Prolog
-% detlog    18.902 ms         same as Prolog
-% mnn       98.60 us          same as Prolog
+% prolog    4.284 ms          same as Prolog
+% detlog    6.550 ms          same as Prolog
+% mnn       109.00 us         same as Prolog
 % fastest: mnn
 % built /home/me/fib (mnn form)
 ```
@@ -72,11 +72,12 @@ For `examples/fib.pl` with the query `fib(21, F), print(F), nl`, `compile` print
 **Why Prolog is slower here.** `fib(N, F)` calls `fib(N-1, _)` and `fib(N-2, _)`, so Prolog computes the same values again and again.
 
 - **Prolog:** `fib(21, F)` makes 35,421 calls, about 1.6 times as many as for `fib(20, F)`. The time grows exponentially with N.
-- **MNN:** the MEMO rule finds that `fib/2` is pure, deterministic and tree-recursive, and is called with a ground input and a fresh output. It adds `:- table fib/2`, so each `fib(K, _)` is computed once and then looked up. `fib(21, F)` needs only 22 computations, `fib(0)` to `fib(21)`, so the time grows linearly. Here that is 36 times faster, and for `fib(25, F)` about 275 times.
-- **Plain Detlog:** it has no MEMO, so it makes Prolog's 35,421 calls too. Each call also costs more. Without MNN's guard rule, plain Detlog cannot see that `N > 1` rules out `fib(0, 0)` and `fib(1, 1)`, so it treats `fib/2` as nondeterministic. Every call therefore:
-  - tests all three clauses;
-  - builds a list of its answers;
-  - loops over each recursive call's list, copying variables for every answer.
+- **MNN:** the MEMO rule finds that `fib/2` is pure, deterministic and tree-recursive, and is called with a ground input and a fresh output. It adds `:- table fib/2`, so each `fib(K, _)` is computed once and then looked up. `fib(21, F)` needs only 22 computations, `fib(0)` to `fib(21)`, so the time grows linearly. Here that is about 40 times faster, and for `fib(25, F)` about 200 times.
+- **Plain Detlog:** it has no MEMO, so it makes Prolog's 35,421 calls too, and each call costs a little more. Without MNN's guard rule, plain Detlog cannot see that `N > 1` rules out `fib(0, 0)` and `fib(1, 1)`, so it treats `fib/2` as nondeterministic. Every call therefore:
+  - tries the three clauses in turn;
+  - passes its answer to a continuation that runs the rest of the caller's clause.
+
+  No answer list is built and nothing is copied, but the continuations cost about 1.5 times Prolog's time.
 
 The answer is the same in all three, and `compile` checks this before choosing. The speed-up comes from computing each value once, not from faster code.
 
@@ -127,13 +128,31 @@ max(X, Y, X) :- X >= Y, !.                 max(X, Y, Z) :-
 max(_, Y, Y).                                  if_commit(X>=Y, Z=X, Z=Y).
 ```
 
-A nondeterministic predicate `p/N` becomes `p__all/N+2`, a difference list of its answers in Prolog's order. Its first answer is `p__first/N`. Builtin generators followed by tests are one lazy loop:
+A nondeterministic predicate `p/N` becomes an answer stream, `p__k(Args, K)`:
+
+- **Answers one at a time.** It passes each answer, in Prolog's order, to the continuation `K`, and stops at the first answer that `K` accepts.
+- **No list, no copy.** A rejected answer is undone by `if_commit/3` (SWI-Prolog's trail), so no answer list is built and no environment is copied.
+- **No `call/N`.** A continuation is a term carrying the caller's own variables. `detlog_rt:dl_k/1` applies it, one clause per continuation, chosen by first-argument indexing.
+
+Generate-and-test is pruned. `permutation/2` followed by `safe/1`, a test over all pairs, builds only the prefixes that pass, in `permutation/2`'s own order:
 
 ```prolog
-queens(N, Qs) :-                           queens__first(N, Qs) :-
+queens(N, Qs) :-                           queens__k(N, Qs, K) :-
     numlist(1, N, Ns),                         numlist(1, N, Ns),
-    permutation(Ns, Qs),                       dl_fused_first(permutation(Ns, Qs), safe(Qs)).
-    safe(Qs).
+    permutation(Ns, Qs),                       queens__perm1(Ns, [], Qs, K).
+    safe(Qs).                              queens__perm1([], _, [], K) :-
+                                               dl_k(K).
+                                           queens__perm1([X|Xs], Pre, [Y|Ys], K) :-
+                                               dl_select_k([X|Xs], Y, R, queens__c3(Y, R, Pre, Ys, K)).
+                                           detlog_rt:dl_k(queens__c3(Y, R, Pre, Ys, K)) :-
+                                               queens__pairs2(Pre, Y, 1),
+                                               queens__perm1(R, [Y|Pre], Ys, K).
+                                           queens__pairs2([], _, _).
+                                           queens__pairs2([Q|Qs], Q1, D) :-
+                                               Q=\=Q1+D,
+                                               Q=\=Q1-D,
+                                               D1 is D+1,
+                                               queens__pairs2(Qs, Q1, D1).
 ```
 
 ### The three forms and the rules
@@ -143,52 +162,66 @@ queens(N, Qs) :-                           queens__first(N, Qs) :-
   - *Modes*: one call pattern per predicate (ground, fresh variable or anything, for each argument) is found by abstract interpretation, starting from the query.
   - *CUT*: a cut is dropped when its guard is deterministic and no later clause can match the same call. Any other cut becomes `if_commit/3`. `\+`, `once/1`, `ignore/1`, if-then-else and `forall/2` are written with `if_commit/3`.
   - *DET*: a predicate whose clauses exclude each other for its call pattern, and whose goals all have at most one answer, keeps its name and its clauses. Its clauses are told apart by a ground argument (SWI-Prolog indexes it) or by an `if_commit/3` chain.
-  - *ALL and FIRST*: a nondeterministic predicate gets `p__all` and `p__first`. A conjunction after a nondeterministic goal is a loop over its answers. A first-answer scan stops at the first answer the rest accepts, so later answers are never tested, as in Prolog.
-  - *SPEC*: `maplist/2..5`, `foldl/4..6`, `include/3`, `exclude/3` and `partition/4` with a known closure (yall lambdas included) become recursive predicates. `findall/3,4`, `aggregate_all/3`, `bagof/3` and `setof/3` (without free variables) are read off the answer list.
+  - *STREAM*: a nondeterministic predicate becomes `p__k(Args, K)`, as above.
+    - The rest of a conjunction after a nondeterministic goal becomes a continuation `Root__cN(Vars..., K)`, whose `dl_k/1` clause runs the rest.
+    - Builtin generators (`member/2`, `between/3`, `select/3`, `nth0/3`, `nth1/3`, `append/3`) are enumerated lazily by the runtime (`dl_gen_k/2`); any other builtin generator runs inside the commit.
+    - Answers are produced only as far as the consumer needs, so later answers are never computed (or tested), as in Prolog. Output written inside generators therefore comes out in Prolog's order, and a generator with no end (`between(0, inf, X)`) works.
+  - *PRUNE*, like a constraint solver's propagation:
+    - *pairwise*: `permutation(L, P), t(P)`, where `t/1` is a test over all pairs of positions (`t([X|Xs]) :- r(X, Xs, C0), t(Xs)`, with `r/3` testing `X` against each later element at distance `C0, C0 + 1, ...`), builds the permutation element by element and drops a prefix as soon as its new element fails against an earlier one. The test is closed under prefixes, so the same permutations pass, in the same order;
+    - *solve*: `between(Lo, Hi, X)` followed by a test `E1 =:= E2` that is linear in `X` with coefficient 1 or -1, its other variables bound, has at most one answer, which is solved for (`dl_solve_between/4`);
+    - *bounds*: `between(Lo, Hi, X)` followed by `X > N` (or `>=`, `<`, `=<`, with integer `Lo`, `Hi` and `N`) narrows the range, and the test is dropped.
+  - *SPEC*: `maplist/2..5`, `foldl/4..6`, `include/3`, `exclude/3` and `partition/4` with a known closure (yall lambdas included) become recursive predicates.
+  - *Collecting*: `findall/3,4`, `aggregate_all/3`, `bagof/3` and `setof/3` (without free variables) collect the stream's answers with `dl_findall_k/2,3` and `dl_aggregate_k/3`. That list is the program's own result; it is the only one built.
 - **Detlog MNN**: Detlog plus these MNN rewrites:
   - *guards*: clauses told apart by complementary tests (`X < 0` / `X >= 0`, `N > 1` against `fib(0, _)`) are deterministic;
   - *MEMO*: a pure, deterministic, tree-recursive predicate called with ground inputs is tabled. `fib/2` becomes linear;
   - *accumulate*: `p([], []). p([H|T], R) :- p(T, RT), append(RT, E, R).` becomes `p(L, R) :- p__acc(L, [], R)`, by the associativity of `append`. `nrev/2` becomes linear;
   - *UNFOLD*: a call of a one-clause predicate whose body is pure builtins is replaced by that body;
-  - *FUSE*: a builtin generator whose conjunction continues with builtins and deterministic goals is enumerated lazily by the runtime (`dl_fused_first/2`, `dl_fused_all/5`). The answers and their order are the same, and no answer list is built;
-  - *facts as data*: the answers of a nondeterministic predicate of facts are `dl_match(Facts, Call, ...)`;
-  - first answers of a goal followed only by goals that cannot fail (`write/1`, `X is E`, ...) call `p__first` directly.
+  - *facts as data*: a nondeterministic table of 8 facts or more stays as facts, and `p__k` lets SWI-Prolog's clause index find the facts that match each call;
+  - *first answer*: the first answer of a goal followed only by goals that cannot fail (`write/1`, `X is E`, ...) is `p__k(Args, true)`, with no continuation.
 
 **Proofs, sparingly.** The code carries one comment line per rewrite. The proof stays out of the code: `PROOFS.txt` lists each rule with the side conditions that were checked for each predicate. `compile` and `pl2detlog_check/3` also run the query in all three forms, each in a fresh process, and keep a form only if its output and success are Prolog's.
 
 **Choosing the form and building.** Each form runs the query in a fresh process for about `budget` seconds, and the fastest form that gave Prolog's output is built. The build is `swipl -o Exe --stand_alone=true -c` on that form's files. The executable needs SWI-Prolog's shared library at run time, as any SWI-Prolog saved state does.
 
-Microseconds per run on this machine: the median of three runs of `swipl test/prolog/bench.pl` (each column's median taken separately), on SWI-Prolog 11.1.0. Differences under about 20% are noise. The runs are in the [report](https://github.com/luciangreen/reports/tree/main/swipl-module).
+Microseconds per run on this machine: the median of three runs of `swipl test/prolog/bench.pl` (each column's median taken separately), on SWI-Prolog 11.1.0. Differences under about 20% are noise.
 
-| query | Prolog µs | Detlog µs | Detlog MNN µs | MNN ÷ Prolog |
-| --- | ---: | ---: | ---: | ---: |
-| `fib(21, F)` | 4,248 | 14,053 | 96.1 | 0.02 |
-| `fib(25, F)` | 32,437 | 102,566 | 118 | 0.004 |
-| `numlist(1, 300, L), nrev(L, R)` | 1,195 | 1,254 | 91.5 | 0.08 |
-| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 565 | 465 | 584 | 1.03 |
-| `queens(8, Qs)`, first answer | 4,065 | 101,979 | 3,586 | 0.88 |
-| `queens(6, Qs)`, all answers | 735 | 1,501 | 791 | 1.08 |
-| `pin(A, B, C)`, all answers | 204 | 1,308 | 131 | 0.64 |
-| `anc(X, dee)`, all answers | 6.3 | 29.1 | 26.8 | 4.25 |
+| query | Prolog µs | Detlog µs | Detlog MNN µs | Detlog ÷ Prolog | MNN ÷ Prolog |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fib(21, F)` | 4,284 | 6,550 | 109 | 1.53 | 0.03 |
+| `fib(25, F)` | 27,908 | 56,821 | 132 | 2.04 | 0.005 |
+| `numlist(1, 300, L), nrev(L, R)` | 1,557 | 1,486 | 114 | 0.95 | 0.07 |
+| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 652 | 431 | 396 | 0.66 | 0.61 |
+| `queens(8, Qs)`, first answer | 2,803 | 166 | 165 | 0.06 | 0.06 |
+| `queens(6, Qs)`, all answers | 605 | 152 | 148 | 0.25 | 0.24 |
+| `pin(A, B, C)`, all answers | 142 | 187 | 44.5 | 1.32 | 0.31 |
+| `anc(X, dee)`, all answers | 5.2 | 4.6 | 5.3 | 0.88 | 1.02 |
 
-Plain Detlog is slower than Prolog wherever there is search. It builds every answer list in full and copies the environment for each answer, where Prolog backtracks. MNN takes that cost away where a rewrite applies (MEMO, accumulate, FUSE, UNFOLD), and is otherwise about as fast as Prolog. For small nondeterministic queries such as `anc/2`, Prolog stays fastest, and `compile` builds the Prolog form.
+Detlog MNN is as fast as Prolog or faster on every query:
+
+- **MEMO and accumulate change the algorithm**: `fib` and `nrev` become linear.
+- **PRUNE stops building candidates that a test would reject**: the queens are 4 to 17 times faster, in both forms, and `pin/3` is solved for its last digit.
+- **Elsewhere, streams cost about what Prolog's backtracking does**: no answer list, no copy.
+
+Plain Detlog has no MEMO, accumulate or guard rule, so it is slower on `fib` (each call tries every clause through a continuation) and on `pin/3`.
 
 ### Limits
 
 - **Modes.** Each predicate has one call pattern, the least upper bound of all its calls. A predicate called with a bound argument in one place and an unbound one in another is converted for "anything" in both.
 - **Interface without a query.** With no query, every predicate that nothing calls is the program's interface, and is converted for calls in any mode. Every other predicate is converted for the modes the program calls it with. If its converted form has no version under its own name, it is also written as it was (`% as written too, ...`), so every predicate can still be called by name. With a query, only the query is the interface, and a predicate that the query does not use is written as it was.
-- **Answer lists are complete.** A nondeterministic predicate computes all its answers when the caller needs them as a list. If a later answer raises an error or never ends, so does the converted code, even where Prolog would have stopped earlier. Scans and FUSE are the exceptions. When a builtin generator has no end (`between(0, inf, X)`, `repeat`):
-  - the predicate is written as it was where it is called by name;
-  - MNN's FUSE enumerates it lazily, as Prolog does;
-  - an answer list of it raises `detlog_infinite_answers` instead of running for ever.
+- **Answer lists.** Only two things build a list of answers:
+  - `findall/3`-like goals in the program, whose result is that list;
+  - the boundary where ordinary Prolog calls a converted nondeterministic predicate by name and backtracks into it, where the answers are collected and given back one by one (`dl_member/2`).
+
+  At that boundary, a predicate with side effects, or with a generator that has no end (`between(0, inf, X)`, `repeat`), is written as it was instead.
 - **Kept as Prolog.** These predicates are written as they were:
   - a cut inside `;` or `->` that cuts the clause (the web app converts these with cut markers);
   - `*->`;
   - dynamic predicates.
 
-  A nondeterministic predicate with side effects is converted for its first answers. Where its answers are needed one by one, it runs as an ordinary Prolog conjunction inside `dl_once/1`, so the output keeps Prolog's order.
+  A kept predicate that converted code needs answers from runs as an ordinary Prolog conjunction inside `dl_once/1`, with the continuation after it.
 - **Lambdas.** A yall lambda's free variables are taken to be bound when it is called, as they are in `Free/[X]>>Goal`.
-- **Modules.** The program is converted as one namespace. A module's export list gains the `__first` and `__all` versions of the predicates it exports.
+- **Modules.** The program is converted as one namespace. A module's export list gains the `__k` versions of the predicates it exports.
 - **C.** The C route (`--c`, `--run`) is in the Node command line (`cli.js`); the SWI-Prolog module compiles to SWI-Prolog executables.
 
 ### Tests
@@ -467,7 +500,7 @@ Detlog2 rejects a cut inside an if-then-else branch. pl2detlog converts it with 
 | `test/interp.test.js` | thermo (examples, proof, store), SWI-Prolog programs, routes and the store, per-call routes, compiled C |
 | `test/algebra.test.js` | each rewrite against the Prolog engine, and the C export and JIT with and without them |
 | `prolog/pl2detlog.pl` | the SWI-Prolog module: Prolog to Detlog and Detlog MNN, modes, determinism, the rewrites, the writer, and `compile` |
-| `prolog/detlog_rt.pl` | the runtime that converted files load (`if_commit/3`, answer lists, fused loops) |
+| `prolog/detlog_rt.pl` | the runtime that converted files load (`if_commit/3`, the continuation table `dl_k/1`, lazy generators, collection, the solver) |
 | `prolog/pl2detlog_bench.pl` | runs a query in a fresh process for `compile`: its output once, then its time per run |
 | `app/pl2detlog.pl` | the module's command line (`swipl pl2detlog ...` when installed as a pack) |
 | `pack.pl` | the SWI-Prolog pack description |

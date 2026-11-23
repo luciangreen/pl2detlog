@@ -110,16 +110,16 @@
     const t1 = P.now();
     res.mnn = P.convert(src, Object.assign({ mnn: true, queries: allQs }, opts.mnn || {}));
     res.convertMnnMs = P.now() - t1;
+    // the converted programs: res.plain.text / res.mnn.text are the default form (answer streams, src/stream.js);
+    // the packet form of each (packetText) runs too, so the proof compares both
     const progPlain = P.loadProgram(res.plain.text), progMnn = P.loadProgram(res.mnn.text);
-    let progStream = null, progStreamMnn = null;
-    if (res.plain.streamText) { try { progStream = P.loadProgram(res.plain.streamText); } catch (e) { res.errors.push('stream code: ' + e.message); } }
-    if (res.mnn.streamText) { try { progStreamMnn = P.loadProgram(res.mnn.streamText); progStreamMnn.pairwiseSource = P.loadProgram(res.mnn.source); } catch (e) { res.errors.push('MNN stream code: ' + e.message); } }
-    try { if (progStream) progStream.pairwiseSource = P.loadProgram(res.plain.source); } catch (e) { /* permutes in full */ }
-    try { res.backStreams = res.plain.streamText ? P.backConvert(res.plain.streamText) : null; } catch (e) { res.backStreams = null; res.errors.push('back-conversion (streams): ' + e.message); }
-    try { res.backStreamsMnn = res.mnn.streamText ? P.backConvert(res.mnn.streamText) : null; } catch (e) { res.backStreamsMnn = null; res.errors.push('back-conversion (MNN streams): ' + e.message); }
-    try { progMnn.pairwiseSource = P.loadProgram(res.mnn.source); } catch (e) { /* the JIT then permutes in full */ }
+    const progPk = res.plain.packetText !== res.plain.text ? P.loadProgram(res.plain.packetText) : null;
+    const progPkMnn = res.mnn.packetText !== res.mnn.text ? P.loadProgram(res.mnn.packetText) : null;
+    for (const [pr, c] of [[progPlain, res.plain], [progMnn, res.mnn], [progPk, res.plain], [progPkMnn, res.mnn]]) if (pr) { try { pr.pairwiseSource = P.loadProgram(c.source); } catch (e) { /* the JIT then permutes in full */ } }
     try { res.backPlain = P.backConvert(res.plain.text); } catch (e) { res.backPlain = null; res.errors.push('back-conversion (plain): ' + e.message); }
     try { res.backMnn = P.backConvert(res.mnn.text); } catch (e) { res.backMnn = null; res.errors.push('back-conversion (MNN): ' + e.message); }
+    try { res.backPackets = progPk ? P.backConvert(res.plain.packetText) : null; } catch (e) { res.backPackets = null; res.errors.push('back-conversion (packets): ' + e.message); }
+    try { res.backPacketsMnn = progPkMnn ? P.backConvert(res.mnn.packetText) : null; } catch (e) { res.backPacketsMnn = null; res.errors.push('back-conversion (MNN packets): ' + e.message); }
     res.changes = res.backPlain ? P.changeWarnings(src, res.backPlain.text, res.backPlain) : [];
     res.changesMnn = res.backMnn ? P.changeWarnings(src, res.backMnn.text, res.backMnn) : [];
     const backProg = res.backPlain ? safeLoad(res.backPlain.text) : null, backMnnProg = res.backMnn ? safeLoad(res.backMnn.text) : null;
@@ -135,21 +135,21 @@
       r.interp = P.runDetlogInterp(res.plain, q.pred, q.vars, { stepLimit: lim * 20 });
       r.plain = P.runDetlogFast(progPlain, q.pred, q.vars, { stepLimit: lim * 20 });
       r.mnn = P.runDetlogFast(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 });
-      if (progStream) r.streams = P.runDetlogFast(progStream, q.pred, q.vars, { stepLimit: lim * 20 });
-      if (progStreamMnn) r.streamsMnn = P.runDetlogFast(progStreamMnn, qm.pred, qm.vars, { stepLimit: lim * 20 });
+      if (progPk) r.packets = P.runDetlogFast(progPk, q.pred, q.vars, { stepLimit: lim * 20 });
+      if (progPkMnn) r.packetsMnn = P.runDetlogFast(progPkMnn, qm.pred, qm.vars, { stepLimit: lim * 20 });
       if (backProg) r.back = P.runQuery(safeLoad(res.backPlain.text), q.text, { stepLimit: lim, maxAnswers: 1000 });
       if (backMnnProg) r.backMnn = P.runQuery(safeLoad(res.backMnn.text), q.text, { stepLimit: lim, maxAnswers: 1000 });
       const ev = JSON.stringify(r.prolog.events);
       r.same = ev === JSON.stringify(r.plain.events) && ev === JSON.stringify(r.mnn.events) && ev === JSON.stringify(r.interp.events) &&
-        (!r.streams || ev === JSON.stringify(r.streams.events)) && (!r.streamsMnn || ev === JSON.stringify(r.streamsMnn.events));
+        (!r.packets || ev === JSON.stringify(r.packets.events)) && (!r.packetsMnn || ev === JSON.stringify(r.packetsMnn.events));
       if (opts.timing !== false) {
         const parsedQ = P.readTerm(q.text);
         r.prolog.ms = timeIt(pr => P.runQuery(pr, parsedQ, { stepLimit: lim, maxAnswers: 1000 }), 25, 200, dynamic ? fresh : () => sharedProg).ms;
         r.interp.ms = timeIt(() => P.runDetlogInterp(res.plain, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
         r.plain.ms = timeIt(() => P.runDetlogFast(progPlain, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
         r.mnn.ms = timeIt(() => P.runDetlogFast(progMnn, qm.pred, qm.vars, { stepLimit: lim * 20 })).ms;
-        if (r.streams && !r.streams.error) r.streams.ms = timeIt(() => P.runDetlogFast(progStream, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
-        if (r.streamsMnn && !r.streamsMnn.error) r.streamsMnn.ms = timeIt(() => P.runDetlogFast(progStreamMnn, qm.pred, qm.vars, { stepLimit: lim * 20 })).ms;
+        if (r.packets && !r.packets.error) r.packets.ms = timeIt(() => P.runDetlogFast(progPk, q.pred, q.vars, { stepLimit: lim * 20 })).ms;
+        if (r.packetsMnn && !r.packetsMnn.error) r.packetsMnn.ms = timeIt(() => P.runDetlogFast(progPkMnn, qm.pred, qm.vars, { stepLimit: lim * 20 })).ms;
         // against the same algorithm written by hand: MNN Detlog's computation alone, as the reference measures
         if (P.cReference && !r.mnn.error) {
           r.cref = P.cReference(q.text, r.mnn.events);
@@ -165,7 +165,7 @@
       res.sweep = { template: opts.sweep.template, points: pts, fit: { prolog: fit('prolog'), interp: fit('interp'), plain: fit('plain'), mnn: fit('mnn') } };
     }
     res.metrics = { prolog: prologMetrics(src), plain: detlogMetrics(res.plain.text), mnn: detlogMetrics(res.mnn.text) };
-    res.proof = P.prove({ src, plain: res.plain, mnn: res.mnn, backPlain: res.backPlain, backMnn: res.backMnn, backStreams: res.backStreams, backStreamsMnn: res.backStreamsMnn, runs: res.runs });
+    res.proof = P.prove({ src, plain: res.plain, mnn: res.mnn, backPlain: res.backPlain, backMnn: res.backMnn, backPackets: res.backPackets, backPacketsMnn: res.backPacketsMnn, runs: res.runs });
     // hide sweep queries from the converted text shown to the user? keep them: they are converted like any query
     res.totalMs = P.now() - t0;
     return res;

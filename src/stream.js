@@ -18,7 +18,8 @@
      after the cut, every earlier alternative of the clause and every later clause stops.
 
    The query '$queryN'(Vars) keeps its packet entry '$queryN__cp'(Vars, Rows): it collects the answers
-   and the text written before each one (dl_bag_row/2), so every consumer of query packets is unchanged.
+   and the text written before each one (dl_query_new/1, dl_bag_row/2, dl_bag_rows/2), so every consumer
+   of query packets is unchanged.  In SWI-Prolog these come from src/detlog_stream_rt.pl.
    This is the only place answers are collected for a caller. */
 (function (P) {
   'use strict';
@@ -69,13 +70,13 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
     const kindOf = new Map((conv.genPreds || []).map(g => [g.key, g.kind]));
     const convCl = conv.clauses || [];
     const headName = t => { t = D(t); const h = isC(t, ':-', 2) ? D(t.a[0]) : t; return h.t === 'c' ? h.f : h.t === 'a' ? h.n : ''; };
-    const detCode = new Map(); // f -> [clause terms of f__d...]
-    const s2aCode = new Map(); // f -> s2a_rows(Spec, Args, R) goal
+    const detCode = new Map(); // p/n -> [clause terms of p__d...]
+    const s2aCode = new Map(); // p/n -> s2a_rows(Spec, Args, R) goal
     for (const c of convCl) {
       const nm = headName(c.term), pk = c.pred; if (!pk) continue;
       const f0 = pk.slice(0, pk.lastIndexOf('/'));
-      if (nm.startsWith(f0 + '__d') && nm !== f0 + '__dr') { if (!detCode.has(f0)) detCode.set(f0, []); detCode.get(f0).push(c.term); }
-      if (kindOf.get(pk) === 's2a' && isC(c.term, ':-', 2) && isC(c.term.a[1], 's2a_rows', 3)) s2aCode.set(f0, D(c.term.a[1]));
+      if (nm.startsWith(f0 + '__d') && nm !== f0 + '__dr') { if (!detCode.has(pk)) detCode.set(pk, []); detCode.get(pk).push(c.term); }
+      if (kindOf.get(pk) === 's2a' && isC(c.term, ':-', 2) && isC(c.term.a[1], 's2a_rows', 3)) s2aCode.set(pk, D(c.term.a[1]));
     }
     const prog = conv.prog;
 
@@ -89,12 +90,12 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       const cls = rec.clauses;
       if (!cls.length) { emit(Cmp(':-', [head, P.FAIL])); continue; }
       // MNN S2A: the predicate's rows, walked lazily
-      if (s2aCode.has(f)) {
-        const g = s2aCode.get(f), Rs = V('Rs');
+      if (s2aCode.has(k)) {
+        const g = s2aCode.get(k), Rs = V('Rs');
         emit(Cmp(':-', [head, conj([Cmp('s2a_rows', [g.a[0], list(A), Rs]), Cmp('dl_rows_k', [Rs, list(A), KV])])]), 'k_s2a');
         continue;
       }
-      const isDet = detCode.has(f), isMemo = kindOf.get(k) === 'memo';
+      const isDet = detCode.has(k), isMemo = kindOf.get(k) === 'memo';
       const base = isDet || isMemo ? f + '__kc' : f + '__k';
       const memoName = isDet ? f + '__km' : f + '__k';
       const top = isMemo ? memoName : base;
@@ -114,7 +115,7 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       if (isDet) {
         // DET: the deterministic-mode status code; maybe (several clauses possible) runs the stream
         RULE = 'k_det';
-        for (const t of detCode.get(f)) emit(t);
+        for (const t of detCode.get(k)) emit(t);
         const S = V('S');
         emit(Cmp(':-', [head, Cmp('if_commit', [conj([Cmp(f + '__d', A.concat([S])), Cmp('\\==', [S, Atom('maybe')])]),
           conj([Cmp('==', [S, Atom('yes')]), Cmp('dl_k', [KV])]), Cmp(top, A.concat([KV]))])]));
@@ -169,7 +170,7 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       const body = qd ? Cmp('if_commit', [conj([qd.goal, Cmp('\\==', [qd.S, Atom('maybe')])]),
         Cmp('if_commit', [Cmp('==', [qd.S, Atom('yes')]), Cmp('dl_bag_last', [B, list(vs), R]), Cmp('dl_bag_rows', [B, R])]),
         conj([streamed, Cmp('dl_bag_rows', [B, R])])]) : conj([streamed, Cmp('dl_bag_rows', [B, R])]);
-      emit(Cmp(':-', [Cmp(q.pred + '__cp', vs.concat([R])), conj([Cmp('dl_bag_new', [B]), body])]));
+      emit(Cmp(':-', [Cmp(q.pred + '__cp', vs.concat([R])), conj([Cmp('dl_query_new', [B]), body])]));
     }
 
     function queryGoals(q, vs) {
@@ -182,13 +183,13 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
     }
     function queryS2A(q, vs) {
       const goals = queryGoals(q, vs); if (!goals || goals.length !== 1) return null;
-      const g = goals[0]; if (g.t !== 'c' || !user.has(P.key(g)) || !s2aCode.has(g.f)) return null;
+      const g = goals[0]; if (g.t !== 'c' || !user.has(P.key(g)) || !s2aCode.has(P.key(g))) return null;
       if (!vs.every(v => termVars(g).includes(v))) return null;
-      return { spec: s2aCode.get(g.f).a[0], args: g.a };
+      return { spec: s2aCode.get(P.key(g)).a[0], args: g.a };
     }
     function queryDet(q, vs) {
       const goals = queryGoals(q, vs);
-      if (!goals || !goals.length || !goals.every(g => (user.has(P.key(g)) && detCode.has(P.name(g))) || PURE.has(P.key(g)))) return null;
+      if (!goals || !goals.length || !goals.every(g => (user.has(P.key(g)) && detCode.has(P.key(g))) || PURE.has(P.key(g)))) return null;
       const build = (i, Sout) => {
         if (i === goals.length) return Cmp('=', [Sout, Atom('yes')]);
         const g = goals[i];
@@ -325,9 +326,9 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       return [g].concat(kcall(K));
     }
 
-    const text = '% Detlog stream code: no answer packets (src/stream.js)\n' + LIB + '\n' +
-      clauses.map(c => P.showClause(c, { varName: v => v.name })).join('\n') + '\n';
-    return { text, clauses, tags };
+    const res = { clauses, tags };
+    res.text = printStreams(res);
+    return res;
   }
 
   // ---- runtime builtins shared by every engine (reference, closure, JIT) ----
@@ -340,6 +341,8 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
   const cell = (f, slot) => { const t = Cmp(f, [Int(++cellN)]); t.slot = slot; return t; };
   const slotOf = (t, f) => { t = D(t); if (t.t !== 'c' || t.f !== f || !t.slot) throw new Error(f + ': not a cell'); return t.slot; };
   det('dl_bag_new/1', (a, e) => e.unify(a[0], cell('$bag', { items: [], mark: outOf(e).length })));
+  // the query boundary's bag: the same here (the SWI-Prolog runtime also captures the output there)
+  det('dl_query_new/1', (a, e) => e.unify(a[0], cell('$bag', { items: [], mark: outOf(e).length })));
   det('dl_bag_add/2', (a) => { slotOf(a[0], '$bag').items.push(P.copy(a[1])); return true; });
   det('dl_bag_list/2', (a, e) => { const b = slotOf(a[0], '$bag'); const it = b.items; b.items = []; return e.unify(a[1], list(it)); });
   det('dl_bag_list/3', (a, e) => { const b = slotOf(a[0], '$bag'); const it = b.items; b.items = []; let r = a[2]; for (let i = it.length - 1; i >= 0; i--) r = P.cons(it[i], r); return e.unify(a[1], r); });
@@ -353,6 +356,12 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
 
   det('dl_bag_last/3', (a, e) => { const b = slotOf(a[0], '$bag'); takeText(b, e); b.items.push(Cmp('e', [a[1]])); const it = b.items; b.items = []; return e.unify(a[2], list(it)); });
 
-  P.toStreams = toStreams;
+  // the text of stream code, without the clauses of the predicates in drop (keys p/n)
+  function printStreams(st, drop) {
+    const keep = st.clauses.filter((c, i) => !(drop && drop.has(st.tags[i].pred)));
+    return '% Detlog stream code: no answer packets (src/stream.js)\n' + LIB + '\n' + keep.map(c => P.showClause(c, { varName: v => v.name })).join('\n') + '\n';
+  }
+
+  P.toStreams = toStreams; P.printStreams = printStreams;
   P.STREAM_LIB = LIB;
 })(typeof globalThis !== 'undefined' ? (globalThis.PL2D = globalThis.PL2D || {}) : this);

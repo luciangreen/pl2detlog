@@ -91,9 +91,9 @@
     const checks = [];
     const add = (group, name, ok, detail) => checks.push({ group, name, ok, detail: detail || '' });
     const pur = purity(src);
-    for (const [label, conv] of [['Detlog', plain], ['MNN Detlog', mnn]]) {
+    for (const [label, conv] of [['Detlog packets', plain], ['MNN Detlog packets', mnn]]) {
       if (!conv) continue;
-      const sh = checkShape(conv.text);
+      const sh = checkShape(conv.packetText || conv.text);
       add('Shape', label + ': no cut, ;, ->, \\+, findall, call/N or nondeterministic builtin; first-argument determinism', sh.ok, sh.ok ? sh.preds + ' predicates, ' + sh.clauses + ' clauses, ' + sh.decisions + ' if_commit decisions' : sh.issues.slice(0, 8).join('; '));
       if (sh.condUser) add('Shape', label + ': if_commit conditions', 'warn', sh.condUser + ' condition(s) call Detlog predicates (allowed: they are deterministic)');
       // justification
@@ -218,7 +218,7 @@
       }
     }
     // CUT round trip
-    for (const [label, back] of [['Detlog', backPlain], ['MNN Detlog', backMnn], ['Stream Detlog', ctx.backStreams], ['MNN stream Detlog', ctx.backStreamsMnn]]) {
+    for (const [label, back] of [[plain && plain.form === 'streams' ? 'Stream Detlog' : 'Detlog', backPlain], [mnn && mnn.form === 'streams' ? 'MNN stream Detlog' : 'MNN Detlog', backMnn], ['Detlog packets', ctx.backPackets], ['MNN Detlog packets', ctx.backPacketsMnn]]) {
       if (!back) continue;
       const cw = P.changeWarnings(src, back.text, back);
       const same = cw.filter(w => w.kind === 'same').length, changed = cw.filter(w => w.kind === 'changed'), bad = cw.filter(w => w.kind === 'error' || w.kind === 'removed');
@@ -229,16 +229,16 @@
       const ref = JSON.stringify(r.prolog.events);
       const parts = [];
       let ok = true; let limitOnly = false;
-      for (const [nm, x] of [['Detlog interpreter', r.interp], ['Detlog code', r.plain], ['MNN Detlog code', r.mnn], ['stream Detlog code', r.streams], ['MNN stream Detlog code', r.streamsMnn], ['back-converted Prolog', r.back], ['back-converted (MNN) Prolog', r.backMnn]]) {
+      for (const [nm, x] of [['Detlog interpreter', r.interp], ['Detlog code', r.plain], ['MNN Detlog code', r.mnn], ['Detlog packet code', r.packets], ['MNN Detlog packet code', r.packetsMnn], ['back-converted Prolog', r.back], ['back-converted (MNN) Prolog', r.backMnn]]) {
         if (!x) continue;
         const same = JSON.stringify(x.events) === ref && !x.error === !r.prolog.error;
         if (!same) { ok = false; if (r.prolog.truncated || r.prolog.limit || (x.error && /infinite|no finite packet|step limit/.test(x.error))) limitOnly = true; parts.push(nm + ' differs' + (x.error ? ' (' + x.error + ')' : '')); }
       }
-      add('Evaluation', '?- ' + r.query, ok ? true : limitOnly ? 'warn' : false, ok ? r.prolog.answers.length + ' answer(s)' + (r.prolog.output ? ' + output' : '') + ', same order, duplicates and output in Prolog, the Detlog interpreter, both Detlog programs and both back-conversions' : parts.join('; ') + (limitOnly ? ' — infinite generator: no finite packet (documented limit)' : ''));
-      for (const [nm, x] of [['Detlog', r.plain], ['MNN', r.mnn], ['stream', r.streams], ['MNN stream', r.streamsMnn]]) if (x && x.violations) add('Determinism', nm + ' ?- ' + r.query, false, x.violations + ' call(s) with more than one candidate clause: ' + x.violationPreds.join(', '));
+      add('Evaluation', '?- ' + r.query, ok ? true : limitOnly ? 'warn' : false, ok ? r.prolog.answers.length + ' answer(s)' + (r.prolog.output ? ' + output' : '') + ', same order, duplicates and output in Prolog, the Detlog interpreter, the Detlog programs (streams and packets, plain and MNN) and the back-conversions' : parts.join('; ') + (limitOnly ? ' — infinite generator: no finite packet (documented limit)' : ''));
+      for (const [nm, x] of [['Detlog', r.plain], ['MNN', r.mnn], ['packets', r.packets], ['MNN packets', r.packetsMnn]]) if (x && x.violations) add('Determinism', nm + ' ?- ' + r.query, false, x.violations + ' call(s) with more than one candidate clause: ' + x.violationPreds.join(', '));
     }
     if (runs && runs.length) {
-      const anyViol = runs.some(r => ['plain', 'mnn', 'streams', 'streamsMnn'].some(k => r[k] && r[k].violations));
+      const anyViol = runs.some(r => ['plain', 'mnn', 'packets', 'packetsMnn'].some(k => r[k] && r[k].violations));
       if (!anyViol) add('Determinism', 'no Detlog call left a choicepoint (first-argument selection was unique on every call)', true, runs.length + ' queries');
     }
     const GO = ['Shape', 'Justification', 'Side conditions', 'Coverage', 'Back-conversion', 'Evaluation', 'Determinism'];

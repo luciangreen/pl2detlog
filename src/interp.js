@@ -391,7 +391,7 @@
       if (this.acc !== undefined) return this.acc;
       this.acc = null;
       if (this.loadError || this.noAccel) return null;
-      let conv; try { conv = P.convert(this.src, { mnn: true, s2a: false, queries: [] }); } catch (e) { return null; }
+      let conv; try { conv = P.convert(this.src, { mnn: true, s2a: false, queries: [], form: 'packets' }); } catch (e) { return null; }
       const bad = new Set(conv.errors.map((x) => x.pred).filter(Boolean));
       // the predicates the program may assert into: unknown targets turn per-call routes off
       const targets = new Set(); let anyTarget = false;

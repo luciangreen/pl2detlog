@@ -947,7 +947,7 @@ static Term *bag_take(Bag *b, Term *tail) { Term *r = tail; for (size_t i = b->i
 static int rt_stream_call(const char *k, Term **a, int *r) {
 #define K(s) (k[0] == (s)[0] && k[1] == (s)[1] && !strcmp(k, s))
   if (k[0] == 'd' && k[1] == 'l' && k[2] == '_') {
-    if (K("dl_bag_new/1")) { if (nbags == capbags) { capbags = capbags ? capbags * 2 : 64; bags = (Bag *)realloc(bags, capbags * sizeof(Bag)); }
+    if (K("dl_bag_new/1") || K("dl_query_new/1")) { if (nbags == capbags) { capbags = capbags ? capbags * 2 : 64; bags = (Bag *)realloc(bags, capbags * sizeof(Bag)); }
       Bag *b = &bags[nbags]; memset(b, 0, sizeof *b); b->mark = dl_outb.n; *r = unify(a[0], cell_term(A_BAG, (long long)nbags++)); return 1; }
     if (K("dl_bag_add/2")) { tv_push(&bags[cell_id(a[0], A_BAG)].items, copy_term(a[1])); *r = 1; return 1; }
     if (K("dl_bag_list/2")) { *r = unify(a[1], bag_take(&bags[cell_id(a[0], A_BAG)], NIL)); return 1; }

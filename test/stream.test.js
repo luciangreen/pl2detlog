@@ -53,3 +53,37 @@ test('streams: C export prints the packet program\'s answers', (t) => {
     assert.equal(outs[1], outs[0], ex.id + (mnn ? ' MNN' : ' plain') + (native ? ' native' : ''));
   }
 });
+
+// Deterministic integer code: same-name predicates of different arities (sumto/2, sumto/3) keep their own
+// deterministic modes, and if-then-else on integers (collatz/2) runs in the native tier.
+const INTS = `collatz(1, 0) :- !.
+collatz(N, S) :- ( N mod 2 =:= 0 -> M is N // 2 ; M is 3 * N + 1 ), collatz(M, S0), S is S0 + 1.
+gcd(A, 0, A) :- !.
+gcd(A, B, G) :- C is A mod B, gcd(B, C, G).
+ack(0, N, R) :- !, R is N + 1.
+ack(M, 0, R) :- !, M1 is M - 1, ack(M1, 1, R).
+ack(M, N, R) :- M1 is M - 1, N1 is N - 1, ack(M, N1, R1), ack(M1, R1, R).
+digsum(0, 0) :- !.
+digsum(N, S) :- D is N mod 10, N1 is N // 10, digsum(N1, S1), S is S1 + D.
+maxc(N, M) :- findall(S, (between(1, N, I), collatz(I, S)), Ss), max_list(Ss, M).
+sumto(N, S) :- sumto(N, 0, S).
+sumto(0, A, A).
+sumto(N, A, S) :- N > 0, A1 is A + N, N1 is N - 1, sumto(N1, A1, S).
+`;
+test('streams: deterministic integer code', () => {
+  const qs = ['collatz(27, S)', 'gcd(1071, 462, G)', 'ack(2, 3, R)', 'digsum(987654321, S)', 'maxc(60, M)', 'sumto(500, S)', 'collatz(N, 3)'];
+  for (const mnn of [false, true]) {
+    const conv = P.convert(INTS, { mnn, queries: qs });
+    const prog = P.loadProgram(conv.text);
+    for (const q of conv.queries) {
+      const ref = P.runQuery(P.loadProgram(INTS), q.text, { stepLimit: 2e7 });
+      const r = P.runDetlogFast(prog, q.pred, q.vars, { stepLimit: 6e7 });
+      assert.equal(render(r.events || []), render(ref.events || []), q.text + (mnn ? ' (MNN)' : ''));
+      assert.equal(r.violations, 0, q.text + ': a call with more than one candidate clause');
+    }
+    if (mnn) {
+      assert.equal((conv.text.match(/^sumto__d\(X__1, X__2, S__0\) :-/gm) || []).length, 1, 'sumto__d/3 once');
+      assert.ok(P.nativeModesOf(prog).some(m => m.startsWith('collatz__d/3|')), 'collatz/2 runs natively');
+    }
+  }
+});

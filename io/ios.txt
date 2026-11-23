@@ -11,11 +11,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 5. run_prolog("evens", "evens([9, 4], R)")
    => {"ok":true,"answers":["R = [4]"],"output":"","error":null}
 6. convert("factorial", "fact(1, F)", "plain")
-   => {"mode":"plain","clauses":6,"errors":[],"warnings":0,"cut_free":true,"heads":["fact__cp(A__1, A__2, R__0) :-"]}
+   => {"mode":"plain","form":"streams","clauses":6,"stream_clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["fact__k(A__1, A__2, K__1) :-"]}
 7. convert_and_back("reverse")
    => {"same_clauses":true,"back":["rev(L, R) :-","    rev(L, [], R).","rev([], A, A).","rev([H|T], A, R) :-","    rev(T, [H|A], R)."],"warnings":0}
 8. analyse("length", "len([0, 3], N)")
-   => {"same":true,"prolog":["N = 2"],"detlog":["N = 2"],"mnn":["N = 2"],"back":["N = 2"],"proof_checks":14,"proof_failed":[]}
+   => {"same":true,"prolog":["N = 2"],"detlog":["N = 2"],"mnn":["N = 2"],"back":["N = 2"],"proof_checks":23,"proof_failed":[]}
 9. newton_fit([-1,-9,-21,-37,-57])
    => {"differences":[-1,-8,-4],"formula":"-2*I*I - 6*I - 1"}
 10. s2a_formula([[1,2,"y",2],[2,3,"y",5],[3,4,"y",10],[4,5,"y",17],[5,6,"y",26],[6,7,"y",37]])
@@ -39,11 +39,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 19. run_prolog("evens", "evens([3, 6], R)")
    => {"ok":true,"answers":["R = [6]"],"output":"","error":null}
 20. convert("grade", "grade(95, G)", "mnn")
-   => {"mode":"mnn","clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["grade__cp(A__1, A__2, R__0) :-"]}
+   => {"mode":"mnn","form":"streams","clauses":7,"stream_clauses":5,"errors":[],"warnings":0,"cut_free":true,"heads":["grade__k(A__1, A__2, K__0) :-"]}
 21. convert_and_back("grade")
    => {"same_clauses":true,"back":["grade(N, a) :-","    N >= 80,","    !.","grade(N, b) :-","    N >= 60,","    !.","grade(_, c)."],"warnings":0}
 22. analyse("double", "dbls([1, 0, 8, 2, 8], R)")
-   => {"same":true,"prolog":["R = [2, 0, 16, 4, 16]"],"detlog":["R = [2, 0, 16, 4, 16]"],"mnn":["R = [2, 0, 16, 4, 16]"],"back":["R = [2, 0, 16, 4, 16]"],"proof_checks":16,"proof_failed":[]}
+   => {"same":true,"prolog":["R = [2, 0, 16, 4, 16]"],"detlog":["R = [2, 0, 16, 4, 16]"],"mnn":["R = [2, 0, 16, 4, 16]"],"back":["R = [2, 0, 16, 4, 16]"],"proof_checks":26,"proof_failed":[]}
 23. newton_fit([6,20,48,96,170,276,420])
    => {"differences":[6,14,14,6],"formula":"I*I*I + 4*I*I + 9*I + 6"}
 24. s2a_formula([[1,4,"x",4],[2,5,"x",7],[3,6,"x",12]])
@@ -67,11 +67,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 33. run_prolog("max", "mx(-5, 6, M)")
    => {"ok":true,"answers":["M = 6"],"output":"","error":null}
 34. convert("member", "mem(X, [9, 8, 0, 1])", "plain")
-   => {"mode":"plain","clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__cp(A__1, A__2, R__0) :-","mem__c1(A__1, A__2, R__0) :-","mem__c2(A__1, A__2, R__0) :-"]}
+   => {"mode":"plain","form":"streams","clauses":4,"stream_clauses":5,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__k1(X, [X|U__1], K__1) :-","mem__k2(X, [U__1|T], K__2) :-","mem__k(A__1, A__2, K__0) :-"]}
 35. convert_and_back("grade")
    => {"same_clauses":true,"back":["grade(N, a) :-","    N >= 80,","    !.","grade(N, b) :-","    N >= 60,","    !.","grade(_, c)."],"warnings":0}
 36. analyse("member", "mem(X, [8, 0, 2])")
-   => {"same":true,"prolog":["X = 8","X = 0","X = 2"],"detlog":["X = 8","X = 0","X = 2"],"mnn":["X = 8","X = 0","X = 2"],"back":["X = 8","X = 0","X = 2"],"proof_checks":12,"proof_failed":[]}
+   => {"same":true,"prolog":["X = 8","X = 0","X = 2"],"detlog":["X = 8","X = 0","X = 2"],"mnn":["X = 8","X = 0","X = 2"],"back":["X = 8","X = 0","X = 2"],"proof_checks":20,"proof_failed":[]}
 37. newton_fit([7,6,-5])
    => {"formula":null}
 38. s2a_formula([[1,4,"y",3],[2,6,"y",6],[3,8,"y",11],[4,10,"y",18]])
@@ -95,11 +95,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 47. run_prolog("max", "mx(-1, 4, M)")
    => {"ok":true,"answers":["M = 4"],"output":"","error":null}
 48. convert("sum", "sum([5], S)", "mnn")
-   => {"mode":"mnn","clauses":13,"errors":[],"warnings":0,"cut_free":true,"heads":["sum__cp(A__1, A__2, R__0) :-","sum__c1(A__1, A__2, R__0) :-","sum__c2(A__1, A__2, R__0) :-"]}
+   => {"mode":"mnn","form":"streams","clauses":13,"stream_clauses":8,"errors":[],"warnings":0,"cut_free":true,"heads":["sum__k(A__1, A__2, K__0) :-"]}
 49. convert_and_back("greet")
    => {"same_clauses":true,"back":["greet(N) :-","    write(hello(N)),","    nl.","greet_all([]).","greet_all([H|T]) :-","    greet(H),","    greet_all(T)."],"warnings":0}
 50. analyse("append", "app(X, Y, [6, 3, 3])")
-   => {"same":true,"prolog":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"detlog":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"mnn":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"back":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"proof_checks":14,"proof_failed":[]}
+   => {"same":true,"prolog":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"detlog":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"mnn":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"back":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"proof_checks":23,"proof_failed":[]}
 51. newton_fit([-1,3,7,11,15,19])
    => {"differences":[-1,4],"formula":"4*I - 1"}
 52. s2a_formula([[1,4,"x",1],[2,8,"x",4],[3,12,"x",9]])
@@ -123,11 +123,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 61. run_prolog("last", "last([3, 7, 1], X)")
    => {"ok":true,"answers":["X = 1"],"output":"","error":null}
 62. convert("member", "mem(X, [6, 5, 0, 1])", "mnn")
-   => {"mode":"mnn","clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__cp(A__1, A__2, R__0) :-","mem__c1(A__1, A__2, R__0) :-","mem__c2(A__1, A__2, R__0) :-"]}
+   => {"mode":"mnn","form":"streams","clauses":4,"stream_clauses":5,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__k1(X, [X|U__1], K__1) :-","mem__k2(X, [U__1|T], K__2) :-","mem__k(A__1, A__2, K__0) :-"]}
 63. convert_and_back("reverse")
    => {"same_clauses":true,"back":["rev(L, R) :-","    rev(L, [], R).","rev([], A, A).","rev([H|T], A, R) :-","    rev(T, [H|A], R)."],"warnings":0}
 64. analyse("length", "len([6, 0, 0], N)")
-   => {"same":true,"prolog":["N = 3"],"detlog":["N = 3"],"mnn":["N = 3"],"back":["N = 3"],"proof_checks":14,"proof_failed":[]}
+   => {"same":true,"prolog":["N = 3"],"detlog":["N = 3"],"mnn":["N = 3"],"back":["N = 3"],"proof_checks":23,"proof_failed":[]}
 65. newton_fit([-5,-3,1,7,15,25])
    => {"differences":[-5,2,2],"formula":"I*I + I - 5"}
 66. s2a_formula([[1,6,"x",3],[2,10,"x",6],[3,14,"x",11],[4,18,"x",18],[5,22,"x",27]])
@@ -151,11 +151,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 75. run_prolog("double", "dbls([0, 1, 7, 0], R)")
    => {"ok":true,"answers":["R = [0, 2, 14, 0]"],"output":"","error":null}
 76. convert("greet", "greet_all([3, 9, 8])", "mnn")
-   => {"mode":"mnn","clauses":9,"errors":[],"warnings":0,"cut_free":true,"heads":["greet__cp(A__1, R__0) :-","greet_all__cp(A__1, R__0) :-","greet_all__c1(A__1, R__0) :-","greet_all__c2(A__1, R__0) :-"]}
+   => {"mode":"mnn","form":"streams","clauses":9,"stream_clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["greet__k(N, K__1) :-","greet_all__k1([], K__2) :-","greet_all__k2([H|T], K__3) :-","greet_all__k(A__1, K__0) :-"]}
 77. convert_and_back("factorial")
    => {"same_clauses":true,"back":["fact(0, 1) :-","    !.","fact(N, F) :-","    N1 is N-1,","    fact(N1, F1),","    F is N*F1."],"warnings":0}
 78. analyse("last", "last([2, 1, 9], X)")
-   => {"same":true,"prolog":["X = 9"],"detlog":["X = 9"],"mnn":["X = 9"],"back":["X = 9"],"proof_checks":14,"proof_failed":[]}
+   => {"same":true,"prolog":["X = 9"],"detlog":["X = 9"],"mnn":["X = 9"],"back":["X = 9"],"proof_checks":23,"proof_failed":[]}
 79. newton_fit([-2,-6,-10])
    => {"differences":[-2,-4],"formula":"-4*I - 2"}
 80. s2a_formula([[1,5,"x",4],[2,7,"x",7],[3,9,"x",12]])
@@ -179,11 +179,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 89. run_prolog("evens", "evens([1], R)")
    => {"ok":true,"answers":["R = []"],"output":"","error":null}
 90. convert("double", "dbls([9, 5], R)", "mnn")
-   => {"mode":"mnn","clauses":19,"errors":[],"warnings":0,"cut_free":true,"heads":["dbl__cp(A__1, A__2, R__0) :-","dbls__cp(A__1, A__2, R__0) :-","dbls__c1(A__1, A__2, R__0) :-","dbls__c2(A__1, A__2, R__0) :-"]}
+   => {"mode":"mnn","form":"streams","clauses":19,"stream_clauses":11,"errors":[],"warnings":0,"cut_free":true,"heads":["dbl__k(A__1, A__2, K__0) :-","dbls__k(A__1, A__2, K__0) :-"]}
 91. convert_and_back("factorial")
    => {"same_clauses":true,"back":["fact(0, 1) :-","    !.","fact(N, F) :-","    N1 is N-1,","    fact(N1, F1),","    F is N*F1."],"warnings":0}
 92. analyse("length", "len([6, 7, 1, 0], N)")
-   => {"same":true,"prolog":["N = 4"],"detlog":["N = 4"],"mnn":["N = 4"],"back":["N = 4"],"proof_checks":14,"proof_failed":[]}
+   => {"same":true,"prolog":["N = 4"],"detlog":["N = 4"],"mnn":["N = 4"],"back":["N = 4"],"proof_checks":23,"proof_failed":[]}
 93. newton_fit([5,5,3,-1,-7,-15])
    => {"differences":[5,0,-2],"formula":"-I*I + I + 5"}
 94. s2a_formula([[1,1,"x",1],[2,2,"x",4],[3,3,"x",9]])
@@ -207,11 +207,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 103. run_prolog("reverse", "rev([], R)")
    => {"ok":true,"answers":["R = []"],"output":"","error":null}
 104. convert("max", "mx(-1, 6, M)", "plain")
-   => {"mode":"plain","clauses":2,"errors":[],"warnings":0,"cut_free":true,"heads":["mx__cp(A__1, A__2, A__3, R__0) :-"]}
+   => {"mode":"plain","form":"streams","clauses":2,"stream_clauses":3,"errors":[],"warnings":0,"cut_free":true,"heads":["mx__k(A__1, A__2, A__3, K__1) :-"]}
 105. convert_and_back("greet")
    => {"same_clauses":true,"back":["greet(N) :-","    write(hello(N)),","    nl.","greet_all([]).","greet_all([H|T]) :-","    greet(H),","    greet_all(T)."],"warnings":0}
 106. analyse("double", "dbls([1, 5], R)")
-   => {"same":true,"prolog":["R = [2, 10]"],"detlog":["R = [2, 10]"],"mnn":["R = [2, 10]"],"back":["R = [2, 10]"],"proof_checks":16,"proof_failed":[]}
+   => {"same":true,"prolog":["R = [2, 10]"],"detlog":["R = [2, 10]"],"mnn":["R = [2, 10]"],"back":["R = [2, 10]"],"proof_checks":26,"proof_failed":[]}
 107. newton_fit([1,6,15,28,45])
    => {"differences":[1,5,4],"formula":"2*I*I + 3*I + 1"}
 108. s2a_formula([[1,2,"x",1],[2,4,"x",4],[3,6,"x",9],[4,8,"x",16]])
@@ -235,11 +235,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 117. run_prolog("grade", "grade(56, G)")
    => {"ok":true,"answers":["G = c"],"output":"","error":null}
 118. convert("last", "last([4, 3, 0], X)", "mnn")
-   => {"mode":"mnn","clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["last__cp(A__1, A__2, R__0) :-"]}
+   => {"mode":"mnn","form":"streams","clauses":7,"stream_clauses":5,"errors":[],"warnings":0,"cut_free":true,"heads":["last__k(A__1, A__2, K__0) :-"]}
 119. convert_and_back("last")
    => {"same_clauses":true,"back":["last([X], X) :-","    !.","last([_|T], X) :-","    last(T, X)."],"warnings":0}
 120. analyse("max", "mx(-9, -4, M)")
-   => {"same":true,"prolog":["M = -4"],"detlog":["M = -4"],"mnn":["M = -4"],"back":["M = -4"],"proof_checks":14,"proof_failed":[]}
+   => {"same":true,"prolog":["M = -4"],"detlog":["M = -4"],"mnn":["M = -4"],"back":["M = -4"],"proof_checks":23,"proof_failed":[]}
 121. newton_fit([-2,5,16,31,50])
    => {"differences":[-2,7,4],"formula":"2*I*I + 5*I - 2"}
 122. s2a_formula([[1,2,"x",2],[2,3,"x",5],[3,4,"x",10],[4,5,"x",17],[5,6,"x",26],[6,7,"x",37]])
@@ -263,11 +263,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 131. run_prolog("sum", "sum([8, 5], S)")
    => {"ok":true,"answers":["S = 13"],"output":"","error":null}
 132. convert("double", "dbls([8], R)", "plain")
-   => {"mode":"plain","clauses":9,"errors":[],"warnings":0,"cut_free":true,"heads":["dbl__cp(A__1, A__2, R__0) :-","dbls__cp(A__1, A__2, R__0) :-","dbls__c1(A__1, A__2, R__0) :-","dbls__c2(A__1, A__2, R__0) :-"]}
+   => {"mode":"plain","form":"streams","clauses":9,"stream_clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["dbl__k(X, Y, K__1) :-","dbls__k1([], [], K__2) :-","dbls__k2([H|T], [D|R], K__3) :-","dbls__k(A__1, A__2, K__0) :-"]}
 133. convert_and_back("evens")
    => {"same_clauses":true,"back":["evens([], []).","evens([H|T], [H|R]) :-","    0 is H mod 2,","    !,","    evens(T, R).","evens([_|T], R) :-","    evens(T, R)."],"warnings":0}
 134. analyse("length", "len([3], N)")
-   => {"same":true,"prolog":["N = 1"],"detlog":["N = 1"],"mnn":["N = 1"],"back":["N = 1"],"proof_checks":14,"proof_failed":[]}
+   => {"same":true,"prolog":["N = 1"],"detlog":["N = 1"],"mnn":["N = 1"],"back":["N = 1"],"proof_checks":23,"proof_failed":[]}
 135. newton_fit([1,0,-1,-2])
    => {"differences":[1,-1],"formula":"-I + 1"}
 136. s2a_formula([[1,6,"x",3],[2,10,"x",6],[3,14,"x",11],[4,18,"x",18],[5,22,"x",27]])
@@ -291,11 +291,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 145. run_prolog("append", "app([5, 9, 8], [4, 5], Z)")
    => {"ok":true,"answers":["Z = [5, 9, 8, 4, 5]"],"output":"","error":null}
 146. convert("member", "mem(X, [8, 3, 7, 8])", "mnn")
-   => {"mode":"mnn","clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__cp(A__1, A__2, R__0) :-","mem__c1(A__1, A__2, R__0) :-","mem__c2(A__1, A__2, R__0) :-"]}
+   => {"mode":"mnn","form":"streams","clauses":4,"stream_clauses":5,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__k1(X, [X|U__1], K__1) :-","mem__k2(X, [U__1|T], K__2) :-","mem__k(A__1, A__2, K__0) :-"]}
 147. convert_and_back("double")
    => {"same_clauses":true,"back":["dbl(X, Y) :-","    Y is 2*X.","dbls([], []).","dbls([H|T], [D|R]) :-","    dbl(H, D),","    dbls(T, R)."],"warnings":0}
 148. analyse("greet", "greet_all([4])")
-   => {"same":true,"prolog":["true"],"detlog":["true"],"mnn":["true"],"back":["true"],"proof_checks":12,"proof_failed":[]}
+   => {"same":true,"prolog":["true"],"detlog":["true"],"mnn":["true"],"back":["true"],"proof_checks":20,"proof_failed":[]}
 149. newton_fit([1,1,-9,-35,-83,-159,-269])
    => {"differences":[1,0,-10,-6],"formula":"-I*I*I - 2*I*I + 3*I + 1"}
 150. s2a_formula([[1,4,"y",4],[2,5,"y",7],[3,6,"y",12],[4,7,"y",19],[5,8,"y",28]])
@@ -319,11 +319,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 159. run_prolog("evens", "evens([2, 4, 9, 8, 1], R)")
    => {"ok":true,"answers":["R = [2, 4, 8]"],"output":"","error":null}
 160. convert("greet", "greet_all([])", "mnn")
-   => {"mode":"mnn","clauses":9,"errors":[],"warnings":0,"cut_free":true,"heads":["greet__cp(A__1, R__0) :-","greet_all__cp(A__1, R__0) :-","greet_all__c1(A__1, R__0) :-","greet_all__c2(A__1, R__0) :-"]}
+   => {"mode":"mnn","form":"streams","clauses":9,"stream_clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["greet__k(N, K__1) :-","greet_all__k1([], K__2) :-","greet_all__k2([H|T], K__3) :-","greet_all__k(A__1, K__0) :-"]}
 161. convert_and_back("sum")
    => {"same_clauses":true,"back":["sum([], 0).","sum([H|T], S) :-","    sum(T, S1),","    S is S1+H."],"warnings":0}
 162. analyse("length", "len([], N)")
-   => {"same":true,"prolog":["N = 0"],"detlog":["N = 0"],"mnn":["N = 0"],"back":["N = 0"],"proof_checks":14,"proof_failed":[]}
+   => {"same":true,"prolog":["N = 0"],"detlog":["N = 0"],"mnn":["N = 0"],"back":["N = 0"],"proof_checks":23,"proof_failed":[]}
 163. newton_fit([-3,3,21,57])
    => {"formula":null}
 164. s2a_formula([[1,2,"x",2],[2,3,"x",5],[3,4,"x",10]])
@@ -347,11 +347,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 173. run_prolog("evens", "evens([], R)")
    => {"ok":true,"answers":["R = []"],"output":"","error":null}
 174. convert("factorial", "fact(4, F)", "plain")
-   => {"mode":"plain","clauses":6,"errors":[],"warnings":0,"cut_free":true,"heads":["fact__cp(A__1, A__2, R__0) :-"]}
+   => {"mode":"plain","form":"streams","clauses":6,"stream_clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["fact__k(A__1, A__2, K__1) :-"]}
 175. convert_and_back("double")
    => {"same_clauses":true,"back":["dbl(X, Y) :-","    Y is 2*X.","dbls([], []).","dbls([H|T], [D|R]) :-","    dbl(H, D),","    dbls(T, R)."],"warnings":0}
 176. analyse("evens", "evens([9], R)")
-   => {"same":true,"prolog":["R = []"],"detlog":["R = []"],"mnn":["R = []"],"back":["R = []"],"proof_checks":12,"proof_failed":[]}
+   => {"same":true,"prolog":["R = []"],"detlog":["R = []"],"mnn":["R = []"],"back":["R = []"],"proof_checks":20,"proof_failed":[]}
 177. newton_fit([4,2,-4])
    => {"formula":null}
 178. s2a_formula([[1,3,"x",1],[2,6,"x",4],[3,9,"x",9],[4,12,"x",16]])
@@ -375,11 +375,11 @@ pl2detlog: 200 inputs and outputs, from real runs (npm run ios writes this file;
 187. run_prolog("last", "last([3], X)")
    => {"ok":true,"answers":["X = 3"],"output":"","error":null}
 188. convert("last", "last([3, 5, 7, 9], X)", "mnn")
-   => {"mode":"mnn","clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["last__cp(A__1, A__2, R__0) :-"]}
+   => {"mode":"mnn","form":"streams","clauses":7,"stream_clauses":5,"errors":[],"warnings":0,"cut_free":true,"heads":["last__k(A__1, A__2, K__0) :-"]}
 189. convert_and_back("double")
    => {"same_clauses":true,"back":["dbl(X, Y) :-","    Y is 2*X.","dbls([], []).","dbls([H|T], [D|R]) :-","    dbl(H, D),","    dbls(T, R)."],"warnings":0}
 190. analyse("greet", "greet_all([3, 8])")
-   => {"same":true,"prolog":["true"],"detlog":["true"],"mnn":["true"],"back":["true"],"proof_checks":12,"proof_failed":[]}
+   => {"same":true,"prolog":["true"],"detlog":["true"],"mnn":["true"],"back":["true"],"proof_checks":20,"proof_failed":[]}
 191. newton_fit([2,-1,-6,-13,-22,-33,-46])
    => {"differences":[2,-3,-2],"formula":"-I*I - 2*I + 2"}
 192. s2a_formula([[1,4,"x",1],[2,8,"x",4],[3,12,"x",9],[4,16,"x",16],[5,20,"x",25],[6,24,"x",36]])

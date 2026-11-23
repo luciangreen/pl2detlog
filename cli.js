@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pl2detlog command line:  node cli.js prog.pl -q "fib(10, F)" [-q ...] [--plain] [--detlog out.pl] [--c out.c [--best] [--checked] [--run [REPS]]] [--back out.pl] [--proof proof.txt] [--stats]
+// pl2detlog command line:  node cli.js prog.pl -q "fib(10, F)" [-q ...] [--plain] [--packets] [--detlog out.pl] [--c out.c [--best] [--checked] [--run [REPS]]] [--back out.pl] [--proof proof.txt] [--stats]
 const fs = require('fs'); const path = require('path');
 for (const f of ['core', 'engine', 'builtins', 'convert', 'stream', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref']) require('./src/' + f + '.js');
 const P = globalThis.PL2D;
@@ -11,14 +11,14 @@ for (let i = 0; i < args.length; i++) {
   else if (a.startsWith('--')) o[a.slice(2)] = (args[i + 1] && !args[i + 1].startsWith('-')) ? args[++i] : true;
   else o.file = a;
 }
-if (!o.file) { console.log('usage: node cli.js prog.pl -q QUERY [-q QUERY...] [--plain] [--detlog OUT.pl] [--c OUT.c [--run [REPS]]] [--back OUT.pl] [--proof OUT.txt] [--stats] [--sweep TEMPLATE --values 1..10]'); process.exit(1); }
+if (!o.file) { console.log('usage: node cli.js prog.pl -q QUERY [-q QUERY...] [--plain] [--packets] [--detlog OUT.pl] [--c OUT.c [--run [REPS]]] [--back OUT.pl] [--proof OUT.txt] [--stats] [--sweep TEMPLATE --values 1..10]'); process.exit(1); }
 const src = fs.readFileSync(o.file, 'utf8');
 const r = P.analyse(src, qs, { timing: !!o.stats, sweep: o.sweep ? { template: o.sweep, values: o.values || '1..10' } : null });
 if (r.errors.length) console.error(r.errors.join('\n'));
 const conv = o.plain ? r.plain : r.mnn;
-const rt = fs.readFileSync(path.join(__dirname, 'src/detlog_runtime.pl'), 'utf8');
-// --streams: the plain Detlog as answer streams (no packets)
-const detlogText = o.streams ? (r.plain.streamText || conv.text) : conv.text;
+// the Detlog: answer streams (the default), or --packets for the packet code; with its SWI-Prolog runtime
+const detlogText = o.packets ? conv.packetText : conv.text;
+const rt = fs.readFileSync(path.join(__dirname, 'src/detlog_runtime.pl'), 'utf8') + (o.packets ? '' : '\n' + fs.readFileSync(path.join(__dirname, 'src/detlog_stream_rt.pl'), 'utf8'));
 if (o.detlog) fs.writeFileSync(o.detlog, ':- style_check(-singleton).\n' + rt + '\n' + detlogText);
 else if (!o.c && !o.back && !o.proof && !o.stats) process.stdout.write(detlogText);
 // --best: build the MNN program and the plain one (no determinism rewrites), time each as a whole process
@@ -26,7 +26,7 @@ else if (!o.c && !o.back && !o.proof && !o.stats) process.stdout.write(detlogTex
 let chosen = conv;
 if (o.c && o.best) {
   const cp = require('child_process');
-  const build = (c, tag) => { const f = o.c.replace(/\.c$/, '') + '.' + tag; fs.writeFileSync(f + '.c', P.toC(c.text, { queries: c.queries, source: c.source, checked: !!o.checked }).code); cp.execFileSync(process.env.CC || 'cc', ['-O2', '-w', '-o', f, f + '.c', '-lm']); return f; };
+  const build = (c, tag) => { const f = o.c.replace(/\.c$/, '') + '.' + tag; fs.writeFileSync(f + '.c', P.toC(o.packets ? c.packetText : c.text, { queries: c.queries, source: c.source, checked: !!o.checked }).code); cp.execFileSync(process.env.CC || 'cc', ['-O2', '-w', '-o', f, f + '.c', '-lm']); return f; };
   const wall = (exe, args) => { const ts = []; for (let i = 0; i < 7; i++) { const t = process.hrtime.bigint(); cp.execFileSync(exe, args); ts.push(Number(process.hrtime.bigint() - t) / 1e6); } return ts.sort((a, b) => a - b)[3]; };
   const perRun = exe => { const out = cp.execFileSync(exe, ['-r', '200', '--no-ref']).toString(); return [...out.matchAll(/ ([0-9.]+) ms per run$/gm)].reduce((s, m) => s + +m[1], 0); };
   const cands = [['MNN', r.mnn], ['plain', r.plain]].map(([name, c]) => { const exe = build(c, name.toLowerCase()); return { name, c, exe, process: wall(exe, ['--no-ref']), run: perRun(exe) }; });
@@ -35,7 +35,7 @@ if (o.c && o.best) {
   console.error('kept ' + best.name + ' (faster as a process, startup included)');
   chosen = best.c;
 }
-if (o.c) fs.writeFileSync(o.c, P.toC(chosen.text, { queries: chosen.queries, source: chosen.source, checked: !!o.checked }).code); // --checked: step limit and type tests
+if (o.c) fs.writeFileSync(o.c, P.toC(o.packets ? chosen.packetText : chosen.text, { queries: chosen.queries, source: chosen.source, checked: !!o.checked }).code); // --checked: step limit and type tests
 // --run: build the C with cc -O2 and run it.  Without REPS, one run sets the repetitions (about 0.3 s for
 // the slowest query).  For a query that runs a benchmark algorithm the program also times the hand-written
 // C and prints its own speed as a % of C's.

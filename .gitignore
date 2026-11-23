@@ -1,3 +1,8 @@
 node_modules/
 *.o
 /tmp/
+# pl2detlog.pl test and benchmark output
+.pl2detlog_test_tmp/
+.pl2detlog_bench_tmp/
+test/prolog/multi/main_detlog/
+test/prolog/multi/main_mnn/

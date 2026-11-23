@@ -58,7 +58,7 @@ From SWI-Prolog:
 ?- pl2detlog_check('prog.pl', [query("fib(21, F)")], Results).   % time and compare, no build
 ```
 
-`compile` prints, for example:
+For `examples/fib.pl` with the query `fib(21, F), print(F), nl`, `compile` prints:
 
 ```
 % form      time per run      output
@@ -68,6 +68,17 @@ From SWI-Prolog:
 % fastest: mnn
 % built /home/me/fib (mnn form)
 ```
+
+**Why Prolog is slower here.** `fib(N, F)` calls `fib(N-1, _)` and `fib(N-2, _)`, so Prolog computes the same values again and again.
+
+- **Prolog:** `fib(21, F)` makes 35,421 calls, about 1.6 times as many as for `fib(20, F)`. The time grows exponentially with N.
+- **MNN:** the MEMO rule finds that `fib/2` is pure, deterministic and tree-recursive, and is called with a ground input and a fresh output. It adds `:- table fib/2`, so each `fib(K, _)` is computed once and then looked up. `fib(21, F)` needs only 22 computations, `fib(0)` to `fib(21)`, so the time grows linearly. Here that is 36 times faster, and for `fib(25, F)` about 275 times.
+- **Plain Detlog:** it has no MEMO, so it makes Prolog's 35,421 calls too. Each call also costs more. Without MNN's guard rule, plain Detlog cannot see that `N > 1` rules out `fib(0, 0)` and `fib(1, 1)`, so it treats `fib/2` as nondeterministic. Every call therefore:
+  - tests all three clauses;
+  - builds a list of its answers;
+  - loops over each recursive call's list, copying variables for every answer.
+
+The answer is the same in all three, and `compile` checks this before choosing. The speed-up comes from computing each value once, not from faster code.
 
 **When to name the main predicate.** `compile` runs the program's `initialization(main, main)` goal or its `main/0`. If it has neither, give `-g Name` or `-q "Goal"`. `-q` takes any goal, so it can compile a query such as `queens(8, Qs), print(Qs), nl`. The executable runs the goal's first answer once, as `swipl -g Goal` does. `convert` needs no query, but with one the modes are known and more of the program stays deterministic (see "Limits" below).
 

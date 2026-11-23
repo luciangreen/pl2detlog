@@ -934,6 +934,8 @@ ord_add_element(S, E, S2) :- ord_union(S, [E], S2).
 ord_del_element(S, E, S2) :- ord_subtract(S, [E], S2).
 ord_empty([]).
 sumlist(L, S) :- sum_list(L, S).
+nextto(X, Y, [X, Y|_]).
+nextto(X, Y, [_|Zs]) :- nextto(X, Y, Zs).
 partition(P, L, I, E, G) :- '$partition5'(L, P, I, E, G).
 '$partition5'([], _, [], [], []).
 '$partition5'([H|T], P, I, E, G) :- call(P, O, H), '$partition5_'(O, H, P, T, I, E, G).

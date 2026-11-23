@@ -1603,6 +1603,7 @@ details > summary { cursor: pointer; font-weight: 600; }
       case 'alpha': ok = /[\p{L}\p{N}_]/u.test(ch); break;
       case 'alnum': ok = /[\p{L}\p{N}]/u.test(ch); break;
       case 'digit': if (ty.t === 'c') { if (/[0-9]/.test(ch)) { if (e.unify(ty.a[0], Int(+ch))) yield 'last'; } return; } ok = /[0-9]/.test(ch); break;
+      case 'xdigit': { const w = /^[0-9a-fA-F]$/.test(ch) ? parseInt(ch, 16) : -1; if (ty.t === 'c') { if (w >= 0 && e.unify(ty.a[0], Int(w))) yield 'last'; return; } ok = w >= 0; break; }
       case 'space': case 'white': ok = /\s/.test(ch); break;
       case 'upper': if (ty.t === 'c') { if (ch !== ch.toLowerCase() || /[A-Z]/.test(ch)) { if (e.unify(ty.a[0], Atom(ch.toLowerCase()))) yield 'last'; } return; } ok = /\p{Lu}/u.test(ch); break;
       case 'lower': if (ty.t === 'c') { if (/\p{Ll}/u.test(ch)) { if (e.unify(ty.a[0], Atom(ch.toUpperCase()))) yield 'last'; } return; } ok = /\p{Ll}/u.test(ch); break;
@@ -1616,7 +1617,7 @@ details > summary { cursor: pointer; font-weight: 600; }
     }
     if (ok) yield 'last';
   });
-  det('code_type/2', (a, e) => { const c = D(a[0]); const ch = c.t === 'n' ? String.fromCodePoint(c.v) : c.n; const ty = P.name(a[1]); if (ty === 'digit' && D(a[1]).t === 'c') return /[0-9]/.test(ch) && e.unify(D(a[1]).a[0], Int(+ch)); const re = { alpha: /[A-Za-z0-9_]/, alnum: /[A-Za-z0-9]/, digit: /[0-9]/, space: /\s/, white: /[ \t]/, upper: /[A-Z]/, lower: /[a-z]/, punct: /[!-\/:-@\[-`{-~]/, csym: /[A-Za-z0-9_]/, csymf: /[A-Za-z_]/ }[ty]; return re ? re.test(ch) : false; });
+  det('code_type/2', (a, e) => { const c = D(a[0]); const ch = c.t === 'n' ? String.fromCodePoint(c.v) : c.n; const ty = P.name(a[1]); if (ty === 'digit' && D(a[1]).t === 'c') return /[0-9]/.test(ch) && e.unify(D(a[1]).a[0], Int(+ch)); if (ty === 'xdigit' && D(a[1]).t === 'c') return /^[0-9a-fA-F]$/.test(ch) && e.unify(D(a[1]).a[0], Int(parseInt(ch, 16))); const re = { xdigit: /^[0-9a-fA-F]$/, alpha: /[A-Za-z0-9_]/, alnum: /[A-Za-z0-9]/, digit: /[0-9]/, space: /\s/, white: /[ \t]/, upper: /[A-Z]/, lower: /[a-z]/, punct: /[!-\/:-@\[-`{-~]/, csym: /[A-Za-z0-9_]/, csymf: /[A-Za-z_]/ }[ty]; return re ? re.test(ch) : false; });
 
   // lists
   nondet('between/3', function* (a, e) {
@@ -2768,6 +2769,8 @@ ord_add_element(S, E, S2) :- ord_union(S, [E], S2).
 ord_del_element(S, E, S2) :- ord_subtract(S, [E], S2).
 ord_empty([]).
 sumlist(L, S) :- sum_list(L, S).
+nextto(X, Y, [X, Y|_]).
+nextto(X, Y, [_|Zs]) :- nextto(X, Y, Zs).
 partition(P, L, I, E, G) :- '$partition5'(L, P, I, E, G).
 '$partition5'([], _, [], [], []).
 '$partition5'([H|T], P, I, E, G) :- call(P, O, H), '$partition5_'(O, H, P, T, I, E, G).

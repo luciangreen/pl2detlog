@@ -231,7 +231,7 @@
         hargs.forEach((h, i) => { code += match(h, A[i]); });
         return code;
       };
-      const bodyCode = (fail) => { mentioned = new Set(termVars(cl.head)); return goal(cl.body, slot, fail); };
+      const bodyCode = (fail) => { mentioned = new Set(termVars(cl.head)); tails = tailGoals(cl.body); const c = goal(cl.body, slot, fail); tails = NOTAILS; return c; };
       const inlineHead = mk('{ E.undo(m0); return false; }');
       const inl = decl + 'const m0 = E.trail.length;\n' + inlineHead + bodyCode('return false;') + 'return true;';
       const fnHead = mk('{ E.undo(m0); return undefined; }');
@@ -259,6 +259,19 @@
       if (t.a.length === 2 && ARITH2[t.f]) { const a = arith(t.a[0], slot), b = arith(t.a[1], slot); return a && b ? '(Number.isSafeInteger(q2 = ' + a + ' ' + ARITH2[t.f] + ' ' + b + ') ? q2 : (bad = true, 0))' : null; }
       if (t.a.length === 1 && t.f === '-') { const a = arith(t.a[0], slot); return a ? '(-' + a + ')' : null; }
       return null;
+    }
+    // tail calls: a call whose success is the clause's success (the last goal of the body, or of a branch of
+    // a final if_commit/3) returns a tail-call record instead of calling, and RUN, at every other call site,
+    // runs the records in a loop.  Answer streams pass each answer on by such calls (p__k(.., K) ... dl_k(K)),
+    // so without this the JavaScript stack grows with every answer of a long computation (plain nrev 300).
+    const NOTAILS = new Set(); let tails = NOTAILS;
+    function tailGoals(b) {
+      const out = new Set();
+      (function walk(g) { g = D(g);
+        if (g.t === 'c' && g.f === ',' && g.a.length === 2) { const gs = P.flatConj(g); walk(gs[gs.length - 1]); return; }
+        if (g.t === 'c' && g.f === 'if_commit' && g.a.length === 3) { walk(g.a[1]); walk(g.a[2]); return; }
+        out.add(g); })(b);
+      return out;
     }
     function goal(g, slot, FAIL) {
       const code = goal0(g, slot, FAIL); mention(g); return code;
@@ -419,12 +432,13 @@
           if (pw) {
             const L = 'L' + (lab++);
             return TICK + '\n{ const xs' + L + ' = D(' + as[1] + ').t === \'a\' && D(' + as[1] + ').n === \'[]\' ? LA(' + as[0] + ') : null; let h' + L + ';\n' +
-              'if (xs' + L + ' && D(' + as[2] + ').t === \'v\') h' + L + ' = PWK(xs' + L + ', (p, yv, dist) => ' + pw.code('p', 'yv', 'dist', true) + ', ' + pw.c0 + ', (l) => { const m = E.trail.length; if (E.unify(' + as[2] + ', l) && ' + fname.get('dl_k/1') + '(' + as[3] + ', E)) return true; E.undo(m); return false; }, E);\n' +
-              'if (h' + L + ' === undefined) { if (!' + fname.get(k) + '(' + as.concat(['E']).join(', ') + ')) ' + FAIL + ' } else if (!h' + L + ') ' + FAIL + '\n}\n';
+              'if (xs' + L + ' && D(' + as[2] + ').t === \'v\') h' + L + ' = PWK(xs' + L + ', (p, yv, dist) => ' + pw.code('p', 'yv', 'dist', true) + ', ' + pw.c0 + ', (l) => { const m = E.trail.length; if (E.unify(' + as[2] + ', l) && RUN(' + fname.get('dl_k/1') + '(' + as[3] + ', E))) return true; E.undo(m); return false; }, E);\n' +
+              'if (h' + L + ' === undefined) { if (!RUN(' + fname.get(k) + '(' + as.concat(['E']).join(', ') + '))) ' + FAIL + ' } else if (!h' + L + ') ' + FAIL + '\n}\n';
           }
         }
-        if (/__d$/.test(g.f) && !/__d$/.test(curPred)) return '{ const h = NATE(' + JSON.stringify(k) + ', [' + as.join(', ') + '], E); if (h === undefined && !' + fname.get(k) + '(' + as.concat(['E']).join(', ') + ')) ' + FAIL + ' }\n';
-        return 'if (!' + fname.get(k) + '(' + as.concat(['E']).join(', ') + ')) ' + FAIL + '\n';
+        if (/__d$/.test(g.f) && !/__d$/.test(curPred)) return '{ const h = NATE(' + JSON.stringify(k) + ', [' + as.join(', ') + '], E); if (h === undefined && !RUN(' + fname.get(k) + '(' + as.concat(['E']).join(', ') + '))) ' + FAIL + ' }\n';
+        if (tails.has(g) && FAIL === 'return false;') return 'return (TQ.f = ' + fname.get(k) + ', TQ.a = [' + as.concat(['E']).join(', ') + '], TQ);\n';
+        return 'if (!RUN(' + fname.get(k) + '(' + as.concat(['E']).join(', ') + '))) ' + FAIL + '\n';
       }
       const rb = RBf(k);
       if (rb) return TICK + '\n{ const m = E.trail.length; if (!' + rb + '([' + as.join(', ') + '], E)) { E.undo(m); ' + FAIL + ' } }\n';
@@ -439,7 +453,7 @@
       if (sh && fname.has(sh.callKey)) {
         const cf = fname.get(sh.callKey);
         out.push('function ' + fname.get(k) + '(' + sig + ') {\n' + TICK +
-          '\nconst items = LA(a0); if (!items) return false; const res = [];\nfor (let i = 0; i < items.length; i++) {\nE.steps += 2; if (E.steps > E.stepLimit) OVER(E);\nconst Ov = V(null);\nif (!' + cf + '(items[i], Ov, E)) return false;\nconst o1 = LA(Ov); E.steps += (o1.length || 1); if (E.steps > E.stepLimit) OVER(E);\n' +
+          '\nconst items = LA(a0); if (!items) return false; const res = [];\nfor (let i = 0; i < items.length; i++) {\nE.steps += 2; if (E.steps > E.stepLimit) OVER(E);\nconst Ov = V(null);\nif (!RUN(' + cf + '(items[i], Ov, E))) return false;\nconst o1 = LA(Ov); E.steps += (o1.length || 1); if (E.steps > E.stepLimit) OVER(E);\n' +
           (sh.cutVariant ? 'let hc = false; for (const x of o1) { res.push(x); const xd = D(x); if (xd.t === "a" && xd.n === "cut") hc = true; }\nif (hc) { const it = D(items[i]); if (it.t === "c" && it.f === "e") break; }\n' : 'for (let j = 0; j < o1.length; j++) res.push(o1[j]);\n') +
           '}\nreturn E.unify(a1, LIST(res));\n}');
         continue;
@@ -637,9 +651,12 @@
     const src = '"use strict";\n' + out.join('\n') + '\nreturn {' + [...fname].map(([k, f]) => JSON.stringify(k) + ': ' + f).join(', ') + '};';
     const OVER = E => { throw new P.LimitError('step limit (' + E.stepLimit + ') exceeded'); };
     const BADV = { t: 'v', ref: null }; // stands for a variable that was never created (an unbound leaf)
-    const fns = new Function('K', 'RB', 'D', 'V', 'LA', 'LIST', 'OVER', 'INT', 'COPY', 'BADV', 'NATE', 'PERMS', 'LIMIT', 'PERMSPW', 'PWK', src)(consts, rbs, D, Var, listToArray, list, OVER, P.Int, P.copy, BADV, natEntry, perms, P.LimitError, permsPW, permsPWK);
+    // the tail-call record (one per program: a record is run before the next is made)
+    const TQ = { f: null, a: null };
+    const RUNTC = r => { while (r === TQ) { const f = TQ.f, a = TQ.a; TQ.f = TQ.a = null; r = f.apply(null, a); } return r; };
+    const fns = new Function('K', 'RB', 'D', 'V', 'LA', 'LIST', 'OVER', 'INT', 'COPY', 'BADV', 'NATE', 'PERMS', 'LIMIT', 'PERMSPW', 'PWK', 'TQ', 'RUN', src)(consts, rbs, D, Var, listToArray, list, OVER, P.Int, P.copy, BADV, natEntry, perms, P.LimitError, permsPW, permsPWK, TQ, RUNTC);
     const preds = new Map();
-    for (const [k, f] of Object.entries(fns)) preds.set(k, { k, fn: (args, E) => f(...args, E), pos: f });
+    for (const [k, f] of Object.entries(fns)) preds.set(k, { k, fn: (args, E) => RUNTC(f(...args, E)), pos: (...a) => RUNTC(f(...a)) });
     return { preds, src, jit: true, nat: NAT };
   }
 

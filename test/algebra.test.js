@@ -5,7 +5,7 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert');
 const path = require('path');
-for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref', 'examples']) require(path.join(__dirname, '..', 'src', f + '.js'));
+for (const f of ['core', 'engine', 'builtins', 'convert', 'stream', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref', 'examples']) require(path.join(__dirname, '..', 'src', f + '.js'));
 const P = globalThis.PL2D;
 
 const answers = (src, q) => { const r = P.runQuery(P.loadProgram(src), P.readTerm(q), { stepLimit: 3e6, maxAnswers: 2000 }); return r.error ? 'error: ' + P.show(r.error) : r.answers.map(a => a.text).join('\n'); };

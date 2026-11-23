@@ -16,6 +16,9 @@ dl_bag_new('$bag'([])).
 dl_bag_add(B, T) :- duplicate_term(T, C), arg(1, B, L), nb_linkarg(1, B, [C|L]).
 dl_bag_list(B, L) :- arg(1, B, R), reverse(R, L).
 dl_bag_list(B, L, Tail) :- arg(1, B, R), dl_rev_onto(R, Tail, L).
+dl_bag_count(B, C) :- arg(1, B, R), dl_count_e(R, 0, C).
+dl_count_e([], C, C).
+dl_count_e([X|Xs], A, C) :- if_commit(X = e(_), A1 is A + 1, A1 = A), dl_count_e(Xs, A1, C).
 dl_rev_onto([], L, L).
 dl_rev_onto([X|Xs], A, L) :- dl_rev_onto(Xs, [X|A], L).
 

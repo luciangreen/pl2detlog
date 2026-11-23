@@ -72,6 +72,8 @@
       }
       // the clause chain, or the predicate's only clause
       const chainOf = (g, out) => { g = D(g);
+        // first-argument dispatch (k_index): its else branch is the chain of all the clauses
+        if (isC(g, 'if_commit', 3) && isC(g.a[0], 'nonvar', 1) && !out.length) return chainOf(g.a[2], out);
         if (isC(g, ',', 2) && isC(D(g.a[0]), 'dl_cut_off', 1)) return chainOf(g.a[1], out);
         if (isC(g, 'if_commit', 3) && isA(g.a[1], 'true') && D(g.a[0]).t === 'c' && prog.preds.has(P.key(g.a[0])) && /__k\w*\d+$/.test(D(g.a[0]).f)) { out.push(P.key(g.a[0])); return chainOf(g.a[2], out); }
         if (g.t === 'c' && prog.preds.has(P.key(g)) && /__k\w*\d+$/.test(g.f)) { out.push(P.key(g)); return out; }

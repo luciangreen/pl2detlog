@@ -40,6 +40,7 @@
 dl_k(true).
 dl_k(dl_collect(B, T)) :- dl_bag_add(B, T), fail.
 dl_k(dl_row(B, Vs)) :- dl_bag_row(B, Vs), fail.
+dl_k(dl_rowmax(B, Vs, N)) :- dl_bag_row(B, Vs), dl_bag_count(B, C), C >= N.
 dl_k(dl_rowk(Rs, Pat, K)) :- dl_rows_k(Rs, Pat, K).
 dl_member_k(L, X, K) :- L = [Y|Ys], if_commit(Ys == [], (X = Y, dl_k(K)), if_commit((X = Y, dl_k(K)), true, dl_member_k(Ys, X, K))).
 dl_between_k(I, H, X, K) :- dl_between_ok(I, H), if_commit((X = I, dl_k(K)), true, (I1 is I + 1, dl_between_k(I1, H, X, K))).
@@ -146,6 +147,17 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       const calls = cls.map(clauseGoal);
       let chain = calls[calls.length - 1];
       for (let j = calls.length - 2; j >= 0; j--) chain = Cmp('if_commit', [calls[j], TRUE, cut ? conj([Cmp('dl_cut_off', [C]), chain]) : chain]);
+      // first-argument indexing: clauses told apart by their first argument (a different principal functor,
+      // or an arithmetic guard that excludes the others' numbers) are dispatched, not tried in turn, when the
+      // argument is bound.  The clause that runs is then a tail call, so its answers do not leave a pending
+      // alternative on the stack (fib(0, 0), fib(1, 1), fib(N, F) :- N > 1, ...).
+      const ix = !cut && n > 0 ? indexTests(cls, A[0]) : null;
+      if (ix) {
+        let d = P.FAIL;
+        for (let j = calls.length - 1; j >= 0; j--) d = Cmp('if_commit', [ix[j], calls[j], d]);
+        emit(Cmp(':-', [Cmp(base, A.concat([KV])), Cmp('if_commit', [Cmp('nonvar', [A[0]]), d, chain])]), 'k_index');
+        continue;
+      }
       emit(Cmp(':-', [Cmp(base, A.concat([KV])), cut ? conj([Cmp('dl_cut_new', [C]), chain]) : chain]), 'k_pred');
     }
 
@@ -257,6 +269,26 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       emit(Cmp(':-', [Cmp(pn, [P.cons(Q, Qs), Y2, Dd]), conj(tests.concat([Cmp('is', [D1, Cmp('+', [Dd, Int(1)])]), Cmp(pn, [Qs, Y2, D1])]))]), 'k_prune');
       PRED = pred0;
       return call;
+    }
+
+    // the dispatch tests of a predicate's clauses on a bound first argument X, if the clauses are pairwise
+    // exclusive there; null otherwise (src/proof.js re-derives the exclusivity)
+    function indexTests(cls, X) {
+      const tests = [], keys = [];
+      for (const c of cls) {
+        const h = D(c.head), a = D(h.a[0]);
+        if (a.t !== 'v') { keys.push({ pat: a }); tests.push(patTest(a, X)); continue; }
+        const g0 = flat(c.body).map(D)[0];
+        const iv = g0 && guardInterval(g0, a);
+        if (!iv) return null;
+        keys.push({ iv }); tests.push(P.copy(g0, new Map([[a, X]])));
+      }
+      for (let i = 0; i < keys.length; i++) for (let j = i + 1; j < keys.length; j++) if (!P.streamExclusive(keys[i], keys[j])) return null;
+      return tests;
+    }
+    function patTest(a, X) {
+      if (a.t === 'c') return Cmp('=', [X, Cmp(a.f, a.a.map(() => Var('_')))]);
+      return Cmp('==', [X, a]);
     }
 
     // findall(T, (between(L, H, I), G1, ..., Gn), Ts) with each Gi a pure builtin or a call of a DET
@@ -401,6 +433,11 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
   det('dl_cut_set/1', (a) => { slotOf(a[0], '$cut').cut = true; return true; });
   det('dl_cut_off/1', (a) => !slotOf(a[0], '$cut').cut);
 
+  det('dl_bag_count/2', (a, e) => { const b = slotOf(a[0], '$bag'); let n = 0; for (const x of b.items) if (x.f === 'e') n++; return e.unify(a[1], Int(n)); });
+  // for the interpreter's per-call route (src/interp.js): a bag made from JavaScript, and its items with the
+  // text written after the last answer
+  P.streamBag = () => cell('$bag', { items: [], mark: 0 });
+  P.streamBagItems = (b, out) => { const sl = slotOf(b, '$bag'); const it = sl.items.slice(); if (out && out.length > sl.mark) it.push(Cmp('out', [Str(out.slice(sl.mark))])); return it; };
   det('dl_bag_last/3', (a, e) => { const b = slotOf(a[0], '$bag'); takeText(b, e); b.items.push(Cmp('e', [a[1]])); const it = b.items; b.items = []; return e.unify(a[2], list(it)); });
 
   // the text of stream code, without the clauses of the predicates in drop (keys p/n)
@@ -408,6 +445,39 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
     const keep = st.clauses.filter((c, i) => !(drop && drop.has(st.tags[i].pred)));
     return '% Detlog stream code: no answer packets (src/stream.js)\n' + LIB + '\n' + keep.map(c => P.showClause(c, { varName: v => v.name })).join('\n') + '\n';
   }
+
+  // an arithmetic guard on V against an integer: the interval of V it admits, {lo, hi, loOpen, hiOpen}
+  function guardInterval(g, v) {
+    g = D(g); if (g.t !== 'c' || g.a.length !== 2) return null;
+    const ops = { '>': 1, '>=': 1, '<': 1, '=<': 1, '=:=': 1 };
+    if (!ops[g.f]) return null;
+    let [l, r] = g.a.map(D), op = g.f;
+    const flip = { '>': '<', '<': '>', '>=': '=<', '=<': '>=', '=:=': '=:=' };
+    if (r === v && l.t === 'n') { [l, r] = [r, l]; op = flip[op]; }
+    if (l !== v || r.t !== 'n' || r.f || !Number.isSafeInteger(r.v)) return null;
+    const c = r.v;
+    if (op === '>') return { lo: c, loOpen: true, hi: Infinity, hiOpen: true };
+    if (op === '>=') return { lo: c, loOpen: false, hi: Infinity, hiOpen: true };
+    if (op === '<') return { lo: -Infinity, loOpen: true, hi: c, hiOpen: true };
+    if (op === '=<') return { lo: -Infinity, loOpen: true, hi: c, hiOpen: false };
+    return { lo: c, loOpen: false, hi: c, hiOpen: false };
+  }
+  const inIv = (iv, x) => (iv.loOpen ? x > iv.lo : x >= iv.lo) && (iv.hiOpen ? x < iv.hi : x <= iv.hi);
+  // two clause keys ({pat} a first-argument pattern, {iv} a guard interval) that no bound argument satisfies
+  // both of: different principal functors; an integer pattern outside the interval; disjoint intervals
+  P.streamExclusive = (a, b) => {
+    if (a.pat && b.pat) {
+      const x = D(a.pat), y = D(b.pat);
+      if (x.t === 'c' && y.t === 'c') return x.f !== y.f || x.a.length !== y.a.length;
+      if (x.t === 'c' || y.t === 'c') return true;
+      if (x.t !== y.t) return x.t === 'n' && y.t === 'n' ? false : true;
+      return x.t === 'a' ? x.n !== y.n : x.t === 'n' ? (x.v !== y.v || !!x.f !== !!y.f) : x.t === 's' ? x.v !== y.v : false;
+    }
+    if (a.iv && b.iv) { const lo = a.iv.lo > b.iv.lo ? a.iv : b.iv, hi = a.iv.hi < b.iv.hi ? a.iv : b.iv;
+      return lo.lo > hi.hi || (lo.lo === hi.hi && (lo.loOpen || hi.hiOpen)); }
+    const p = D((a.pat || b.pat)), iv = a.iv || b.iv;
+    return p.t === 'n' && !p.f && Number.isSafeInteger(p.v) && !inIv(iv, p.v);
+  };
 
   P.toStreams = toStreams; P.printStreams = printStreams;
   P.STREAM_LIB = LIB;

@@ -711,7 +711,7 @@
     const r = F.preds.get(key); if (!r || !r.fn) return null;
     const E = new P.DetEngine(prog, opts || {});
     const ok = r.pos ? r.pos.apply(null, args.concat([E])) : r.fn(args, E);
-    return { ok, steps: E.steps };
+    return { ok, steps: E.steps, out: E.out };
   }
   P.detlogCall = detlogCall;
   P.FastDetlog = FastDetlog; P.runDetlogFast = runDetlogFast;

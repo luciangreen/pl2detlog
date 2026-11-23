@@ -9,7 +9,7 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert');
 const path = require('path'), fs = require('fs'), os = require('os'), cp = require('child_process');
-for (const f of ['core', 'engine', 'builtins', 'swi', 'convert', 'detlog_engine', 'native', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref', 'examples', 'thermo', 'interp']) require(path.join(__dirname, '..', 'src', f + '.js'));
+for (const f of ['core', 'engine', 'builtins', 'swi', 'convert', 'stream', 'detlog_engine', 'native', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref', 'examples', 'thermo', 'interp']) require(path.join(__dirname, '..', 'src', f + '.js'));
 const P = globalThis.PL2D;
 P.C_RUNTIME = fs.readFileSync(path.join(__dirname, '..', 'src', 'runtime.c'), 'utf8');
 
@@ -190,12 +190,27 @@ test('brackets: operator terms and Starlog operators read back as written', () =
 });
 
 test('routes: Prolog is kept for a goal where it is at least twice as fast', () => {
-  const queens = 'queens(N, Qs) :- numlist(1, N, Ns), perm(Ns, Qs), safe(Qs).\nperm([], []).\nperm(L, [H|T]) :- sel(H, L, R), perm(R, T).\nsel(X, [X|T], T).\nsel(X, [H|T], [H|R]) :- sel(X, T, R).\nsafe([]).\nsafe([Q|Qs]) :- noatt(Q, Qs, 1), safe(Qs).\nnoatt(_, [], _).\nnoatt(Q, [Q1|Qs], D) :- Q =\\= Q1 + D, Q =\\= Q1 - D, D1 is D+1, noatt(Q, Qs, D1).\n';
-  const it = new P.Interpreter({ io: null }); it.setProgram(queens);
-  const r = it.run('findall(Q, queens(6, Q), L), length(L, N)');
+  // sub_atom/5 enumerated: the reference engine's own generator, against its answers as rows in converted
+  // code (queens/2 used to be the example; answer streams made its converted code the faster route)
+  const it = new P.Interpreter({ io: null }); it.setProgram('w(S) :- sub_atom(abcdefghijklmnopqrstuvwxyzabcdefghij, _, _, _, S).\n');
+  const r = it.run('findall(S, w(S), L), length(L, N)');
   assert.strictEqual(r.route, 'Prolog'); assert.match(r.why, /at least 2x faster/);
-  assert.ok(r.answers[0].endsWith('N = 4'));
+  assert.ok(r.answers[0].endsWith('N = 703'));
   const fib = new P.Interpreter({ io: null }); fib.setProgram('fib(0, 0).\nfib(1, 1).\nfib(N, F) :- N > 1, A is N-1, B is N-2, fib(A, FA), fib(B, FB), F is FA+FB.\n');
   const f = fib.run('fib(21, F)');
   assert.notStrictEqual(f.route, 'Prolog'); assert.deepStrictEqual(f.answers, ['F = 10946']);
+});
+
+// The per-call route on answer streams is lazy: a call under once/1 stops after two answers (one to give,
+// one to know there are more); asked for more, it runs again for all of them.  Same answers as Prolog.
+test('per call: lazy answer streams', () => {
+  const prog = ':- dynamic seen/1.\nnat(X) :- between(1, 3000, X).\nfirstbig(L, X) :- nat(X), X > L.\ntwo(L, X) :- nat(X), X > L, X < L + 3.\n' +
+    'run(N) :- forall(between(1, N, I), (once(firstbig(I, X)), assertz(seen(X)))).\nrun2(N) :- forall(between(1, N, I), (findall(X, two(I, X), Xs), assertz(seen(Xs)))).\n';
+  for (const [g, a] of [['run(60), aggregate_all(count, seen(_), C), seen(Y), Y > 59', 'C = 60, Y = 60'], ['run2(40), aggregate_all(count, seen(_), C), seen([A, B]), A > 38', 'C = 40, A = 39, B = 40']]) {
+    const it = new P.Interpreter({ io: null }); it.setProgram(prog);
+    const r = it.run(g);
+    assert.deepStrictEqual(r.answers, [a], g);
+    assert.ok(it.acc && it.acc.streams, 'the per-call route runs stream code');
+    assert.ok([...it.acc.info.values()].some(v => v.state === 'jit' && v.jitCalls > 0), 'a predicate ran on the compiled route');
+  }
 });

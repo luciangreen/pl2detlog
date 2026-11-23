@@ -5,7 +5,7 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert');
 const path = require('path');
-for (const f of ['core', 'engine', 'builtins', 'convert', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref', 'examples']) require(path.join(__dirname, '..', 'src', f + '.js'));
+for (const f of ['core', 'engine', 'builtins', 'convert', 'stream', 'detlog_engine', 'detlog_fast', 'detlog_interp', 'backconv', 'algebra', 'rewrite', 'cgen', 'proof', 'stats', 'cref', 'examples']) require(path.join(__dirname, '..', 'src', f + '.js'));
 const P = globalThis.PL2D;
 P.DETLOG_CHECKED = true; // these tests exercise the native tier's bail-outs, which only the checked tier has
 const EXTRA = {

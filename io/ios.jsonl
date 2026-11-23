@@ -5,7 +5,7 @@
 {"n":5,"name":"run_prolog","input":["evens","evens([9, 4], R)"],"output":{"ok":true,"answers":["R = [4]"],"output":"","error":null}}
 {"n":6,"name":"convert","input":["factorial","fact(1, F)","plain"],"output":{"mode":"plain","form":"streams","clauses":6,"stream_clauses":4,"errors":[],"warnings":0,"cut_free":true,"heads":["fact__k(A__1, A__2, K__1) :-"]}}
 {"n":7,"name":"convert_and_back","input":["reverse"],"output":{"same_clauses":true,"back":["rev(L, R) :-","    rev(L, [], R).","rev([], A, A).","rev([H|T], A, R) :-","    rev(T, [H|A], R)."],"warnings":0}}
-{"n":8,"name":"analyse","input":["length","len([0, 3], N)"],"output":{"same":true,"prolog":["N = 2"],"detlog":["N = 2"],"mnn":["N = 2"],"back":["N = 2"],"proof_checks":23,"proof_failed":[]}}
+{"n":8,"name":"analyse","input":["length","len([0, 3], N)"],"output":{"same":true,"prolog":["N = 2"],"detlog":["N = 2"],"mnn":["N = 2"],"back":["N = 2"],"proof_checks":25,"proof_failed":[]}}
 {"n":9,"name":"newton_fit","input":[[-1,-9,-21,-37,-57]],"output":{"differences":[-1,-8,-4],"formula":"-2*I*I - 6*I - 1"}}
 {"n":10,"name":"s2a_formula","input":[[[1,2,"y",2],[2,3,"y",5],[3,4,"y",10],[4,5,"y",17],[5,6,"y",26],[6,7,"y",37]]],"output":"A1 = I + 1, A2 = I + 2, A3 = y, A4 = I*I + 2*I + 2"}
 {"n":11,"name":"read_and_show","input":["\\+ p(X)"],"output":"\\+ p(X)"}
@@ -19,7 +19,7 @@
 {"n":19,"name":"run_prolog","input":["evens","evens([3, 6], R)"],"output":{"ok":true,"answers":["R = [6]"],"output":"","error":null}}
 {"n":20,"name":"convert","input":["grade","grade(95, G)","mnn"],"output":{"mode":"mnn","form":"streams","clauses":7,"stream_clauses":5,"errors":[],"warnings":0,"cut_free":true,"heads":["grade__k(A__1, A__2, K__0) :-"]}}
 {"n":21,"name":"convert_and_back","input":["grade"],"output":{"same_clauses":true,"back":["grade(N, a) :-","    N >= 80,","    !.","grade(N, b) :-","    N >= 60,","    !.","grade(_, c)."],"warnings":0}}
-{"n":22,"name":"analyse","input":["double","dbls([1, 0, 8, 2, 8], R)"],"output":{"same":true,"prolog":["R = [2, 0, 16, 4, 16]"],"detlog":["R = [2, 0, 16, 4, 16]"],"mnn":["R = [2, 0, 16, 4, 16]"],"back":["R = [2, 0, 16, 4, 16]"],"proof_checks":26,"proof_failed":[]}}
+{"n":22,"name":"analyse","input":["double","dbls([1, 0, 8, 2, 8], R)"],"output":{"same":true,"prolog":["R = [2, 0, 16, 4, 16]"],"detlog":["R = [2, 0, 16, 4, 16]"],"mnn":["R = [2, 0, 16, 4, 16]"],"back":["R = [2, 0, 16, 4, 16]"],"proof_checks":28,"proof_failed":[]}}
 {"n":23,"name":"newton_fit","input":[[6,20,48,96,170,276,420]],"output":{"differences":[6,14,14,6],"formula":"I*I*I + 4*I*I + 9*I + 6"}}
 {"n":24,"name":"s2a_formula","input":[[[1,4,"x",4],[2,5,"x",7],[3,6,"x",12]]],"output":"A1 = I + 1, A2 = I + 4, A3 = x, A4 = data[I]"}
 {"n":25,"name":"read_and_show","input":["a+b*c"],"output":"a+b*c"}
@@ -47,7 +47,7 @@
 {"n":47,"name":"run_prolog","input":["max","mx(-1, 4, M)"],"output":{"ok":true,"answers":["M = 4"],"output":"","error":null}}
 {"n":48,"name":"convert","input":["sum","sum([5], S)","mnn"],"output":{"mode":"mnn","form":"streams","clauses":13,"stream_clauses":8,"errors":[],"warnings":0,"cut_free":true,"heads":["sum__k(A__1, A__2, K__0) :-"]}}
 {"n":49,"name":"convert_and_back","input":["greet"],"output":{"same_clauses":true,"back":["greet(N) :-","    write(hello(N)),","    nl.","greet_all([]).","greet_all([H|T]) :-","    greet(H),","    greet_all(T)."],"warnings":0}}
-{"n":50,"name":"analyse","input":["append","app(X, Y, [6, 3, 3])"],"output":{"same":true,"prolog":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"detlog":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"mnn":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"back":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"proof_checks":23,"proof_failed":[]}}
+{"n":50,"name":"analyse","input":["append","app(X, Y, [6, 3, 3])"],"output":{"same":true,"prolog":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"detlog":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"mnn":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"back":["X = [], Y = [6, 3, 3]","X = [6], Y = [3, 3]","X = [6, 3], Y = [3]","X = [6, 3, 3], Y = []"],"proof_checks":25,"proof_failed":[]}}
 {"n":51,"name":"newton_fit","input":[[-1,3,7,11,15,19]],"output":{"differences":[-1,4],"formula":"4*I - 1"}}
 {"n":52,"name":"s2a_formula","input":[[[1,4,"x",1],[2,8,"x",4],[3,12,"x",9]]],"output":"A1 = I + 1, A2 = 4*I + 4, A3 = x, A4 = data[I]"}
 {"n":53,"name":"read_and_show","input":["{a, b}"],"output":"{a, b}"}
@@ -61,7 +61,7 @@
 {"n":61,"name":"run_prolog","input":["last","last([3, 7, 1], X)"],"output":{"ok":true,"answers":["X = 1"],"output":"","error":null}}
 {"n":62,"name":"convert","input":["member","mem(X, [6, 5, 0, 1])","mnn"],"output":{"mode":"mnn","form":"streams","clauses":4,"stream_clauses":5,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__k1(X, [X|U__1], K__1) :-","mem__k2(X, [U__1|T], K__2) :-","mem__k(A__1, A__2, K__0) :-"]}}
 {"n":63,"name":"convert_and_back","input":["reverse"],"output":{"same_clauses":true,"back":["rev(L, R) :-","    rev(L, [], R).","rev([], A, A).","rev([H|T], A, R) :-","    rev(T, [H|A], R)."],"warnings":0}}
-{"n":64,"name":"analyse","input":["length","len([6, 0, 0], N)"],"output":{"same":true,"prolog":["N = 3"],"detlog":["N = 3"],"mnn":["N = 3"],"back":["N = 3"],"proof_checks":23,"proof_failed":[]}}
+{"n":64,"name":"analyse","input":["length","len([6, 0, 0], N)"],"output":{"same":true,"prolog":["N = 3"],"detlog":["N = 3"],"mnn":["N = 3"],"back":["N = 3"],"proof_checks":25,"proof_failed":[]}}
 {"n":65,"name":"newton_fit","input":[[-5,-3,1,7,15,25]],"output":{"differences":[-5,2,2],"formula":"I*I + I - 5"}}
 {"n":66,"name":"s2a_formula","input":[[[1,6,"x",3],[2,10,"x",6],[3,14,"x",11],[4,18,"x",18],[5,22,"x",27]]],"output":"A1 = I + 1, A2 = 4*I + 6, A3 = x, A4 = I*I + 2*I + 3"}
 {"n":67,"name":"read_and_show","input":["a- -1"],"output":"a- -1"}
@@ -89,7 +89,7 @@
 {"n":89,"name":"run_prolog","input":["evens","evens([1], R)"],"output":{"ok":true,"answers":["R = []"],"output":"","error":null}}
 {"n":90,"name":"convert","input":["double","dbls([9, 5], R)","mnn"],"output":{"mode":"mnn","form":"streams","clauses":19,"stream_clauses":11,"errors":[],"warnings":0,"cut_free":true,"heads":["dbl__k(A__1, A__2, K__0) :-","dbls__k(A__1, A__2, K__0) :-"]}}
 {"n":91,"name":"convert_and_back","input":["factorial"],"output":{"same_clauses":true,"back":["fact(0, 1) :-","    !.","fact(N, F) :-","    N1 is N-1,","    fact(N1, F1),","    F is N*F1."],"warnings":0}}
-{"n":92,"name":"analyse","input":["length","len([6, 7, 1, 0], N)"],"output":{"same":true,"prolog":["N = 4"],"detlog":["N = 4"],"mnn":["N = 4"],"back":["N = 4"],"proof_checks":23,"proof_failed":[]}}
+{"n":92,"name":"analyse","input":["length","len([6, 7, 1, 0], N)"],"output":{"same":true,"prolog":["N = 4"],"detlog":["N = 4"],"mnn":["N = 4"],"back":["N = 4"],"proof_checks":25,"proof_failed":[]}}
 {"n":93,"name":"newton_fit","input":[[5,5,3,-1,-7,-15]],"output":{"differences":[5,0,-2],"formula":"-I*I + I + 5"}}
 {"n":94,"name":"s2a_formula","input":[[[1,1,"x",1],[2,2,"x",4],[3,3,"x",9]]],"output":"A1 = I + 1, A2 = I + 1, A3 = x, A4 = data[I]"}
 {"n":95,"name":"read_and_show","input":["[a, b, c]"],"output":"[a, b, c]"}
@@ -103,7 +103,7 @@
 {"n":103,"name":"run_prolog","input":["reverse","rev([], R)"],"output":{"ok":true,"answers":["R = []"],"output":"","error":null}}
 {"n":104,"name":"convert","input":["max","mx(-1, 6, M)","plain"],"output":{"mode":"plain","form":"streams","clauses":2,"stream_clauses":3,"errors":[],"warnings":0,"cut_free":true,"heads":["mx__k(A__1, A__2, A__3, K__1) :-"]}}
 {"n":105,"name":"convert_and_back","input":["greet"],"output":{"same_clauses":true,"back":["greet(N) :-","    write(hello(N)),","    nl.","greet_all([]).","greet_all([H|T]) :-","    greet(H),","    greet_all(T)."],"warnings":0}}
-{"n":106,"name":"analyse","input":["double","dbls([1, 5], R)"],"output":{"same":true,"prolog":["R = [2, 10]"],"detlog":["R = [2, 10]"],"mnn":["R = [2, 10]"],"back":["R = [2, 10]"],"proof_checks":26,"proof_failed":[]}}
+{"n":106,"name":"analyse","input":["double","dbls([1, 5], R)"],"output":{"same":true,"prolog":["R = [2, 10]"],"detlog":["R = [2, 10]"],"mnn":["R = [2, 10]"],"back":["R = [2, 10]"],"proof_checks":28,"proof_failed":[]}}
 {"n":107,"name":"newton_fit","input":[[1,6,15,28,45]],"output":{"differences":[1,5,4],"formula":"2*I*I + 3*I + 1"}}
 {"n":108,"name":"s2a_formula","input":[[[1,2,"x",1],[2,4,"x",4],[3,6,"x",9],[4,8,"x",16]]],"output":"A1 = I + 1, A2 = 2*I + 2, A3 = x, A4 = I*I + 2*I + 1"}
 {"n":109,"name":"read_and_show","input":["\\+ p(X)"],"output":"\\+ p(X)"}
@@ -131,7 +131,7 @@
 {"n":131,"name":"run_prolog","input":["sum","sum([8, 5], S)"],"output":{"ok":true,"answers":["S = 13"],"output":"","error":null}}
 {"n":132,"name":"convert","input":["double","dbls([8], R)","plain"],"output":{"mode":"plain","form":"streams","clauses":9,"stream_clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["dbl__k(X, Y, K__1) :-","dbls__k1([], [], K__2) :-","dbls__k2([H|T], [D|R], K__3) :-","dbls__k(A__1, A__2, K__0) :-"]}}
 {"n":133,"name":"convert_and_back","input":["evens"],"output":{"same_clauses":true,"back":["evens([], []).","evens([H|T], [H|R]) :-","    0 is H mod 2,","    !,","    evens(T, R).","evens([_|T], R) :-","    evens(T, R)."],"warnings":0}}
-{"n":134,"name":"analyse","input":["length","len([3], N)"],"output":{"same":true,"prolog":["N = 1"],"detlog":["N = 1"],"mnn":["N = 1"],"back":["N = 1"],"proof_checks":23,"proof_failed":[]}}
+{"n":134,"name":"analyse","input":["length","len([3], N)"],"output":{"same":true,"prolog":["N = 1"],"detlog":["N = 1"],"mnn":["N = 1"],"back":["N = 1"],"proof_checks":25,"proof_failed":[]}}
 {"n":135,"name":"newton_fit","input":[[1,0,-1,-2]],"output":{"differences":[1,-1],"formula":"-I + 1"}}
 {"n":136,"name":"s2a_formula","input":[[[1,6,"x",3],[2,10,"x",6],[3,14,"x",11],[4,18,"x",18],[5,22,"x",27]]],"output":"A1 = I + 1, A2 = 4*I + 6, A3 = x, A4 = I*I + 2*I + 3"}
 {"n":137,"name":"read_and_show","input":["[a, b, c]"],"output":"[a, b, c]"}
@@ -145,7 +145,7 @@
 {"n":145,"name":"run_prolog","input":["append","app([5, 9, 8], [4, 5], Z)"],"output":{"ok":true,"answers":["Z = [5, 9, 8, 4, 5]"],"output":"","error":null}}
 {"n":146,"name":"convert","input":["member","mem(X, [8, 3, 7, 8])","mnn"],"output":{"mode":"mnn","form":"streams","clauses":4,"stream_clauses":5,"errors":[],"warnings":0,"cut_free":true,"heads":["mem__k1(X, [X|U__1], K__1) :-","mem__k2(X, [U__1|T], K__2) :-","mem__k(A__1, A__2, K__0) :-"]}}
 {"n":147,"name":"convert_and_back","input":["double"],"output":{"same_clauses":true,"back":["dbl(X, Y) :-","    Y is 2*X.","dbls([], []).","dbls([H|T], [D|R]) :-","    dbl(H, D),","    dbls(T, R)."],"warnings":0}}
-{"n":148,"name":"analyse","input":["greet","greet_all([4])"],"output":{"same":true,"prolog":["true"],"detlog":["true"],"mnn":["true"],"back":["true"],"proof_checks":20,"proof_failed":[]}}
+{"n":148,"name":"analyse","input":["greet","greet_all([4])"],"output":{"same":true,"prolog":["true"],"detlog":["true"],"mnn":["true"],"back":["true"],"proof_checks":22,"proof_failed":[]}}
 {"n":149,"name":"newton_fit","input":[[1,1,-9,-35,-83,-159,-269]],"output":{"differences":[1,0,-10,-6],"formula":"-I*I*I - 2*I*I + 3*I + 1"}}
 {"n":150,"name":"s2a_formula","input":[[[1,4,"y",4],[2,5,"y",7],[3,6,"y",12],[4,7,"y",19],[5,8,"y",28]]],"output":"A1 = I + 1, A2 = I + 4, A3 = y, A4 = I*I + 2*I + 4"}
 {"n":151,"name":"read_and_show","input":["\\+ p(X)"],"output":"\\+ p(X)"}
@@ -159,7 +159,7 @@
 {"n":159,"name":"run_prolog","input":["evens","evens([2, 4, 9, 8, 1], R)"],"output":{"ok":true,"answers":["R = [2, 4, 8]"],"output":"","error":null}}
 {"n":160,"name":"convert","input":["greet","greet_all([])","mnn"],"output":{"mode":"mnn","form":"streams","clauses":9,"stream_clauses":7,"errors":[],"warnings":0,"cut_free":true,"heads":["greet__k(N, K__1) :-","greet_all__k1([], K__2) :-","greet_all__k2([H|T], K__3) :-","greet_all__k(A__1, K__0) :-"]}}
 {"n":161,"name":"convert_and_back","input":["sum"],"output":{"same_clauses":true,"back":["sum([], 0).","sum([H|T], S) :-","    sum(T, S1),","    S is S1+H."],"warnings":0}}
-{"n":162,"name":"analyse","input":["length","len([], N)"],"output":{"same":true,"prolog":["N = 0"],"detlog":["N = 0"],"mnn":["N = 0"],"back":["N = 0"],"proof_checks":23,"proof_failed":[]}}
+{"n":162,"name":"analyse","input":["length","len([], N)"],"output":{"same":true,"prolog":["N = 0"],"detlog":["N = 0"],"mnn":["N = 0"],"back":["N = 0"],"proof_checks":25,"proof_failed":[]}}
 {"n":163,"name":"newton_fit","input":[[-3,3,21,57]],"output":{"formula":null}}
 {"n":164,"name":"s2a_formula","input":[[[1,2,"x",2],[2,3,"x",5],[3,4,"x",10]]],"output":"A1 = I + 1, A2 = I + 2, A3 = x, A4 = data[I]"}
 {"n":165,"name":"read_and_show","input":["f(X, [a|T], \"s\", 1.5)"],"output":"f(X, [a|T], \"s\", 1.5)"}
@@ -187,7 +187,7 @@
 {"n":187,"name":"run_prolog","input":["last","last([3], X)"],"output":{"ok":true,"answers":["X = 3"],"output":"","error":null}}
 {"n":188,"name":"convert","input":["last","last([3, 5, 7, 9], X)","mnn"],"output":{"mode":"mnn","form":"streams","clauses":7,"stream_clauses":5,"errors":[],"warnings":0,"cut_free":true,"heads":["last__k(A__1, A__2, K__0) :-"]}}
 {"n":189,"name":"convert_and_back","input":["double"],"output":{"same_clauses":true,"back":["dbl(X, Y) :-","    Y is 2*X.","dbls([], []).","dbls([H|T], [D|R]) :-","    dbl(H, D),","    dbls(T, R)."],"warnings":0}}
-{"n":190,"name":"analyse","input":["greet","greet_all([3, 8])"],"output":{"same":true,"prolog":["true"],"detlog":["true"],"mnn":["true"],"back":["true"],"proof_checks":20,"proof_failed":[]}}
+{"n":190,"name":"analyse","input":["greet","greet_all([3, 8])"],"output":{"same":true,"prolog":["true"],"detlog":["true"],"mnn":["true"],"back":["true"],"proof_checks":22,"proof_failed":[]}}
 {"n":191,"name":"newton_fit","input":[[2,-1,-6,-13,-22,-33,-46]],"output":{"differences":[2,-3,-2],"formula":"-I*I - 2*I + 2"}}
 {"n":192,"name":"s2a_formula","input":[[[1,4,"x",1],[2,8,"x",4],[3,12,"x",9],[4,16,"x",16],[5,20,"x",25],[6,24,"x",36]]],"output":"A1 = I + 1, A2 = 4*I + 4, A3 = x, A4 = I*I + 2*I + 1"}
 {"n":193,"name":"read_and_show","input":["- 1"],"output":"- 1"}

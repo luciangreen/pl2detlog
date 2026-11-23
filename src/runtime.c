@@ -955,6 +955,7 @@ static int rt_stream_call(const char *k, Term **a, int *r) {
     if (K("dl_bag_row/2")) { Bag *b = &bags[cell_id(a[0], A_BAG)]; take_text(b); tv_push(&b->items, mk_e(copy_term(a[1]))); *r = 1; return 1; }
     if (K("dl_bag_rows/2")) { Bag *b = &bags[cell_id(a[0], A_BAG)]; take_text(b); *r = unify(a[1], bag_take(b, NIL)); return 1; }
     if (K("dl_bag_last/3")) { Bag *b = &bags[cell_id(a[0], A_BAG)]; take_text(b); tv_push(&b->items, mk_e(a[1])); *r = unify(a[2], bag_take(b, NIL)); return 1; }
+    if (K("dl_bag_count/2")) { Bag *b = &bags[cell_id(a[0], A_BAG)]; long long c = 0; for (size_t i = 0; i < b->items.n; i++) { Term *x = deref(b->items.v[i]); if (x->tag == T_CMP && x->name == A_OUT->name) continue; c++; } *r = unify(a[1], mk_int(c)); return 1; }
     if (K("dl_cut_new/1")) { if (ncuts == capcuts) { capcuts = capcuts ? capcuts * 2 : 256; cutcells = (char *)realloc(cutcells, capcuts); }
       cutcells[ncuts] = 0; *r = unify(a[0], cell_term(A_CUTC, (long long)ncuts++)); return 1; }
     if (K("dl_cut_set/1")) { cutcells[cell_id(a[0], A_CUTC)] = 1; *r = 1; return 1; }

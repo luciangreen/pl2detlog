@@ -14,7 +14,16 @@
   const FORBIDDEN = new Set(['!/0', ';/2', '->/2', '*->/2', '\\+/1', 'not/1', 'findall/3', 'findall/4', 'bagof/3', 'setof/3', 'aggregate_all/3', 'aggregate_all/4', 'forall/2', 'once/1', 'ignore/1', 'call/1', 'catch/3']);
   const RULES = new Set(['CUT', 'SPEC', 'PRED', 'FACTS', 'CLAUSE', 'S2A', 'MEMO', 'DET', 'call_det', 'UNSUPPORTED', 'true', 'fail', 'det', 'effect', 'call', 'member_cp', 'between_cp', 'builtin_rows', 'seq', 'det_prefix', 'effect_prefix', 'disj', 'ite', 'ite_det', 'ite_scan', 'neg', 'neg_det', 'neg_scan', 'findall', 'aggregate', 'splice', 'cut_mark']);
   const PURE_B = new Set(['is/2', '=/2', '==/2', '\\==/2', '</2', '>/2', '=</2', '>=/2', '=:=/2', '=\\=/2', 'numlist/3', 'true/0', 'atom/1', 'number/1', 'integer/1', 'var/1', 'nonvar/1', 'is_list/1', 'atom_length/2', 'msort/2', 'sort/2', 'reverse/2', 'sum_list/2', 'max_list/2', 'min_list/2']);
-  const STREAM_RULES = new Set(['k_clause', 'k_pred', 'k_cont', 'k_facts', 'k_s2a', 'k_det', 'k_memo', 'k_prune', 'k_query', 'k_detloop']);
+  // an arithmetic guard on V against an integer, as an interval (the same reading as src/stream.js)
+  const GUARD = (g, v) => {
+    if (g.t !== 'c' || g.a.length !== 2 || !['>', '>=', '<', '=<', '=:='].includes(g.f)) return null;
+    let l = D(g.a[0]), r = D(g.a[1]), op = g.f; const flip = { '>': '<', '<': '>', '>=': '=<', '=<': '>=', '=:=': '=:=' };
+    if (r === v && l.t === 'n') { [l, r] = [r, l]; op = flip[op]; }
+    if (l !== v || r.t !== 'n' || r.f || !Number.isSafeInteger(r.v)) return null; const c = r.v;
+    return op === '>' ? { lo: c, loOpen: true, hi: Infinity, hiOpen: true } : op === '>=' ? { lo: c, loOpen: false, hi: Infinity, hiOpen: true }
+      : op === '<' ? { lo: -Infinity, loOpen: true, hi: c, hiOpen: true } : op === '=<' ? { lo: -Infinity, loOpen: true, hi: c, hiOpen: false } : { lo: c, loOpen: false, hi: c, hiOpen: false };
+  };
+  const STREAM_RULES = new Set(['k_clause', 'k_pred', 'k_cont', 'k_facts', 'k_s2a', 'k_det', 'k_memo', 'k_prune', 'k_query', 'k_detloop', 'k_index']);
   const isC = (t, f, n) => { t = D(t); return t.t === 'c' && t.f === f && t.a.length === n; };
   const RUNTIME_PREDS = () => new Set(Object.keys(P.DETLOG_RUNTIME).concat(['if_commit/3']));
 
@@ -216,6 +225,22 @@
           add('Side conditions', 'stream DET loop ' + h.f + ': findall/3 over between/3 of pure builtins and proven DET calls, one fresh activation per element', !bad, bad ? 'calls ' + bad : 'yes runs every element\'s goals once, in order, as the bag does; maybe falls back to the bag');
         }
       }
+      // first-argument dispatch: re-derived from the clauses it dispatches to (their first head arguments
+      // and leading guards), pairwise exclusive on a bound argument; the else branch is the plain chain
+      for (const [ci, c] of st.clauses.entries()) {
+        if (st.tags[ci].rule !== 'k_index') continue;
+        const h = D(D(c).a[0]); const ic = D(D(c).a[1]); let ok = isC(ic, 'if_commit', 3) && isC(ic.a[0], 'nonvar', 1), why = '';
+        const keys = [];
+        if (ok) for (let d = D(ic.a[1]); isC(d, 'if_commit', 3); d = D(d.a[2])) {
+          const callee = D(d.a[1]); const cls = st.clauses.filter(x => isC(x, ':-', 2) && D(D(x).a[0]).f === callee.f);
+          if (cls.length !== 1) { ok = false; why = 'no single clause for ' + callee.f; break; }
+          const hd = D(D(cls[0]).a[0]); const a0 = D(hd.a[0]);
+          if (a0.t !== 'v') keys.push({ pat: a0 });
+          else { const g0 = P.flatConj(D(cls[0]).a[1]).map(D)[0]; const iv = g0 && GUARD(g0, a0); if (!iv) { ok = false; why = callee.f + ': no guard'; break; } keys.push({ iv }); }
+        }
+        for (let i = 0; ok && i < keys.length; i++) for (let j = i + 1; ok && j < keys.length; j++) if (!P.streamExclusive(keys[i], keys[j])) { ok = false; why = 'clauses ' + (i + 1) + ' and ' + (j + 1) + ' overlap'; }
+        add('Side conditions', 'stream INDEX ' + h.f + '/' + h.a.length + ': the clauses are pairwise exclusive on a bound first argument', ok, ok ? keys.length + ' clauses, dispatched' : why);
+      }
       for (const tk of preds('k_prune')) {
         // re-derived: the pairwise test of the source predicate, and the tests the generated pairs check
         let pw = null; try { pw = P.pairwise(P.loadProgram(conv.source), tk); } catch (e) { pw = null; }
@@ -309,6 +334,7 @@
     ['k_memo', 'streams + MEMO: the answers of a pure predicate per call variant, from the table or collected once'],
     ['k_prune', 'streams + PRUNE: permutation then a pairwise test: each placed element is tested against the earlier ones, so a failing prefix is not extended'],
     ['k_detloop', 'streams + DET: findall/3 over between/3 with pure builtins and DET calls as a deterministic loop; maybe runs the bag'],
+    ['k_index', 'streams: clauses told apart by a bound first argument (principal functor, or a guard interval) are dispatched; an unbound one tries them in turn'],
     ['k_query', 'streams: the query boundary collects the answers, with the text written before each, as the query packet'],
     ['DET', 'MNN: an output-free predicate whose clauses are told apart by their first argument, and whose goals are deterministic, runs as p__d(Args, Status) without packets; status maybe (a first argument unbound where several clauses match) falls back to the packet code']
   ];

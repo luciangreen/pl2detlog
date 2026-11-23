@@ -147,18 +147,18 @@ queens(N, Qs) :-                           queens__first(N, Qs) :-
 
 **Choosing the form and building.** Each form runs the query in a fresh process for about `budget` seconds, and the fastest form that gave Prolog's output is built. The build is `swipl -o Exe --stand_alone=true -c` on that form's files. The executable needs SWI-Prolog's shared library at run time, as any SWI-Prolog saved state does.
 
-Microseconds per run on this machine (`swipl test/prolog/bench.pl`, SWI-Prolog 11.1.0; small differences are noise):
+Microseconds per run on this machine: the median of three runs of `swipl test/prolog/bench.pl` (each column's median taken separately), on SWI-Prolog 11.1.0. Differences under about 20% are noise. The runs are in the [report](https://github.com/luciangreen/reports/tree/main/swipl-module).
 
-| query | Prolog µs | Detlog µs | Detlog MNN µs | MNN ÷ Prolog | fastest |
-| --- | ---: | ---: | ---: | ---: | --- |
-| `fib(21, F)` | 2666 | 16926 | 91.2 | 0.03 | MNN |
-| `fib(25, F)` | 34882 | 140104 | 123 | 0.004 | MNN |
-| `numlist(1, 300, L), nrev(L, R)` | 1394 | 1457 | 110 | 0.08 | MNN |
-| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 480 | 352 | 354 | 0.74 | Detlog / MNN |
-| `queens(8, Qs)`, first answer | 2569 | 87212 | 3030 | 1.18 | Prolog |
-| `queens(6, Qs)`, all answers | 911 | 1608 | 959 | 1.05 | Prolog |
-| `pin(A, B, C)`, all answers | 209 | 1144 | 204 | 0.97 | MNN |
-| `anc(X, dee)`, all answers | 6.8 | 25.3 | 19.5 | 2.87 | Prolog |
+| query | Prolog µs | Detlog µs | Detlog MNN µs | MNN ÷ Prolog |
+| --- | ---: | ---: | ---: | ---: |
+| `fib(21, F)` | 4,248 | 14,053 | 96.1 | 0.02 |
+| `fib(25, F)` | 32,437 | 102,566 | 118 | 0.004 |
+| `numlist(1, 300, L), nrev(L, R)` | 1,195 | 1,254 | 91.5 | 0.08 |
+| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 565 | 465 | 584 | 1.03 |
+| `queens(8, Qs)`, first answer | 4,065 | 101,979 | 3,586 | 0.88 |
+| `queens(6, Qs)`, all answers | 735 | 1,501 | 791 | 1.08 |
+| `pin(A, B, C)`, all answers | 204 | 1,308 | 131 | 0.64 |
+| `anc(X, dee)`, all answers | 6.3 | 29.1 | 26.8 | 4.25 |
 
 Plain Detlog is slower than Prolog wherever there is search. It builds every answer list in full and copies the environment for each answer, where Prolog backtracks. MNN takes that cost away where a rewrite applies (MEMO, accumulate, FUSE, UNFOLD), and is otherwise about as fast as Prolog. For small nondeterministic queries such as `anc/2`, Prolog stays fastest, and `compile` builds the Prolog form.
 

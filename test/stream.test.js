@@ -69,9 +69,14 @@ maxc(N, M) :- findall(S, (between(1, N, I), collatz(I, S)), Ss), max_list(Ss, M)
 sumto(N, S) :- sumto(N, 0, S).
 sumto(0, A, A).
 sumto(N, A, S) :- N > 0, A1 is A + N, N1 is N - 1, sumto(N1, A1, S).
+evens(N, L) :- findall(X, (between(1, N, I), X is 2 * I), L).
+odds(N, L) :- findall(I, (between(1, N, I), I mod 2 =:= 1), L).
+pairs(K, L) :- findall(I-J, (between(1, K, I), J is I * K), L).
+sqsum(N, S) :- findall(Y, (between(1, N, I), gcd(I, N, G), Y is G * G), Ys), sum_list(Ys, S).
 `;
 test('streams: deterministic integer code', () => {
-  const qs = ['collatz(27, S)', 'gcd(1071, 462, G)', 'ack(2, 3, R)', 'digsum(987654321, S)', 'maxc(60, M)', 'sumto(500, S)', 'collatz(N, 3)'];
+  const qs = ['collatz(27, S)', 'gcd(1071, 462, G)', 'ack(2, 3, R)', 'digsum(987654321, S)', 'maxc(60, M)', 'sumto(500, S)', 'collatz(N, 3)',
+    'evens(5, L)', 'odds(9, L)', 'pairs(3, L)', 'sqsum(12, S)', 'evens(0, L)', 'evens(3, [2,4,6])', 'evens(3, [2,4])', 'maxc(N, M)'];
   for (const mnn of [false, true]) {
     const conv = P.convert(INTS, { mnn, queries: qs });
     const prog = P.loadProgram(conv.text);
@@ -84,6 +89,9 @@ test('streams: deterministic integer code', () => {
     if (mnn) {
       assert.equal((conv.text.match(/^sumto__d\(X__1, X__2, S__0\) :-/gm) || []).length, 1, 'sumto__d/3 once');
       assert.ok(P.nativeModesOf(prog).some(m => m.startsWith('collatz__d/3|')), 'collatz/2 runs natively');
+      // findall/3 over between/3 and DET calls: a native DET loop (k_detloop)
+      assert.ok(P.nativeModesOf(prog).some(m => /^maxc__fl\d+__d\//.test(m)), 'maxc/2 loops natively');
+      assert.ok(P.nativeModesOf(prog).some(m => /^sqsum__fl\d+__d\//.test(m)), 'sqsum/2 loops natively');
     }
   }
 });

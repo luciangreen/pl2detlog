@@ -118,6 +118,8 @@
           const c0 = flat(g.a[0]).map(D);
           // the pruned permutation: the goals as written are its else branch
           if (c0.length === 2 && isC(c0[0], 'var', 1) && isC(c0[1], 'is_list', 1) && D(g.a[1]).t === 'c' && /__pwperm$/.test(D(g.a[1]).f)) { out.push(walkK(flat(g.a[2]), T, C)); continue; }
+          // the DET loop for findall/3 over between/3: the goals as written are its else branch
+          if (c0.some(x => x.t === 'c' && /__fl\d+__d$/.test(x.f))) { out.push(walkK(flat(g.a[2]), T, C)); continue; }
           const reaches = x => { let r = false; (function w(y) { y = D(y); if (sameT(y, T) && !isA(y, 'true')) r = true; else if (y.t === 'c') y.a.forEach(w); })(x); return r; };
           if (isA(g.a[1], 'true') && reaches(g.a[0])) { out.push(Cmp(';', [walkK(flat(g.a[0]), T, C), walkK(flat(g.a[2]), T, C)])); continue; }
           const cond = walkK(flat(g.a[0]), Atom('true'), C);

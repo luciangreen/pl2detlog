@@ -13,7 +13,8 @@
   const D = deref;
   const FORBIDDEN = new Set(['!/0', ';/2', '->/2', '*->/2', '\\+/1', 'not/1', 'findall/3', 'findall/4', 'bagof/3', 'setof/3', 'aggregate_all/3', 'aggregate_all/4', 'forall/2', 'once/1', 'ignore/1', 'call/1', 'catch/3']);
   const RULES = new Set(['CUT', 'SPEC', 'PRED', 'FACTS', 'CLAUSE', 'S2A', 'MEMO', 'DET', 'call_det', 'UNSUPPORTED', 'true', 'fail', 'det', 'effect', 'call', 'member_cp', 'between_cp', 'builtin_rows', 'seq', 'det_prefix', 'effect_prefix', 'disj', 'ite', 'ite_det', 'ite_scan', 'neg', 'neg_det', 'neg_scan', 'findall', 'aggregate', 'splice', 'cut_mark']);
-  const STREAM_RULES = new Set(['k_clause', 'k_pred', 'k_cont', 'k_facts', 'k_s2a', 'k_det', 'k_memo', 'k_prune', 'k_query']);
+  const PURE_B = new Set(['is/2', '=/2', '==/2', '\\==/2', '</2', '>/2', '=</2', '>=/2', '=:=/2', '=\\=/2', 'numlist/3', 'true/0', 'atom/1', 'number/1', 'integer/1', 'var/1', 'nonvar/1', 'is_list/1', 'atom_length/2', 'msort/2', 'sort/2', 'reverse/2', 'sum_list/2', 'max_list/2', 'min_list/2']);
+  const STREAM_RULES = new Set(['k_clause', 'k_pred', 'k_cont', 'k_facts', 'k_s2a', 'k_det', 'k_memo', 'k_prune', 'k_query', 'k_detloop']);
   const isC = (t, f, n) => { t = D(t); return t.t === 'c' && t.f === f && t.a.length === n; };
   const RUNTIME_PREDS = () => new Set(Object.keys(P.DETLOG_RUNTIME).concat(['if_commit/3']));
 
@@ -203,6 +204,18 @@
         const same = rows.length === srcRows.length && rows.every((r, i) => show(r, { varName: P.namer() }) === srcRows[i]);
         add('Side conditions', 'stream FACTS ' + pk + ': rows are the source facts in order', same, rows.length + ' facts');
       }
+      // the DET loops of findall/3 over between/3: only pure builtins, proven DET calls and the loop itself
+      {
+        const loops = st.clauses.filter((c, i) => st.tags[i].rule === 'k_detloop');
+        const detNames = new Set(conv.steps.filter(x => x.rule === 'DET').map(x => splitKey(x.pred)[0] + '__d'));
+        const OK = new Set([',/2', 'if_commit/3', '=/2', '==/2', 'is/2', '>/2', 'true/0']);
+        for (const c of loops) {
+          const h = D(D(c).a[0]); let bad = null;
+          (function w(g) { g = D(g); const k = P.key(g); if (k === ',/2' || k === 'if_commit/3') { g.a.forEach(w); return; }
+            if (OK.has(k) || PURE_B.has(k)) return; if (g.t === 'c' && (g.f === h.f || detNames.has(g.f))) return; bad = k; })(D(c).a[1]);
+          add('Side conditions', 'stream DET loop ' + h.f + ': findall/3 over between/3 of pure builtins and proven DET calls, one fresh activation per element', !bad, bad ? 'calls ' + bad : 'yes runs every element\'s goals once, in order, as the bag does; maybe falls back to the bag');
+        }
+      }
       for (const tk of preds('k_prune')) {
         // re-derived: the pairwise test of the source predicate, and the tests the generated pairs check
         let pw = null; try { pw = P.pairwise(P.loadProgram(conv.source), tk); } catch (e) { pw = null; }
@@ -295,6 +308,7 @@
     ['k_det', 'streams + DET: the proven deterministic mode first; yes is the one answer, no is none, maybe runs the stream'],
     ['k_memo', 'streams + MEMO: the answers of a pure predicate per call variant, from the table or collected once'],
     ['k_prune', 'streams + PRUNE: permutation then a pairwise test: each placed element is tested against the earlier ones, so a failing prefix is not extended'],
+    ['k_detloop', 'streams + DET: findall/3 over between/3 with pure builtins and DET calls as a deterministic loop; maybe runs the bag'],
     ['k_query', 'streams: the query boundary collects the answers, with the text written before each, as the query packet'],
     ['DET', 'MNN: an output-free predicate whose clauses are told apart by their first argument, and whose goals are deterministic, runs as p__d(Args, Status) without packets; status maybe (a first argument unbound where several clauses match) falls back to the packet code']
   ];

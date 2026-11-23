@@ -259,6 +259,50 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
       return call;
     }
 
+    // findall(T, (between(L, H, I), G1, ..., Gn), Ts) with each Gi a pure builtin or a call of a DET
+    // predicate, and T and the Gi using only I, their own variables and ground outer ones: the DET loop
+    //   F(I, H, Env.., Ts, S) :- I > H: Ts = []; otherwise the goals' status S1: yes adds T, no skips, maybe
+    //   is maybe (and the bag runs instead, from the start)
+    // run at the call when L and H are integers and Env is ground.  Each iteration is a fresh activation of
+    // F, as each answer of the bag is a fresh copy, so the list is the bag's (k_detloop, src/proof.js).
+    function findLoop(T, G, ctx) {
+      if (!detCode.size) return null;
+      const gs = flat(G).map(D); if (gs.length < 2 || !isC(gs[0], 'between', 3)) return null;
+      const I = D(gs[0].a[2]); if (I.t !== 'v' || ctx.outer.includes(I)) return null;
+      const body = gs.slice(1);
+      if (!body.every(b => PURE.has(kk(b)) || (user.has(kk(b)) && detCode.has(kk(b))))) return null;
+      const outerSet = new Set(ctx.outer);
+      const used = termVars(Cmp('x', [T, conj(body)]));
+      const env = used.filter(v => v !== I && outerSet.has(v));
+      if (termVars(Cmp('x', [gs[0].a[0], gs[0].a[1]])).includes(I)) return null;
+      const name = ctx.f + '__fl' + (++contN) + '__d';
+      const pred0 = PRED; const rule0 = RULE; RULE = 'k_detloop';
+      // the clause, over fresh variables
+      const m = new Map(); const c = P.copy(Cmp('x', [I, T, conj(body), list(env)]), m);
+      const cI = D(c.a[0]), cT = c.a[1], cBody = flat(c.a[2]).map(D), cEnv = listToArray(c.a[3]);
+      const H = V('H'), Ts = V('Ts'), Ts1 = V('Ts'), S0 = V('S');
+      // each failure point skips the element and each success point adds it, in place (the native tier
+      // follows the bindings of one path; a join after the goals would lose them)
+      const next = (out) => { const I1 = V('I'); return conj([Cmp('is', [I1, Cmp('+', [cI, Int(1)])]), Cmp(name, [I1, H].concat(cEnv, [out, S0]))]); };
+      const skip = () => next(Ts);
+      const add = () => Cmp('if_commit', [Cmp('=', [Ts, P.cons(cT, Ts1)]), next(Ts1), Cmp('=', [S0, Atom('no')])]);
+      const step = (i) => {
+        if (i === cBody.length) return add();
+        const b = cBody[i];
+        if (PURE.has(kk(b))) return Cmp('if_commit', [b, step(i + 1), skip()]);
+        const S2 = V('S');
+        return conj([Cmp(P.name(b) + '__d', b.a.concat([S2])), Cmp('if_commit', [Cmp('=', [S2, Atom('yes')]), step(i + 1),
+          Cmp('if_commit', [Cmp('=', [S2, Atom('no')]), skip(), Cmp('=', [S0, S2])])])]);
+      };
+      emit(Cmp(':-', [Cmp(name, [cI, H].concat(cEnv, [Ts, S0])),
+        Cmp('if_commit', [Cmp('>', [cI, H]), Cmp('if_commit', [Cmp('=', [Ts, NIL]), Cmp('=', [S0, Atom('yes')]), Cmp('=', [S0, Atom('no')])]), step(0)])]));
+      RULE = rule0; PRED = pred0;
+      const Lo = gs[0].a[0], Hi = gs[0].a[1], R = V('Ts'), S = V('S');
+      const cond = [Cmp('integer', [Lo]), Cmp('integer', [Hi])].concat(env.length ? [Cmp('ground', [list(env)])] : [],
+        [Cmp(name, [Lo, Hi].concat(env, [R, S])), Cmp('==', [S, Atom('yes')])]);
+      return { cond, Ts: R };
+    }
+
     // the continuation for rest, after the goals whose variables are bound
     function contFor(rest, bound, K, ctx) {
       const before = new Set(ctx.outer.concat(bound));
@@ -302,9 +346,12 @@ dl_facts_k(Fs, Pat, K) :- Fs = [F|Fs1], if_commit((copy_term(F, F1), F1 = Pat, d
         case 'forall/2': return genGoal(Cmp('\\+', [Cmp(',', [g.a[0], Cmp('\\+', [g.a[1]])])]), K, ctx);
         case 'call/1': return genGoal(g.a[0], K, ctx);
         case 'findall/3': case 'findall/4': {
+          // MNN: findall/3 over between/3 and DET calls is a deterministic loop (the native tier's integer loop)
+          const fl = k === 'findall/3' ? findLoop(g.a[0], g.a[1], ctx) : null;
           const B = V('B');
           const coll = [Cmp('dl_bag_new', [B]), Cmp('if_commit', [conj(genConj(flat(g.a[1]), Cmp('dl_collect', [B, g.a[0]]), ctx)), TRUE, TRUE])];
           const res = k === 'findall/3' ? Cmp('dl_bag_list', [B, g.a[2]]) : Cmp('dl_bag_list', [B, g.a[2], g.a[3]]);
+          if (fl) return [Cmp('if_commit', [conj(fl.cond), conj([Cmp('=', [fl.Ts, g.a[2]])].concat(kcall(K))), conj(coll.concat([res], kcall(K)))])];
           return coll.concat([res], kcall(K));
         }
         case 'aggregate_all/3': {

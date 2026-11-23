@@ -223,7 +223,7 @@ Each case runs in all three forms, each in a fresh process. It passes when the t
 5. **Shows stats.** For each query it shows steps, time and choicepoints (or Detlog decisions) for Prolog, the Detlog interpreter, Detlog code and MNN Detlog. It also compares static complexity: predicates, goals, choicepoint sites and cyclomatic complexity. A **complexity sweep** runs a query template for N = a..b and fits a growth class, such as O(n), O(n²) or O(c^n).
 6. **Exports:**
    - HTML: a self-contained page that runs the Detlog.
-   - Detlog `.pl` with `detlog_runtime.pl` included: consult it in SWI-Prolog and run `?- detlog_run_all.`
+   - Detlog `.pl` with `detlog_runtime.pl` and `detlog_stream_rt.pl` included: consult it in SWI-Prolog and run `?- detlog_run_all.`
    - C, with its runtime.
    - Back-converted Prolog, with the change warnings as comments.
    - The proof report.
@@ -240,7 +240,7 @@ The app runs every query on four engines and checks that they all give the same 
   - Runs of deterministic goals execute in place.
   - `(C -> T ; E)`, `\+` and `once/1` take the first row of `C` and never demand the rest.
   - A cut inside a branch is a status that stops the remaining rows and clauses.
-- **Detlog code** is the converted `p__cp` program, run on the deterministic engine (`src/detlog_fast.js`). That engine compiles the program to JavaScript source, one function per predicate:
+- **Detlog code** is the converted program (answer streams by default; the packet form `p__cp` on request), run on the deterministic engine (`src/detlog_fast.js`). That engine compiles the program to JavaScript source, one function per predicate:
   - arguments are positional and clause variables are JS locals;
   - heads are matched inline, and each clause is selected by its first argument;
   - `if_commit/3` is a labelled block;
@@ -279,40 +279,69 @@ All times are microseconds per run, in Node 22 and `cc -O2`, recorded by `node b
 
 **Why plain converted code is slower than Prolog.** It is Detlog's representation, not its semantics. The interpreter runs the same choicepoint-free, cut-free semantics and is faster than Prolog on these queries (except `doubles`/`total`, where its `maplist` path is slow). Converted code is slower because it materialises every answer set as a list of rows, copies environments at every call, and keeps every variable as a heap logic variable with trail entries, even in deterministic integer code.
 
-**Answer streams (`src/stream.js`).** Every conversion also writes the plain Detlog as answer streams (`conv.streamText`; `node cli.js prog.pl -q Q --plain --streams` prints it):
+**Answer streams (`src/stream.js`) are the default form.** `P.convert` returns the stream code as `conv.text`. The packet code is kept as `conv.packetText` (`P.convert(src, { form: 'packets' })` makes it the text; `node cli.js ... --packets` prints or compiles it).
 
 - **Streams instead of packets.** A predicate `p/N` is `p__k(Args, K)`: it passes each answer, in Prolog's order, to the continuation `K`, and stops at the first answer `K` accepts.
 - **No copies.** A rejected answer is undone by `if_commit/3` and the trail, so nothing is copied and no packet is built.
-- **Continuations.** The rest of a clause after a call is a continuation term carrying the caller's own variables. It is applied by a `dl_k/1` clause chosen by its first argument, so there is still no `call/N` and no choicepoint.
+- **Continuations.** The rest of a clause after a call is a continuation term carrying the caller's own variables. A `dl_k/1` clause chosen by its first argument applies it, so there is still no `call/N` and no choicepoint.
 - **Lazy builtins.** `member/2`, `between/3`, `select/3`, `nth0/3` and `nth1/3` are lazy Detlog loops in a short stream library.
 - **Collection.** `findall/3` and `aggregate_all/3` collect into a bag. A cut inside `;` or `->` commits through a cut cell.
-- **The query entry is unchanged.** `'$queryN__cp'` still returns rows with the text written before each, so every engine and export reads it as before.
+- **The query entry is unchanged.** `'$queryN__cp'` still returns rows, with the text written before each, so every engine and export reads it as before.
 
-`test/stream.test.js` runs every example query, plain and MNN, on the JIT and the closure engine. It checks the output against Prolog's, checks that no call has two candidate clauses, and checks that the generated code contains no packet builtin and no `copy_term/2`. The analysis (`P.analyse`) runs the stream code next to the other engines and includes it in the agreement check.
+The MNN rewrites work on streams:
 
-Microseconds per run on the JIT (Node 22, this machine):
+| rewrite | stream form |
+| --- | --- |
+| DET | `p__k` first runs the proven `p__d(Args, S)`. `yes` is the one answer, `no` is none, and `maybe` runs the stream. The JIT's and the C export's native tier run `p__d` as typed functions. A query made only of DET calls and pure builtins gives its one answer in place, without copying a row. |
+| MEMO | `p__km` reads the table entry for the call variant and walks its rows. On a miss it collects the stream once and stores it. |
+| S2A | `p__k` walks the table's rows. A query that is one S2A call takes its rows from the table. |
+| PRUNE | `permutation(L, P), t(P)` with `t/1` a pairwise test (`src/algebra.js`) becomes `t__pwperm`, which places one element at a time and never extends a failing prefix. The JIT and the C export run it as a native integer loop that stops at the first answer the continuation accepts. Plain code is pruned too. |
+| splice | not needed: a stream computes each generator's answers one at a time, so nothing is multiplied out. |
 
-| query | Prolog | plain packets | plain streams | streams ÷ packets |
+Microseconds per run (Node 22 JIT, warmed up, one process per figure; the JIT knows the source, so it prunes permutations):
+
+| query | Prolog | plain packets | plain streams | MNN packets | MNN streams |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fib(18, F)` | 33,933 | 92,500 | 98,500 | 9 | 5 |
+| `numlist(1, 60, L), nrev(L, R)` | 2,825 | 25,450 | 207 | 34 | 36 |
+| `numlist(1, 300, L), nrev(L, R)` | 87,500 | 418,500 | 207,667 | 172 | 216 |
+| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 9,259 | 284,000 | 42,333 | 482 | 547 |
+| `queens(6, Qs)` | 10,891 | 24,000 | 25 | 27 | 29 |
+| `pin(A, B, C)` | 647 | 3,914 | 333 | 7 | 8 |
+| `anc(X, dee)` | 13 | 51 | 34 | 6 | 5 |
+
+Milliseconds per run of the C export (`cc -O2`, `./prog -r 200`):
+
+| query | plain packets | plain streams | MNN packets | MNN streams |
 | --- | ---: | ---: | ---: | ---: |
-| `fib(18, F)` | 50,789 | 117,285 | 88,412 | 0.75 |
-| `numlist(1, 60, L), nrev(L, R)` | 4,772 | 23,330 | 351 | 0.015 |
-| `numlist(1, 300, L), nrev(L, R)` | 118,520 | 592,344 | 341,518 | 0.58 |
-| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 12,841 | 228,004 | 60,336 | 0.26 |
-| `queens(6, Qs)` | 13,933 | 20,776 | 4,016 | 0.19 |
-| `pin(A, B, C)` | 745 | 5,583 | 487 | 0.087 |
-| `anc(X, dee)` | 25.2 | 67.6 | 27.4 | 0.41 |
+| `fib(18, F)` | 13.9 | 1.77 | 0.0020 | 0.0005 |
+| `numlist(1, 60, L), nrev(L, R)` | 1.66 | 0.112 | 0.0054 | 0.0048 |
+| `numlist(1, 300, L), nrev(L, R)` | 68.1 | 3.67 | 0.0311 | 0.0176 |
+| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 7.86 | 0.949 | 0.0176 | 0.0196 |
+| `queens(6, Qs)` | 3.29 | 0.0033 | 0.0068 | 0.0033 |
+| `pin(A, B, C)` | 0.861 | 0.256 | 0.0002 | 0.0001 |
+| `anc(X, dee)` | 0.0182 | 0.0059 | 0.0005 | 0.0005 |
 
-Streams make plain Detlog faster than its packet code on every query, and faster than Prolog on `nrev` (60 elements), `queens/2` and `pin/3`.
+Plain streams beat plain packets on every query except `fib/2` on the JIT, where both rebuild an exponential call tree. MNN streams match MNN packets within the noise of these timings on the JIT, and in C they are as fast or faster everywhere except `doubles`/`total` (about 10% slower). Plain `fib/2` stays slow on purpose: making it linear is MEMO's job, and the plain form has no MNN rewrites.
 
-MNN Detlog still uses packets, because its rewrites are written for packet code:
+Every consumer reads stream code:
 
-- MEMO tables;
-- the DET native tier;
-- S2A loops;
-- splice;
-- the C export's pairwise pruning.
+- **The C export** (`src/runtime.c`): bags, cut cells, output written directly and captured at the query boundary, and the native pruned permutation.
+- **Back-conversion** (`src/backconv.js`): it walks each clause and follows each continuation into its `dl_k/1` clause. Library calls become `member/2`, `between/3`, `findall/3` and so on, a cut cell becomes `!`, and DET, MEMO and S2A wrappers are dropped. On `examples/branchcut.pl` it gives the source back exactly.
+- **The proof checker** (`src/proof.js`):
+  - shape;
+  - no packet and no environment copy outside the query boundary;
+  - a rule for every clause (`k_clause`, `k_pred`, `k_cont`, `k_facts`, `k_s2a`, `k_det`, `k_memo`, `k_prune`, `k_query`);
+  - side conditions, re-derived: DET writes no output, MEMO is pure, S2A rows belong to a proven S2A step, facts match the source, and the pairwise tests are the ones `src/algebra.js` derives from the source;
+  - evaluation against Prolog, next to the packet code.
+- **SWI-Prolog**: exported stream code needs `src/detlog_stream_rt.pl` next to `detlog_runtime.pl`. `--detlog` and the app's download include both.
 
-Porting them to streams, and teaching the C export, back-conversion and the proof checker the stream templates, is the next step. Then streams become the default form.
+Tests:
+
+- `test/stream.test.js` checks every example, plain and MNN, on the JIT and the closure engine. It also checks the C export against the packet program's C, generic and native, and deterministic integer code (`collatz/2`, `ack/3`, `gcd/3`, `sumto/2` and `sumto/3`).
+- `test/swipl.test.js` runs every example's exported Detlog, in both forms, in SWI-Prolog.
+
+The native tier also got a fix. Each status variable now keeps one local, so both branches of an `if_commit/3` set the same one. That lets an if-then-else on integers, as in `collatz/2`, compile to a typed function: MNN `collatz(27, S)` takes 4 µs, against 403 µs in Prolog.
 
 **What MNN removes.**
 - MEMO makes `fib` linear, so MNN `fib(21)` is faster than the exponential C.
@@ -430,6 +459,23 @@ The command line has no step or time limit, as `swipl` has none; `PL2DETLOG_TIME
 
 ## How Prolog becomes Detlog
 
+The default form, answer streams (`src/stream.js`):
+
+| Prolog | Detlog streams |
+| --- | --- |
+| predicate `p/N` | `p__k(A1, ..., AN, K)`: each answer is passed to the continuation `K`; the first answer `K` accepts commits |
+| several clauses | `if_commit(p__k1(A.., K), true, p__k2(A.., K))`: the next clause runs only if no answer of the earlier one was accepted |
+| `G, Rest` after a call `G` | `g__k(Args, p__cN(Env.., K))` with `dl_k(p__cN(Env.., K)) :- Rest` |
+| facts | `dl_facts_k(Rows, Args, K)` |
+| `member/2`, `between/3`, `select/3`, `nth0/3`, `nth1/3` | `dl_member_k/3`, `dl_between_k/4`, ... lazy loops |
+| other nondeterministic builtins | `builtin_rows(G, Rs), dl_rows_k(Rs, [G], K)` |
+| `(C -> T ; E)`, `\+`, `once/1` | `if_commit(C with continuation true, T, E)` |
+| `findall/3`, `aggregate_all/3` | `dl_bag_new(B)`, the goal with continuation `dl_collect(B, T)`, `dl_bag_list(B, L)` |
+| a cut inside `;` or `->` | `dl_cut_new(C)` per call, `dl_cut_set(C)` at the cut, `dl_cut_off(C)` before later alternatives |
+| query | `'$queryN__cp'(Vars, Rows)`: the answers, with the text written before each |
+
+The packet form (`form: 'packets'`):
+
 | Prolog | Detlog |
 | --- | --- |
 | facts | `cp_filter(Facts, Args, Rows)` |
@@ -482,6 +528,9 @@ Detlog2 rejects a cut inside an if-then-else branch. pl2detlog converts it with 
 | `src/stats.js` | metrics, timing, complexity sweeps, the analysis pipeline |
 | `src/cgen.js`, `src/runtime.c` | Detlog → C |
 | `src/detlog_runtime.pl` | the Detlog runtime for SWI-Prolog (cut-free; `if_commit/3` is its one primitive) |
+| `src/stream.js` | Detlog as answer streams (the default form): continuations, the stream library, MNN DET/MEMO/S2A/PRUNE on streams |
+| `src/detlog_stream_rt.pl` | the stream code's SWI-Prolog runtime: bags, cut cells, the query boundary's output capture |
+| `test/stream.test.js`, `test/swipl.test.js` | stream code on every engine and in C; exported Detlog in SWI-Prolog |
 | `app/` | the app's page and script |
 | `cli.js` | command line |
 | `examples/` | the example programs |

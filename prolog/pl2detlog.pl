@@ -1897,7 +1897,7 @@ prune(an(b(permutation(L, P)), false, _, GB, _, Seen, _), [an(u(TG), _, _, _, _,
     Call =.. [PN, L, [], P, K1],
     Code = Call,
     TN = TNm,
-    format(atom(N), 'MNN prune pairwise: permutation/2 then ~w/1, a test over all pairs of positions, so a prefix that fails a pair is never extended (same permutations, same order)', [TNm]),
+    format(atom(N), 'PRUNE pairwise: permutation/2 then ~w/1, a test over all pairs of positions, so a prefix that fails a pair is never extended (same permutations, same order)', [TNm]),
     root_of(Key, Root), add_note(Root, N).
 prune(an(b(between(Lo, Hi, X)), false, _, GB, _, Seen, _), [an(b(E1 =:= E2), _, _, _, _, _, _)|Rest],
       Out, K, Ctx, Code) :-
@@ -1911,14 +1911,14 @@ prune(an(b(between(Lo, Hi, X)), false, _, GB, _, Seen, _), [an(b(E1 =:= E2), _, 
     tr_k(Rest, Out2, K, Ctx, RC),
     conj(dl_solve_between(Lo, Hi, S1, X), RC, Code),
     Ctx = c(Key, _), root_of(Key, Root),
-    add_note(Root, 'MNN prune solve: between/3 followed by a test linear in its variable has at most one answer, which is solved for (dl_solve_between/4)').
+    add_note(Root, 'PRUNE solve: between/3 followed by a test linear in its variable has at most one answer, which is solved for (dl_solve_between/4)').
 prune(an(b(between(Lo, Hi, X)), false, Tt, GB, ID, Se, Sh), [an(b(T), _, _, _, _, _, _)|Rest],
       Out, K, Ctx, Code) :-
     integer(Lo), ( integer(Hi) ; Hi == inf ; Hi == infinite ), var(X),
     narrow(T, X, Lo, Hi, Lo1, Hi1),
     !,
     Ctx = c(Key, _), root_of(Key, Root),
-    add_note(Root, 'MNN prune bounds: between/3 followed by an integer bound on its variable starts or stops at that bound'),
+    add_note(Root, 'PRUNE bounds: between/3 followed by an integer bound on its variable starts or stops at that bound'),
     tr_k([an(b(between(Lo1, Hi1, X)), false, Tt, GB, ID, Se, Sh)|Rest], Out, K, Ctx, Code).
 
 ground_in(L, GB) :- term_variables(L, Vs), forall(member(V, Vs), var_in(GB, V)).

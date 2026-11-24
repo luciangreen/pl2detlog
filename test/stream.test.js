@@ -69,9 +69,14 @@ maxc(N, M) :- findall(S, (between(1, N, I), collatz(I, S)), Ss), max_list(Ss, M)
 sumto(N, S) :- sumto(N, 0, S).
 sumto(0, A, A).
 sumto(N, A, S) :- N > 0, A1 is A + N, N1 is N - 1, sumto(N1, A1, S).
+evens(N, L) :- findall(X, (between(1, N, I), X is 2 * I), L).
+odds(N, L) :- findall(I, (between(1, N, I), I mod 2 =:= 1), L).
+pairs(K, L) :- findall(I-J, (between(1, K, I), J is I * K), L).
+sqsum(N, S) :- findall(Y, (between(1, N, I), gcd(I, N, G), Y is G * G), Ys), sum_list(Ys, S).
 `;
 test('streams: deterministic integer code', () => {
-  const qs = ['collatz(27, S)', 'gcd(1071, 462, G)', 'ack(2, 3, R)', 'digsum(987654321, S)', 'maxc(60, M)', 'sumto(500, S)', 'collatz(N, 3)'];
+  const qs = ['collatz(27, S)', 'gcd(1071, 462, G)', 'ack(2, 3, R)', 'digsum(987654321, S)', 'maxc(60, M)', 'sumto(500, S)', 'collatz(N, 3)',
+    'evens(5, L)', 'odds(9, L)', 'pairs(3, L)', 'sqsum(12, S)', 'evens(0, L)', 'evens(3, [2,4,6])', 'evens(3, [2,4])', 'maxc(N, M)'];
   for (const mnn of [false, true]) {
     const conv = P.convert(INTS, { mnn, queries: qs });
     const prog = P.loadProgram(conv.text);
@@ -84,6 +89,42 @@ test('streams: deterministic integer code', () => {
     if (mnn) {
       assert.equal((conv.text.match(/^sumto__d\(X__1, X__2, S__0\) :-/gm) || []).length, 1, 'sumto__d/3 once');
       assert.ok(P.nativeModesOf(prog).some(m => m.startsWith('collatz__d/3|')), 'collatz/2 runs natively');
+      // findall/3 over between/3 and DET calls: a native DET loop (k_detloop)
+      assert.ok(P.nativeModesOf(prog).some(m => /^maxc__fl\d+__d\//.test(m)), 'maxc/2 loops natively');
+      assert.ok(P.nativeModesOf(prog).some(m => /^sqsum__fl\d+__d\//.test(m)), 'sqsum/2 loops natively');
     }
   }
+});
+
+// Every example converts to stream code (a conversion error would fall back to packets silently).
+test('streams: every example is in the stream form', () => {
+  for (const ex of P.EXAMPLES) for (const mnn of [false, true]) {
+    const conv = P.convert(ex.src, { mnn, queries: ex.queries });
+    assert.equal(conv.form, 'streams', ex.id + (mnn ? ' MNN' : '') + ': ' + conv.streamError);
+  }
+});
+
+// A user predicate that is permutation/2 (select-based, either select/3 or its own two clauses) is pruned
+// like permutation/2: same answers in the same order, on the JIT and in C.
+test('streams: user-defined permutation pruned', () => {
+  const src = 'queens(N, Qs) :- numlist(1, N, Ns), perm(Ns, Qs), safe(Qs).\nperm([], []).\nperm(L, [H|T]) :- sel(H, L, R), perm(R, T).\nsel(X, [X|T], T).\nsel(X, [H|T], [H|R]) :- sel(X, T, R).\n' +
+    'safe([]).\nsafe([Q|Qs]) :- noatt(Q, Qs, 1), safe(Qs).\nnoatt(_, [], _).\nnoatt(Q, [Q1|Qs], D) :- Q =\\= Q1 + D, Q =\\= Q1 - D, D1 is D+1, noatt(Q, Qs, D1).\n' +
+    'q2(N, Qs) :- numlist(1, N, Ns), perm2(Ns, Qs), safe(Qs).\nperm2([], []).\nperm2(L, [H|T]) :- select(H, L, R), perm2(R, T).\n' +
+    'ins(N, Qs) :- numlist(1, N, Ns), perm3(Ns, Qs), safe(Qs).\nperm3([], []).\nperm3([X|Xs], P) :- perm3(Xs, P1), select(X, P, P1).\n';
+  const qs = ['queens(6, Qs)', 'q2(5, Qs)', 'ins(5, Qs)', 'perm([1,2,3], P)'];
+  for (const mnn of [false, true]) {
+    const conv = P.convert(src, { mnn, queries: qs });
+    assert.equal(conv.form, 'streams');
+    assert.match(conv.text, /^safe__pwperm\(/m);
+    const prog = P.loadProgram(conv.text); prog.pairwiseSource = P.loadProgram(src);
+    for (const q of conv.queries) {
+      const ref = P.runQuery(P.loadProgram(src), q.text, { stepLimit: 1e8 });
+      const r = P.runDetlogFast(prog, q.pred, q.vars, { stepLimit: 1e8 });
+      assert.equal(render(r.events || []), render(ref.events || []), q.text + (mnn ? ' (MNN)' : ''));
+    }
+  }
+  const r = P.analyse(src, qs.slice(0, 3), { timing: false });
+  assert.deepEqual(r.proof.checks.filter(c => c.ok === false).map(c => c.name), []);
+  assert.ok(r.proof.checks.some(c => /PRUNE generator perm\/2/.test(c.name) && c.ok === true));
+  assert.ok(!r.proof.checks.some(c => /PRUNE generator perm3/.test(c.name)), 'insertion-based perm3 is not pruned (another order)');
 });

@@ -13,7 +13,34 @@
   const D = deref;
   const FORBIDDEN = new Set(['!/0', ';/2', '->/2', '*->/2', '\\+/1', 'not/1', 'findall/3', 'findall/4', 'bagof/3', 'setof/3', 'aggregate_all/3', 'aggregate_all/4', 'forall/2', 'once/1', 'ignore/1', 'call/1', 'catch/3']);
   const RULES = new Set(['CUT', 'SPEC', 'PRED', 'FACTS', 'CLAUSE', 'S2A', 'MEMO', 'DET', 'call_det', 'UNSUPPORTED', 'true', 'fail', 'det', 'effect', 'call', 'member_cp', 'between_cp', 'builtin_rows', 'seq', 'det_prefix', 'effect_prefix', 'disj', 'ite', 'ite_det', 'ite_scan', 'neg', 'neg_det', 'neg_scan', 'findall', 'aggregate', 'splice', 'cut_mark']);
-  const STREAM_RULES = new Set(['k_clause', 'k_pred', 'k_cont', 'k_facts', 'k_s2a', 'k_det', 'k_memo', 'k_prune', 'k_query']);
+  const PURE_B = new Set(['is/2', '=/2', '==/2', '\\==/2', '</2', '>/2', '=</2', '>=/2', '=:=/2', '=\\=/2', 'numlist/3', 'true/0', 'atom/1', 'number/1', 'integer/1', 'var/1', 'nonvar/1', 'is_list/1', 'atom_length/2', 'msort/2', 'sort/2', 'reverse/2', 'sum_list/2', 'max_list/2', 'min_list/2']);
+  // an arithmetic guard on V against an integer, as an interval (the same reading as src/stream.js)
+  const GUARD = (g, v) => {
+    if (g.t !== 'c' || g.a.length !== 2 || !['>', '>=', '<', '=<', '=:='].includes(g.f)) return null;
+    let l = D(g.a[0]), r = D(g.a[1]), op = g.f; const flip = { '>': '<', '<': '>', '>=': '=<', '=<': '>=', '=:=': '=:=' };
+    if (r === v && l.t === 'n') { [l, r] = [r, l]; op = flip[op]; }
+    if (l !== v || r.t !== 'n' || r.f || !Number.isSafeInteger(r.v)) return null; const c = r.v;
+    return op === '>' ? { lo: c, loOpen: true, hi: Infinity, hiOpen: true } : op === '>=' ? { lo: c, loOpen: false, hi: Infinity, hiOpen: true }
+      : op === '<' ? { lo: -Infinity, loOpen: true, hi: c, hiOpen: true } : op === '=<' ? { lo: -Infinity, loOpen: true, hi: c, hiOpen: false } : { lo: c, loOpen: false, hi: c, hiOpen: false };
+  };
+  // a source predicate that is permutation/2 clause for clause, with select/3 or a predicate that is select/3
+  const PERMSHAPE = (prog, k) => {
+    const V = x => D(x).t === 'v', L = (t) => { t = D(t); return t.t === 'c' && t.f === '.' && t.a.length === 2 ? [D(t.a[0]), D(t.a[1])] : null; };
+    const SEL = (sk) => { const c = prog.preds.get(sk); if (!c || c.length !== 2) return false;
+      const h1 = D(c[0].head), h2 = D(c[1].head), b2 = D(c[1].body); if (!isA(c[0].body, 'true') || h1.a.length !== 3) return false;
+      const l1 = L(h1.a[1]); if (!l1 || !V(h1.a[0]) || l1[0] !== D(h1.a[0]) || l1[1] !== D(h1.a[2]) || !V(h1.a[2])) return false;
+      const l2 = L(h2.a[1]), l3 = L(h2.a[2]); if (!l2 || !l3 || l3[0] !== l2[0] || ![h2.a[0], l2[0], l2[1], l3[1]].every(V) || new Set([D(h2.a[0]), l2[0], l2[1], l3[1]]).size !== 4) return false;
+      return isC(b2, h2.f, 3) && D(b2.a[0]) === D(h2.a[0]) && D(b2.a[1]) === l2[1] && D(b2.a[2]) === l3[1]; };
+    const c = prog.preds.get(k); if (!c || c.length !== 2) return false;
+    const h1 = D(c[0].head), h2 = D(c[1].head); if (!isA(c[0].body, 'true') || !h1.a.every(x => isA(x, '[]'))) return false;
+    const pt = L(h2.a[1]); if (!pt || !V(h2.a[0]) || !V(pt[0]) || !V(pt[1])) return false;
+    const gs = P.flatConj(c[1].body).map(D); if (gs.length !== 2 || gs[0].t !== 'c' || gs[0].a.length !== 3 || !isC(gs[1], h2.f, 2)) return false;
+    const R = D(gs[0].a[2]);
+    if (D(gs[0].a[0]) !== pt[0] || D(gs[0].a[1]) !== D(h2.a[0]) || !V(R) || D(gs[1].a[0]) !== R || D(gs[1].a[1]) !== pt[1] || new Set([D(h2.a[0]), pt[0], pt[1], R]).size !== 4) return false;
+    return gs[0].f === 'select' || SEL(P.key(gs[0]));
+  };
+  const isA = (t, n) => { t = D(t); return t.t === 'a' && t.n === n; };
+  const STREAM_RULES = new Set(['k_clause', 'k_pred', 'k_cont', 'k_facts', 'k_s2a', 'k_det', 'k_memo', 'k_prune', 'k_query', 'k_detloop', 'k_index']);
   const isC = (t, f, n) => { t = D(t); return t.t === 'c' && t.f === f && t.a.length === n; };
   const RUNTIME_PREDS = () => new Set(Object.keys(P.DETLOG_RUNTIME).concat(['if_commit/3']));
 
@@ -203,6 +230,34 @@
         const same = rows.length === srcRows.length && rows.every((r, i) => show(r, { varName: P.namer() }) === srcRows[i]);
         add('Side conditions', 'stream FACTS ' + pk + ': rows are the source facts in order', same, rows.length + ' facts');
       }
+      // the DET loops of findall/3 over between/3: only pure builtins, proven DET calls and the loop itself
+      {
+        const loops = st.clauses.filter((c, i) => st.tags[i].rule === 'k_detloop');
+        const detNames = new Set(conv.steps.filter(x => x.rule === 'DET').map(x => splitKey(x.pred)[0] + '__d'));
+        const OK = new Set([',/2', 'if_commit/3', '=/2', '==/2', 'is/2', '>/2', 'true/0']);
+        for (const c of loops) {
+          const h = D(D(c).a[0]); let bad = null;
+          (function w(g) { g = D(g); const k = P.key(g); if (k === ',/2' || k === 'if_commit/3') { g.a.forEach(w); return; }
+            if (OK.has(k) || PURE_B.has(k)) return; if (g.t === 'c' && (g.f === h.f || detNames.has(g.f))) return; bad = k; })(D(c).a[1]);
+          add('Side conditions', 'stream DET loop ' + h.f + ': findall/3 over between/3 of pure builtins and proven DET calls, one fresh activation per element', !bad, bad ? 'calls ' + bad : 'yes runs every element\'s goals once, in order, as the bag does; maybe falls back to the bag');
+        }
+      }
+      // first-argument dispatch: re-derived from the clauses it dispatches to (their first head arguments
+      // and leading guards), pairwise exclusive on a bound argument; the else branch is the plain chain
+      for (const [ci, c] of st.clauses.entries()) {
+        if (st.tags[ci].rule !== 'k_index') continue;
+        const h = D(D(c).a[0]); const ic = D(D(c).a[1]); let ok = isC(ic, 'if_commit', 3) && isC(ic.a[0], 'nonvar', 1), why = '';
+        const keys = [];
+        if (ok) for (let d = D(ic.a[1]); isC(d, 'if_commit', 3); d = D(d.a[2])) {
+          const callee = D(d.a[1]); const cls = st.clauses.filter(x => isC(x, ':-', 2) && D(D(x).a[0]).f === callee.f);
+          if (cls.length !== 1) { ok = false; why = 'no single clause for ' + callee.f; break; }
+          const hd = D(D(cls[0]).a[0]); const a0 = D(hd.a[0]);
+          if (a0.t !== 'v') keys.push({ pat: a0 });
+          else { const g0 = P.flatConj(D(cls[0]).a[1]).map(D)[0]; const iv = g0 && GUARD(g0, a0); if (!iv) { ok = false; why = callee.f + ': no guard'; break; } keys.push({ iv }); }
+        }
+        for (let i = 0; ok && i < keys.length; i++) for (let j = i + 1; ok && j < keys.length; j++) if (!P.streamExclusive(keys[i], keys[j])) { ok = false; why = 'clauses ' + (i + 1) + ' and ' + (j + 1) + ' overlap'; }
+        add('Side conditions', 'stream INDEX ' + h.f + '/' + h.a.length + ': the clauses are pairwise exclusive on a bound first argument', ok, ok ? keys.length + ' clauses, dispatched' : why);
+      }
       for (const tk of preds('k_prune')) {
         // re-derived: the pairwise test of the source predicate, and the tests the generated pairs check
         let pw = null; try { pw = P.pairwise(P.loadProgram(conv.source), tk); } catch (e) { pw = null; }
@@ -215,6 +270,18 @@
           ok = want.join() === have.join(); why = ok ? pw.proof : 'tests differ: ' + have.join(', ') + ' vs ' + want.join(', ');
         }
         add('Side conditions', 'stream PRUNE permutation then ' + tk + ': prefixes failing a pair are dropped, the same permutations kept in order', ok, why);
+      }
+      // the generator of each pruned permutation: permutation/2, or a source predicate that is
+      // permutation/2 clause for clause (select-based, in the same order)
+      {
+        const srcProg = P.loadProgram(conv.source); const gens = new Set();
+        for (const c of st.clauses) (function w(g) { g = D(g); if (g.t !== 'c') return;
+          if (g.f === 'if_commit' && g.a.length === 3) { const a = D(g.a[1]); if (a.t === 'c' && /__pwperm$/.test(a.f)) { const g0 = P.flatConj(D(g.a[2])).map(D)[0]; gens.add(g0 && isC(g0, 'builtin_rows', 2) ? P.key(D(g0.a[0])) : g0 && g0.t === 'c' ? g0.f.replace(/__k$/, '') + '/' + (g0.a.length - 1) : '?'); } }
+          g.a.forEach(w); })(c);
+        for (const gk of gens) {
+          const ok = gk === 'permutation/2' || PERMSHAPE(srcProg, gk);
+          add('Side conditions', 'stream PRUNE generator ' + gk + ': permutation/2 in its order', ok, ok ? (gk === 'permutation/2' ? 'the builtin' : 'perm([], []). perm(L, [H|T]) :- select(H, L, R), perm(R, T). (select/3 itself or its two clauses)') : 'not permutation/2');
+        }
       }
     }
     // CUT round trip
@@ -295,6 +362,8 @@
     ['k_det', 'streams + DET: the proven deterministic mode first; yes is the one answer, no is none, maybe runs the stream'],
     ['k_memo', 'streams + MEMO: the answers of a pure predicate per call variant, from the table or collected once'],
     ['k_prune', 'streams + PRUNE: permutation then a pairwise test: each placed element is tested against the earlier ones, so a failing prefix is not extended'],
+    ['k_detloop', 'streams + DET: findall/3 over between/3 with pure builtins and DET calls as a deterministic loop; maybe runs the bag'],
+    ['k_index', 'streams: clauses told apart by a bound first argument (principal functor, or a guard interval) are dispatched; an unbound one tries them in turn'],
     ['k_query', 'streams: the query boundary collects the answers, with the text written before each, as the query packet'],
     ['DET', 'MNN: an output-free predicate whose clauses are told apart by their first argument, and whose goals are deterministic, runs as p__d(Args, Status) without packets; status maybe (a first argument unbound where several clauses match) falls back to the packet code']
   ];

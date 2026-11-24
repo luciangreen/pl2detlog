@@ -298,31 +298,40 @@ The MNN rewrites work on streams:
 | PRUNE | `permutation(L, P), t(P)` with `t/1` a pairwise test (`src/algebra.js`) becomes `t__pwperm`, which places one element at a time and never extends a failing prefix. The JIT and the C export run it as a native integer loop that stops at the first answer the continuation accepts. Plain code is pruned too. |
 | splice | not needed: a stream computes each generator's answers one at a time, so nothing is multiplied out. |
 
+Four more changes make stream code fast without MNN:
+
+- **Tail calls run in a loop.** A call whose success is the clause's success (the last goal, or the last goal of a final `if_commit/3` branch) returns a tail-call record. The caller's loop runs it, in the JIT and through a trampoline in the C export. Each answer is passed on by such calls, so without this a long computation exhausted the JavaScript stack and fell back to the reference engine (plain `nrev` 300: 207 ms before, 5.8 ms after).
+- **First-argument dispatch (`k_index`).** When the first argument is bound, clauses told apart by it are dispatched instead of tried in turn. They can differ by principal functor (`[]` and `[_|_]`), or by an arithmetic guard that excludes the other clauses' numbers (`fib(0, _)`, `fib(1, _)`, `fib(N, _) :- N > 1`). The chosen clause is then a tail call, and an answer does not leave a pending alternative on the stack. The proof checker re-derives the exclusivity from the clauses.
+- **DET loops (`k_detloop`, MNN).** `findall(T, (between(L, H, I), G1, ..., Gn), Ts)`, where each `Gi` is a pure builtin or a DET call, becomes a deterministic loop that the native tier compiles to an integer loop. `maxc(300)` (`findall` of `collatz/2` over `between/3`) takes 153 µs, against 1,451 µs with packets and 31.9 ms in Prolog.
+- **User permutations are pruned.** A predicate that is `permutation/2` clause for clause is pruned like `permutation/2`. That is `perm([], []). perm(L, [H|T]) :- S(H, L, R), perm(R, T).`, with `S` either `select/3` or its two clauses. The proof checks the generator's shape. `queens(8)` written with its own `perm/2` and `sel/3` takes 2 ms on the JIT and 0.12 ms in C, against 877 ms in Prolog. An insertion-based permutation, which gives another order, is not pruned.
+
 Microseconds per run (Node 22 JIT, warmed up, one process per figure; the JIT knows the source, so it prunes permutations):
 
 | query | Prolog | plain packets | plain streams | MNN packets | MNN streams |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `fib(18, F)` | 33,933 | 92,500 | 98,500 | 9 | 5 |
-| `numlist(1, 60, L), nrev(L, R)` | 2,825 | 25,450 | 207 | 34 | 36 |
-| `numlist(1, 300, L), nrev(L, R)` | 87,500 | 418,500 | 207,667 | 172 | 216 |
-| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 9,259 | 284,000 | 42,333 | 482 | 547 |
-| `queens(6, Qs)` | 10,891 | 24,000 | 25 | 27 | 29 |
-| `pin(A, B, C)` | 647 | 3,914 | 333 | 7 | 8 |
-| `anc(X, dee)` | 13 | 51 | 34 | 6 | 5 |
+| `fib(18, F)` | 22,773 | 59,889 | 2,273 | 6 | 2 |
+| `numlist(1, 60, L), nrev(L, R)` | 1,263 | 10,286 | 227 | 20 | 21 |
+| `numlist(1, 300, L), nrev(L, R)` | 60,667 | 259,333 | 5,849 | 93 | 93 |
+| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 5,208 | 154,250 | 1,606 | 294 | 298 |
+| `queens(6, Qs)` | 9,547 | 10,458 | 11 | 18 | 11 |
+| `pin(A, B, C)` | 348 | 2,525 | 255 | 6 | 5 |
+| `anc(X, dee)` | 10 | 41 | 21 | 4 | 5 |
 
 Milliseconds per run of the C export (`cc -O2`, `./prog -r 200`):
 
 | query | plain packets | plain streams | MNN packets | MNN streams |
 | --- | ---: | ---: | ---: | ---: |
-| `fib(18, F)` | 13.9 | 1.77 | 0.0020 | 0.0005 |
-| `numlist(1, 60, L), nrev(L, R)` | 1.66 | 0.112 | 0.0054 | 0.0048 |
-| `numlist(1, 300, L), nrev(L, R)` | 68.1 | 3.67 | 0.0311 | 0.0176 |
-| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 7.86 | 0.949 | 0.0176 | 0.0196 |
-| `queens(6, Qs)` | 3.29 | 0.0033 | 0.0068 | 0.0033 |
-| `pin(A, B, C)` | 0.861 | 0.256 | 0.0002 | 0.0001 |
-| `anc(X, dee)` | 0.0182 | 0.0059 | 0.0005 | 0.0005 |
+| `fib(18, F)` | 11.4 | 1.48 | 0.0021 | 0.0004 |
+| `numlist(1, 60, L), nrev(L, R)` | 1.40 | 0.165 | 0.0028 | 0.0024 |
+| `numlist(1, 300, L), nrev(L, R)` | 62.9 | 4.84 | 0.0110 | 0.0109 |
+| `numlist(1, 2000, L), doubles(L, D), total(D, S)` | 6.96 | 0.853 | 0.0126 | 0.0128 |
+| `queens(6, Qs)` | 2.41 | 0.0031 | 0.0030 | 0.0022 |
+| `pin(A, B, C)` | 0.579 | 0.142 | 0.0001 | 0.0001 |
+| `anc(X, dee)` | 0.0078 | 0.0030 | 0.0003 | 0.0002 |
 
-Plain streams beat plain packets on every query except `fib/2` on the JIT, where both rebuild an exponential call tree. MNN streams match MNN packets within the noise of these timings on the JIT, and in C they are as fast or faster everywhere except `doubles`/`total` (about 10% slower). Plain `fib/2` stays slow on purpose: making it linear is MEMO's job, and the plain form has no MNN rewrites.
+Plain streams are now faster than Prolog on every query but `anc/2` (21 µs against 10 µs). That includes plain `fib/2` (10× faster) and `nrev` 300 (10× faster), with no MNN rewrite. MNN streams match MNN packets on the JIT and in C (the C `doubles`/`total` difference is 1.6%).
+
+The interpreter's per-call route also runs stream code now, and it is lazy. A call stops after two answers: one to give, and one to know whether there are more. If the caller asks for more, the call runs again for all of them, and the answers already given come first (the program is pure). A call under `once/1` therefore no longer computes every answer.
 
 Every consumer reads stream code:
 
@@ -331,7 +340,7 @@ Every consumer reads stream code:
 - **The proof checker** (`src/proof.js`):
   - shape;
   - no packet and no environment copy outside the query boundary;
-  - a rule for every clause (`k_clause`, `k_pred`, `k_cont`, `k_facts`, `k_s2a`, `k_det`, `k_memo`, `k_prune`, `k_query`);
+  - a rule for every clause (`k_clause`, `k_pred`, `k_index`, `k_cont`, `k_facts`, `k_s2a`, `k_det`, `k_detloop`, `k_memo`, `k_prune`, `k_query`);
   - side conditions, re-derived: DET writes no output, MEMO is pure, S2A rows belong to a proven S2A step, facts match the source, and the pairwise tests are the ones `src/algebra.js` derives from the source;
   - evaluation against Prolog, next to the packet code.
 - **SWI-Prolog**: exported stream code needs `src/detlog_stream_rt.pl` next to `detlog_runtime.pl`. `--detlog` and the app's download include both.

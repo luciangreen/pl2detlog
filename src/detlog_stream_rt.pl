@@ -16,6 +16,9 @@ dl_bag_new('$bag'([])).
 dl_bag_add(B, T) :- duplicate_term(T, C), arg(1, B, L), nb_linkarg(1, B, [C|L]).
 dl_bag_list(B, L) :- arg(1, B, R), reverse(R, L).
 dl_bag_list(B, L, Tail) :- arg(1, B, R), dl_rev_onto(R, Tail, L).
+dl_bag_count(B, C) :- arg(1, B, R), dl_count_e(R, 0, C).
+dl_count_e([], C, C).
+dl_count_e([X|Xs], A, C) :- if_commit(X = e(_), A1 is A + 1, A1 = A), dl_count_e(Xs, A1, C).
 dl_rev_onto([], L, L).
 dl_rev_onto([X|Xs], A, L) :- dl_rev_onto(Xs, [X|A], L).
 
@@ -37,6 +40,9 @@ dl_qitem(pos(N), Is, T, P, R) :-
     if_commit(N > P, (L is N - P, sub_string(T, P, L, _, S), R = [out(S)|R1]), R = R1),
     dl_qitems(Is, T, N, R1).
 dl_qitem(e(Vs), Is, T, P, [e(Vs)|R]) :- dl_qitems(Is, T, P, R).
+
+% first-argument dispatch: X is bound and has P's principal functor
+dl_has_key(X, P) :- nonvar(X), functor(X, N, A), functor(P, N, A).
 
 % a cut cell: '$cut'(false) until the cut runs
 dl_cut_new('$cut'(false)).

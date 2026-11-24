@@ -306,6 +306,16 @@ static double ref_ms(void (*run)(long)) {
         loop + ind + 'tv_free(xs' + n + '.v);\n' + ind + 'if (!ok' + n + ') { tv_free(res' + n + '.v); ' + fail + ' }\n' +
         ind + '{ Term *rl = tv_list(&res' + n + '); tv_free(res' + n + '.v); if (!unify(' + termC(pl.out, vm) + ', rl)) ' + fail + ' } } }\n';
     }
+    // tail goals of a clause body: its last goal, or the last goals of the branches of a final if_commit/3
+    let ctails = new Set();
+    function cTailGoals(b) {
+      const out = new Set();
+      (function walk(g) { g = D(g);
+        if (g.t === 'c' && g.f === ',' && g.a.length === 2) { const gs = P.flatConj(g); walk(gs[gs.length - 1]); return; }
+        if (g.t === 'c' && g.f === 'if_commit' && g.a.length === 3) { walk(g.a[1]); walk(g.a[2]); return; }
+        out.add(g); })(b);
+      return out;
+    }
     function stmt(g, vm, fail, ind) {
       g = D(g); const k = P.key(g); const as = g.t === 'c' ? g.a : [];
       if (g.t === 'v') throw new Error('variable goal');
@@ -361,6 +371,9 @@ static double ref_ms(void (*run)(long)) {
           }
         }
         if (natModes.has(k) && /__d$/.test(g.f) && !/__d$/.test(curPred)) return ind + '{ Term **na = ' + (as.length ? argsC(as, vm) : 'NULL') + '; if (!' + natEntryFn(k) + '(na) && !' + pfn(k) + '(na)) ' + fail + ' }\n';
+        // a tail call (the clause's success is the callee's): the arguments go to the trampoline and the
+        // clause returns 2; tc_run, behind every other call, runs it (stream code no longer grows the C stack)
+        if (ctails.has(g) && fail === 'return -1;') return ind + '{ Term **ta = ' + (as.length ? argsC(as, vm) : 'NULL') + '; TC_f = ' + pfn(k) + '_d; for (int ti = 0; ti < ' + as.length + '; ti++) TC_a[ti] = ta[ti]; return 2; }\n';
         return ind + 'if (!' + pfn(k) + '(' + argsC(as, vm) + ')) ' + fail + '\n';
       }
       if (!C_BUILTINS.has(k)) warn('builtin ' + k + ' is not in the C runtime');
@@ -536,18 +549,22 @@ static double ref_ms(void (*run)(long)) {
         if (vs.length) body += '  Term ' + vs.map(v => '*' + vm.get(v) + ' = ' + (alias.has(v) ? 'a[' + alias.get(v) + ']' : 'mk_var()')).join(', ') + ';\n';
         body += '  (void)a;\n';
         hargs.forEach((h, j) => { const d = D(h); if (d.t === 'v' && alias.get(d) === j) return; body += '  if (!unify(a[' + j + '], ' + termC(h, vm) + ')) return 0;\n'; });
+        ctails = cTailGoals(cl.body);
         body += stmt(cl.body, vm, 'return -1;', '  ');
+        ctails = new Set();
         body += '  return 1;\n}\n';
         defs.push(body);
         parts.push({ i, info: hargs.length ? headInfo(hargs[0]) : '-1, NULL, 0, 0' });
       });
-      let disp = 'static int ' + f + '(Term **a) {\n  STEP(); size_t m = TR_TOP; int r; (void)m; (void)r;\n';
+      let disp = 'static int ' + f + '_d(Term **a) {\n  STEP(); size_t m = TR_TOP; int r; (void)m; (void)r;\n';
       for (const p of parts) {
         const test = (D(cls[0].head).t === 'c') ? 'fa(a[0], ' + p.info + ')' : '1';
-        disp += '  if (' + test + ') { r = ' + f + '_c' + (p.i + 1) + '(a); if (r == 1) return 1; undo(m); if (r < 0) return 0; }\n';
+        disp += '  if (' + test + ') { r = ' + f + '_c' + (p.i + 1) + '(a); if (r >= 1) return r; undo(m); if (r < 0) return 0; }\n';
       }
       disp += '  return 0;\n}\n';
       defs.push(disp);
+      defs.push('static int ' + f + '(Term **a) { return tc_run(' + f + '_d(a)); }\n');
+      protos.push('static int ' + f + '_d(Term **a);');
     }
     // main
     const qs = (opts.queries || []).filter(q => q.pred && prog.preds.has(q.pred + '__cp/' + (q.vars.length + 1)));
@@ -605,7 +622,11 @@ static double ref_ms(void (*run)(long)) {
     // opts.checked keeps them (and the step limit) for programs whose calls may break the contract
     const mode = opts.checked ? '#define DL_CHECKED 1 /* checked: step limit, type, overflow and zero tests */\n' : '/* unchecked (the default): calls are assumed to meet the type contract; build with -DDL_CHECKED for the checks */\n';
     const swiMode = opts.swiWrite ? '#define DL_SWI_WRITE 1 /* write/print/format as SWI-Prolog lays terms out */\n' : '';
-    const code = header + mode + swiMode + lib + '\n/* ---------- program ---------- */\n' + tables + natLib + protos.join('\n') + '\n' + natProtos + '\n\n' +
+    // the trampoline: a tail call leaves its callee and arguments here and returns 2
+    let maxAr = 1; for (const k of prog.preds.keys()) maxAr = Math.max(maxAr, +k.slice(k.lastIndexOf('/') + 1));
+    const tramp = 'static int (*TC_f)(Term **); static Term *TC_a[' + maxAr + '];\n' +
+      'static int tc_run(int r) { while (r == 2) { Term *b[' + maxAr + ']; for (int i = 0; i < ' + maxAr + '; i++) b[i] = TC_a[i]; r = TC_f(b); } return r; }\n';
+    const code = header + mode + swiMode + lib + '\n/* ---------- program ---------- */\n' + tables + natLib + protos.join('\n') + '\n' + tramp + '\n' + natProtos + '\n\n' +
       (nDefs.length ? '/* native tier: DET predicates in the modes the queries use */\n' + nDefs.join('\n') + '\n' + natEntries.join('\n') + '\n' : '') +
       defs.join('\n') + '\n' + main;
     return { refs: [...refs.keys()].map(i => qs[i].text), code, warnings, proofs: [...new Set(proofNotes)] };

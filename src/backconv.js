@@ -72,6 +72,8 @@
       }
       // the clause chain, or the predicate's only clause
       const chainOf = (g, out) => { g = D(g);
+        // first-argument dispatch (k_index): its else branch is the chain of all the clauses
+        if (isC(g, 'if_commit', 3) && isC(g.a[0], 'nonvar', 1) && !out.length) return chainOf(g.a[2], out);
         if (isC(g, ',', 2) && isC(D(g.a[0]), 'dl_cut_off', 1)) return chainOf(g.a[1], out);
         if (isC(g, 'if_commit', 3) && isA(g.a[1], 'true') && D(g.a[0]).t === 'c' && prog.preds.has(P.key(g.a[0])) && /__k\w*\d+$/.test(D(g.a[0]).f)) { out.push(P.key(g.a[0])); return chainOf(g.a[2], out); }
         if (g.t === 'c' && prog.preds.has(P.key(g)) && /__k\w*\d+$/.test(g.f)) { out.push(P.key(g)); return out; }
@@ -118,6 +120,8 @@
           const c0 = flat(g.a[0]).map(D);
           // the pruned permutation: the goals as written are its else branch
           if (c0.length === 2 && isC(c0[0], 'var', 1) && isC(c0[1], 'is_list', 1) && D(g.a[1]).t === 'c' && /__pwperm$/.test(D(g.a[1]).f)) { out.push(walkK(flat(g.a[2]), T, C)); continue; }
+          // the DET loop for findall/3 over between/3: the goals as written are its else branch
+          if (c0.some(x => x.t === 'c' && /__fl\d+__d$/.test(x.f))) { out.push(walkK(flat(g.a[2]), T, C)); continue; }
           const reaches = x => { let r = false; (function w(y) { y = D(y); if (sameT(y, T) && !isA(y, 'true')) r = true; else if (y.t === 'c') y.a.forEach(w); })(x); return r; };
           if (isA(g.a[1], 'true') && reaches(g.a[0])) { out.push(Cmp(';', [walkK(flat(g.a[0]), T, C), walkK(flat(g.a[2]), T, C)])); continue; }
           const cond = walkK(flat(g.a[0]), Atom('true'), C);

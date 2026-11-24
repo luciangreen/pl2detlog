@@ -391,7 +391,7 @@
       if (this.acc !== undefined) return this.acc;
       this.acc = null;
       if (this.loadError || this.noAccel) return null;
-      let conv; try { conv = P.convert(this.src, { mnn: true, s2a: false, queries: [], form: 'packets' }); } catch (e) { return null; }
+      let conv; try { conv = P.convert(this.src, { mnn: true, s2a: false, queries: [] }); } catch (e) { return null; }
       const bad = new Set(conv.errors.map((x) => x.pred).filter(Boolean));
       // the predicates the program may assert into: unknown targets turn per-call routes off
       const targets = new Set(); let anyTarget = false;
@@ -419,10 +419,12 @@
       const was = [P.DETLOG_NATIVE, P.DETLOG_CHECKED];
       P.DETLOG_NATIVE = true; P.DETLOG_CHECKED = true; // the compiled program keeps the checked native tier
       let det;
-      try { det = P.loadProgram(conv.text); P.detlogCall(det, keys[0].replace(/\/(\d+)$/, (m, n) => '__cp/' + (+n + 1)), [], {}); } catch (e) { /* compiled lazily */ }
+      // answer streams: p__k(Args, K) for every predicate (src/stream.js)
+      const streams = conv.form === 'streams';
+      try { det = P.loadProgram(conv.text); P.detlogCall(det, keys[0].replace(/\/(\d+)$/, (m, n) => (streams ? '__k/' : '__cp/') + (+n + 1)), [], {}); } catch (e) { /* compiled lazily */ }
       finally { [P.DETLOG_NATIVE, P.DETLOG_CHECKED] = was; }
       if (!det) return null;
-      this.acc = { det, info: new Map(keys.map((k) => [k, { state: 'try', calls: 0, samples: 0, jitMs: 0, prologMs: 0, fails: 0 }])) };
+      this.acc = { det, streams: conv.form === 'streams', info: new Map(keys.map((k) => [k, { state: 'try', calls: 0, samples: 0, jitMs: 0, prologMs: 0, fails: 0 }])) };
       return this.acc;
     }
     // a sampled call's budget, on either route: more steps than this and the predicate stays on Prolog
@@ -438,21 +440,33 @@
         // (key(Clause, K) on a whole clause, say) stays on Prolog
         if (!smallTerms(args, 300)) return null;
         const R = P.Var('R');
-        const call = (Rv) => {
+        // the compiled call.  Streams are lazy: with max, the call stops after max answers (the bag's
+        // continuation commits), and the items are the packet so far; without, all the answers
+        const call = (Rv, max) => {
           const was = [P.DETLOG_NATIVE, P.DETLOG_CHECKED]; P.DETLOG_NATIVE = true; P.DETLOG_CHECKED = true;
-          try { return P.detlogCall(acc.det, k.replace(/\/(\d+)$/, (m, a) => '__cp/' + (+a + 1)), args.concat([Rv]), { stepLimit: info.state === 'try' ? SAMPLE_STEPS : 5e6 }); }
+          try {
+            if (!acc.streams) { const r = P.detlogCall(acc.det, k.replace(/\/(\d+)$/, (m, a) => '__cp/' + (+a + 1)), args.concat([Rv]), { stepLimit: info.state === 'try' ? SAMPLE_STEPS : 5e6 }); return r && r.ok ? { items: P.listToArray(Rv) || [], complete: true } : r; }
+            const B = P.streamBag(), cargs = args.map(a => P.copy(a));
+            const Kt = max ? P.Cmp('dl_rowmax', [B, P.list(cargs), P.Int(max)]) : P.Cmp('dl_row', [B, P.list(cargs)]);
+            const r = P.detlogCall(acc.det, k.replace(/\/(\d+)$/, (m, a) => '__k/' + (+a + 1)), cargs.concat([Kt]), { stepLimit: info.state === 'try' ? SAMPLE_STEPS : 5e6 });
+            if (!r) return null;
+            // committed: max answers reached (there may be more); failed: every answer is in the bag
+            return { ok: true, items: P.streamBagItems(B, r.ok ? '' : r.out), complete: !r.ok };
+          }
           catch (e) { return null; }
           finally { [P.DETLOG_NATIVE, P.DETLOG_CHECKED] = was; }
         };
         // the first call compiles: it is not timed
         if (info.state === 'try' && !info.warm) { info.warm = true; const W = P.Var('W'), m0 = eng.mark(); call(W); eng.undo(m0); }
+        // on the compiled route, calls 2, 4, 8, 16, .. are checked again (a few samples can miss a case)
+        const recheck = info.state === 'jit' && (((info.jitCalls || 0) + 1) & (info.jitCalls || 0)) === 0;
+        const lazy = acc.streams && info.state === 'jit' && !recheck;
         let t0 = P.now();
-        const res = call(R);
+        let res = call(R, lazy ? 2 : 0);
         const jitMs = P.now() - t0;
         if (!res || !res.ok) { if (++info.fails > 2) info.state = 'prolog'; return null; }
-        const items = P.listToArray(R) || [];
-        // on the compiled route, calls 2, 4, 8, 16, .. are checked again (a few samples can miss a case)
-        const recheck = info.state === 'jit' && ((info.jitCalls = (info.jitCalls || 0) + 1) & (info.jitCalls - 1)) === 0;
+        let items = res.items;
+        if (info.state === 'jit') info.jitCalls = (info.jitCalls || 0) + 1;
         if (info.state === 'try' || recheck) {
           // the same call on the Prolog route, all its answers, its output caught
           info.busy = true;
@@ -475,16 +489,26 @@
             if (++info.samples >= 3 && !self.debugAccel) info.state = info.jitMs < info.prologMs ? 'jit' : 'prolog';
           }
         }
+        let complete = res.complete;
         return (function* () {
           let rowsLeft = 0; for (const it of items) { const x = D(it); if (!(x.t === 'c' && x.f === 'out')) rowsLeft++; }
-          for (let i = 0; i < items.length; i++) {
+          for (let i = 0; ; i++) {
+            // a lazy call stopped after two answers: asked for more, it runs again for all of them (the same
+            // answers and text come first: the program is pure), and goes on after the ones already given
+            if (i >= items.length) {
+              if (complete) break;
+              const R2 = P.Var('R'); const all = call(R2, 0); if (!all || !all.ok) throw new Error('per call: the compiled Detlog failed on its second run');
+              items = all.items; complete = true; rowsLeft = 0;
+              for (let j = i; j < items.length; j++) { const y = D(items[j]); if (!(y.t === 'c' && y.f === 'out')) rowsLeft++; }
+              if (i >= items.length) break;
+            }
             const x = D(items[i]);
             if (x.t === 'c' && x.f === 'out') { eng.write(P.textOf(x.a[0])); continue; }
             rowsLeft--;
             const vals = P.listToArray(x.a[0]); const m = eng.mark();
             if (vals && vals.length === n && args.every((a, j) => eng.unify(a, vals[j]))) {
               const restOut = items.slice(i + 1).some((y) => { y = D(y); return y.t === 'c' && y.f === 'out'; });
-              if (!rowsLeft && !restOut) { yield 'last'; return; }
+              if (complete && !rowsLeft && !restOut) { yield 'last'; return; }
               yield;
             }
             eng.undo(m);
